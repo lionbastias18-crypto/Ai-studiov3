@@ -5,7 +5,7 @@ import react from '@vitejs/plugin-react';
 export default defineConfig(({ mode }) => {
     const env = loadEnv(mode, '.', '');
     return {
-      base: '/lionbastias18-crypto/', // <-- ¡Esta línea soluciona el problema de la pantalla en blanco!
+      base: './', // <-- ¡ESTA ES LA LÍNEA QUE AGREGAMOS! Hace que las texturas y el código carguen bien en GitHub Pages
       server: {
         port: 3000,
         host: '0.0.0.0',
