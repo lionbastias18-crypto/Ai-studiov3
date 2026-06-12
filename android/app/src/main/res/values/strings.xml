@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Infdev Mobile Voxel Engine</string>
+    <string name="title_activity_main">Infdev Mobile Voxel Engine</string>
+    <string name="package_name">com.infdev.voxelengine</string>
+    <string name="custom_url_scheme">com.infdev.voxelengine</string>
+</resources>
