@@ -1,0 +1,53 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Connection test path
+    match /test/{testId} {
+      allow read: if true;
+    }
+
+    // Common Helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(creatorId) {
+      return isSignedIn() && request.auth.uid == creatorId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_-]+$');
+    }
+
+    function isValidWorld(data) {
+      return data.id is string
+        && data.name is string
+        && data.name.size() <= 128
+        && data.creator is string
+        && data.createdAt is number
+        && (!('gameMode' in data) || (data.gameMode is string && (data.gameMode == 'creative' || data.gameMode == 'survival' || data.gameMode == 'adventure' || data.gameMode == 'creativo' || data.gameMode == 'supervivencia' || data.gameMode == 'aventura')))
+        && (!('worldType' in data) || (data.worldType is string && (data.worldType == 'flat' || data.worldType == 'normal' || data.worldType == 'plano' || data.worldType == 'plano_infinito')));
+    }
+
+    match /worlds/{worldId} {
+      allow read: if isSignedIn() && (resource == null || resource.data.creator == request.auth.uid);
+      allow create: if isSignedIn() 
+        && isValidId(worldId)
+        && isValidWorld(request.resource.data)
+        && request.resource.data.creator == request.auth.uid;
+      allow update: if isSignedIn()
+        && isValidId(worldId)
+        && isValidWorld(request.resource.data)
+        && resource.data.creator == request.auth.uid
+        && request.resource.data.creator == resource.data.creator;
+      allow delete: if isSignedIn()
+        && resource.data.creator == request.auth.uid;
+    }
+  }
+}

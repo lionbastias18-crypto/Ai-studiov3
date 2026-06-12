@@ -1,0 +1,54 @@
+{
+  "entities": {
+    "World": {
+      "title": "World",
+      "description": "Voxel world containing player position, game mode, generation type, and block edits",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier of the world"
+        },
+        "name": {
+          "type": "string",
+          "description": "The name of the world"
+        },
+        "creator": {
+          "type": "string",
+          "description": "The UID of the user who created it"
+        },
+        "creatorName": {
+          "type": "string",
+          "description": "Display name of the creator"
+        },
+        "createdAt": {
+          "type": "number",
+          "description": "Creation timestamp in milliseconds"
+        },
+        "playerPos": {
+          "type": "object",
+          "description": "The saved coordinates of the player"
+        },
+        "gameMode": {
+          "type": "string",
+          "description": "Game mode: creative, survival, or adventure"
+        },
+        "worldType": {
+          "type": "string",
+          "description": "World generation style: flat or normal"
+        },
+        "edits": {
+          "type": "object",
+          "description": "Record of coordinate keys and block types"
+        }
+      },
+      "required": ["id", "name", "creator", "createdAt", "gameMode", "worldType"]
+    }
+  },
+  "firestore": {
+    "/worlds/{worldId}": {
+      "schema": "World",
+      "description": "Collection of user-created voxel worlds"
+    }
+  }
+}
