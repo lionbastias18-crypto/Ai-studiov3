@@ -369,6 +369,73 @@ const App: React.FC = () => {
     return unsubscribe;
   }, []);
 
+  // Keep latest state in a ref to avoid resetting the auto-save interval on every block/inventory change!
+  const latestSaveDataRef = useRef({ currentWorld, survivalInventory, googleUser });
+  useEffect(() => {
+    latestSaveDataRef.current = { currentWorld, survivalInventory, googleUser };
+  }, [currentWorld, survivalInventory, googleUser]);
+
+  // Quiet background auto-save every 30 seconds during active gameplay
+  useEffect(() => {
+    if (appState !== "playing") return;
+
+    const intervalId = setInterval(async () => {
+      const { currentWorld: activeWorld, survivalInventory: activeInv, googleUser: activeUser } = latestSaveDataRef.current;
+      if (!activeWorld) return;
+
+      console.log("[Auto-Save] Guardando automáticamente el mundo en segundo plano...");
+      const updatedWorld = {
+        ...activeWorld,
+        playerPos: activePlayerPosRef.current,
+        survivalInventory: activeInv,
+      };
+
+      if (activeUser) {
+        try {
+          await saveWorldToFirestore(updatedWorld);
+          const dbWorlds = await loadWorldsFromFirestore(activeUser.uid);
+          setWorlds(dbWorlds);
+        } catch (e) {
+          console.error("[Auto-Save] Error al guardar automáticamente en Firestore:", e);
+        }
+      } else {
+        setWorlds((prev) => {
+          const next = prev.map((w) =>
+            w.id === activeWorld.id ? updatedWorld : w,
+          );
+          saveWorlds(next);
+          return next;
+        });
+      }
+    }, 30000);
+
+    return () => clearInterval(intervalId);
+  }, [appState]);
+
+  // Autosave when page is unloaded or tab is closed
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      const { currentWorld: activeWorld, survivalInventory: activeInv } = latestSaveDataRef.current;
+      if (appState === "playing" && activeWorld) {
+        const updatedWorld = {
+          ...activeWorld,
+          playerPos: activePlayerPosRef.current,
+          survivalInventory: activeInv,
+        };
+        setWorlds((prev) => {
+          const next = prev.map((w) =>
+            w.id === activeWorld.id ? updatedWorld : w,
+          );
+          saveWorlds(next);
+          return next;
+        });
+      }
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [appState]);
+
   const handleGoogleLogin = async () => {
     try {
       resumeAudio();
@@ -637,6 +704,7 @@ const App: React.FC = () => {
       });
     }
 
+    setCurrentWorld(updatedWorld);
     setScreenshotToast(lang === "es" ? "¡Mundo guardado con éxito!" : "World saved successfully!");
     setTimeout(() => setScreenshotToast(null), 2500);
   };
@@ -733,10 +801,16 @@ const App: React.FC = () => {
     setCurrentWorld(null);
   };
 
-  const userWorlds = worlds.filter(
-    (w) =>
-      w.creator.toLowerCase() === (currentUser || "Invitado").toLowerCase(),
-  );
+  const userWorlds = worlds.filter((w) => {
+    if (googleUser) {
+      return (
+        w.creator.toLowerCase() === googleUser.uid.toLowerCase() ||
+        w.creator.toLowerCase() === (currentUser || "").toLowerCase()
+      );
+    } else {
+      return w.creator.toLowerCase() === (currentUser || "Invitado").toLowerCase();
+    }
+  });
   const lastTouchPos = useRef<{ x: number; y: number; id: number } | null>(
     null,
   );
@@ -1071,6 +1145,10 @@ const App: React.FC = () => {
             >
               <i className="fas fa-user-secret text-sm" /> {t.option_guest}
             </button>
+          </div>
+          
+          <div className="text-white/35 font-mono text-[9px] mt-6 select-none uppercase tracking-widest text-center border-t border-white/5 pt-4 w-full">
+            alpha Mobile 1.0.2
           </div>
         </div>
       </div>
@@ -1447,11 +1525,16 @@ const App: React.FC = () => {
             <span className="text-emerald-400">{t.menu_subtitle}</span>
           </h1>
 
-          <div className="mt-4 flex items-center gap-2 bg-white/5 border border-white/10 py-1.5 px-4 rounded-full">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            <p className="text-white/80 font-mono text-[9px] uppercase tracking-wider font-bold">
-              {t.profile_welcome}: <span className="text-emerald-400">{currentUser || "Invitado"}</span>
-            </p>
+          <div className="mt-4 flex flex-col items-center gap-1.5">
+            <div className="flex items-center gap-2 bg-white/5 border border-white/10 py-1.5 px-4 rounded-full">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+              <p className="text-white/80 font-mono text-[9px] uppercase tracking-wider font-bold">
+                {t.profile_welcome}: <span className="text-emerald-400">{currentUser || "Invitado"}</span>
+              </p>
+            </div>
+            <span className="text-white/40 font-mono text-[10px] tracking-wider uppercase font-bold select-none">
+              alpha Mobile 1.0.2
+            </span>
           </div>
 
           <div className="flex flex-col w-full gap-4 mt-8">
@@ -1767,8 +1850,8 @@ const App: React.FC = () => {
             onPointerDown={(e) => e.stopPropagation()}
             onTouchStart={(e) => e.stopPropagation()}
           >
-            <h1 className="text-white text-lg font-bold minecraft-font uppercase tracking-tighter">
-              INFDEV <span className="text-emerald-400">MOBILE</span>
+            <h1 className="text-white text-lg font-bold minecraft-font uppercase tracking-tighter flex items-center gap-1.5 flex-wrap">
+              ALPHA <span className="text-emerald-400">MOBILE 1.0.2</span>
             </h1>
             <p className="text-white/40 text-[9px] mt-1 font-mono break-words">
               <span id="player-coordinates-hud">

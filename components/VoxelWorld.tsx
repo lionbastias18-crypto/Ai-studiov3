@@ -3350,6 +3350,14 @@ const MinecraftEnvironment: React.FC<MinecraftEnvironmentProps> = ({
     if (state.scene.fog && 'color' in state.scene.fog) {
       (state.scene.fog as any).color.set(fogColor);
     }
+
+    if (state.scene) {
+      if (!state.scene.background) {
+        state.scene.background = new THREE.Color(fogColor);
+      } else if (state.scene.background instanceof THREE.Color) {
+        state.scene.background.set(fogColor);
+      }
+    }
   });
 
   return (
