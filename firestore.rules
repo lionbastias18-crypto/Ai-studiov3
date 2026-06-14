@@ -32,11 +32,11 @@ service cloud.firestore {
         && data.creator is string
         && data.createdAt is number
         && (!('gameMode' in data) || (data.gameMode is string && (data.gameMode == 'creative' || data.gameMode == 'survival' || data.gameMode == 'adventure' || data.gameMode == 'creativo' || data.gameMode == 'supervivencia' || data.gameMode == 'aventura')))
-        && (!('worldType' in data) || (data.worldType is string && (data.worldType == 'flat' || data.worldType == 'normal' || data.worldType == 'plano' || data.worldType == 'plano_infinito')));
+        && (!('worldType' in data) || (data.worldType is string && (data.worldType == 'flat' || data.worldType == 'normal' || data.worldType == 'edge_farlands' || data.worldType == 'plano' || data.worldType == 'plano_infinito')));
     }
 
     match /worlds/{worldId} {
-      allow read: if isSignedIn() && (resource == null || resource.data.creator == request.auth.uid);
+      allow read: if isSignedIn() && (resource == null || !('creator' in resource.data) || resource.data.creator == request.auth.uid);
       allow create: if isSignedIn() 
         && isValidId(worldId)
         && isValidWorld(request.resource.data)
@@ -44,10 +44,10 @@ service cloud.firestore {
       allow update: if isSignedIn()
         && isValidId(worldId)
         && isValidWorld(request.resource.data)
-        && resource.data.creator == request.auth.uid
-        && request.resource.data.creator == resource.data.creator;
+        && (resource == null || !('creator' in resource.data) || resource.data.creator == request.auth.uid)
+        && request.resource.data.creator == request.auth.uid;
       allow delete: if isSignedIn()
-        && resource.data.creator == request.auth.uid;
+        && (resource == null || !('creator' in resource.data) || resource.data.creator == request.auth.uid);
     }
   }
 }

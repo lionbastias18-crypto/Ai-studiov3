@@ -91,6 +91,7 @@ const caveNoise = (x: number, y: number, z: number) => {
 };
 
 let activeWorldId = 'temp';
+let activeWorldType = 'normal';
 const worldSeeds = new Map<string, { 
     noise: (x: number, z: number) => number; 
     biomeNoiseFun: (x: number, z: number) => number; 
@@ -125,6 +126,22 @@ const getNoiseForWorld = (worldId: string) => {
 };
 
 const getWorldHeight = (x: number, z: number) => {
+    const absX = Math.abs(x);
+    const absZ = Math.abs(z);
+    if (absX >= 1500 || absZ >= 1500 || activeWorldType === 'edge_farlands') {
+        const noiseX = activeWorldType === 'edge_farlands' ? x + 15000 : x;
+        const noiseZ = activeWorldType === 'edge_farlands' ? z + 15000 : z;
+        const hFar = 95 + Math.floor(
+            Math.sin(noiseX * 0.03) * 12 + 
+            Math.cos(noiseZ * 0.03) * 12 +
+            (activeWorldType === 'edge_farlands' ? Math.sin(noiseX * 0.15) * 6 + Math.cos(noiseZ * 0.15) * 6 : 0)
+        );
+        let h = Math.floor(hFar);
+        if (h < 50) h = 50;
+        if (h >= WORLD_HEIGHT - 3) h = WORLD_HEIGHT - 4;
+        return { h, biome: 'mountains' };
+    }
+
     const { noise, biomeNoiseFun } = getNoiseForWorld(activeWorldId);
     // bNoise helps distinguish biomes. It ranges from ~0 to 10.
     const bNoise = biomeNoiseFun(x * 0.005, z * 0.005);
@@ -193,7 +210,7 @@ interface VoxelWorldProps {
   initialEdits?: Record<string, number>;
   onBlockEdit?: (x: number, y: number, z: number, blockType: BlockType) => void;
   gameMode?: 'creative' | 'survival' | 'adventure' | 'creativo' | 'supervivencia' | 'aventura';
-  worldType?: 'flat' | 'normal' | 'plano' | 'plano_infinito';
+  worldType?: 'flat' | 'normal' | 'edge_farlands' | 'plano' | 'plano_infinito';
   onSelectBlock?: (block: BlockType) => void;
   onOpenCraftingTable?: () => void;
   survivalInventory?: Record<number, number>;
@@ -1190,7 +1207,8 @@ const Player: React.FC<{
   worldType?: string;
   chunks: Record<string, Uint8Array>;
   playerPosRef: React.MutableRefObject<Vector3D>;
-}> = ({ moveVector, lookOffsetRef, onUpdatePos, isJumping, getCollisionHeight, checkSolid, perspective, gameMode = 'survival', worldType = 'normal', chunks, playerPosRef }) => {
+  playerPos: Vector3D;
+}> = ({ moveVector, lookOffsetRef, onUpdatePos, isJumping, getCollisionHeight, checkSolid, perspective, gameMode = 'survival', worldType = 'normal', chunks, playerPosRef, playerPos }) => {
   const { camera } = useThree();
   const yaw = useRef(0);
   const pitch = useRef(0);
@@ -1222,6 +1240,19 @@ const Player: React.FC<{
   perspectiveRef.current = perspective;
   const onUpdatePosRef = useRef(onUpdatePos);
   onUpdatePosRef.current = onUpdatePos;
+
+  // React to external teleport coordinates securely
+  useEffect(() => {
+    const dx = playerPos.x - physPos.current.x;
+    const dy = playerPos.y - physPos.current.y;
+    const dz = playerPos.z - physPos.current.z;
+    const distSq = dx * dx + dy * dy + dz * dz;
+    // Over a small threshold indicates an external teleport rather than standard player step ticks
+    if (distSq > 2.25) {
+      physPos.current.set(playerPos.x, playerPos.y, playerPos.z);
+      initialized.current = false; // Forces chunk reload & spawn-guard safety checks at the destination!
+    }
+  }, [playerPos.x, playerPos.y, playerPos.z]);
 
   const lastAmbientUpdate = useRef(0);
 
@@ -1258,7 +1289,15 @@ const Player: React.FC<{
     }
     const minDelta = Math.min(delta, 0.1);
     const lookSpeed = 0.004;
-    const moveSpeed = 6.0;
+    
+    // Slow down speed dynamically when approaching or entering Far Lands (X/Z boundaries)
+    const currentAbsCoordForSpeed = Math.max(Math.abs(physPos.current.x), Math.abs(physPos.current.z));
+    let moveSpeed = 6.0;
+    if (currentAbsCoordForSpeed >= 1500) {
+      moveSpeed = 1.6; // Caminata muy lenta (has llegado al límite)
+    } else if (currentAbsCoordForSpeed >= 1400) {
+      moveSpeed = 3.2; // Caminata un poco lenta
+    }
 
     yaw.current -= lookOffsetRef.current.x * lookSpeed;
     pitch.current -= lookOffsetRef.current.y * lookSpeed;
@@ -1711,6 +1750,7 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
     survivalInventory
 }) => {
   activeWorldId = worldId || 'temp';
+  activeWorldType = worldType || 'normal';
   const playerPosRef = useRef(playerPos);
   playerPosRef.current = playerPos;
 
@@ -1792,6 +1832,156 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
       gameState.onTimeSet = null;
     };
   }, [triggerInGameMessage]);
+
+  // --- LIQUID FLOW (WATER & LAVA) SYSTEM ---
+  useEffect(() => {
+    let active = true;
+    const timer = setInterval(() => {
+      if (!active) return;
+      if (!playerPosRef.current) return;
+      
+      const px = Math.round(playerPosRef.current.x);
+      const py = Math.round(playerPosRef.current.y);
+      const pz = Math.round(playerPosRef.current.z);
+      
+      const rX = 14;
+      const rY = 10;
+      const rZ = 14;
+      
+      const currentChunks = chunksRef.current;
+      const mutated: Record<string, Uint8Array> = {};
+      const updates: {x: number, y: number, z: number, block: number}[] = [];
+      
+      const getSimBlock = (wx: number, wy: number, wz: number) => {
+        if (wy < 0 || wy >= WORLD_HEIGHT) return BlockType.AIR;
+        const cx = Math.floor(wx / CHUNK_SIZE);
+        const cz = Math.floor(wz / CHUNK_SIZE);
+        const k = `${cx},${cz}`;
+        const chunkData = mutated[k] !== undefined ? mutated[k] : currentChunks[k];
+        if (!chunkData) return BlockType.AIR;
+        const lx = ((wx % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
+        const lz = ((wz % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
+        const idx = (lx * CHUNK_SIZE * WORLD_HEIGHT) + (wy * CHUNK_SIZE) + lz;
+        return chunkData[idx];
+      };
+
+      const getSourceDistance = (sx: number, sy: number, sz: number, liquidType: number) => {
+        const maxSearch = liquidType === BlockType.WATER ? 4 : 2;
+        const queue: {x: number, z: number, dist: number}[] = [{ x: sx, z: sz, dist: 0 }];
+        const visited = new Set<string>();
+        visited.add(`${sx},${sz}`);
+        
+        while (queue.length > 0) {
+          const curr = queue.shift()!;
+          const above = getSimBlock(curr.x, sy + 1, curr.z);
+          
+          if (above === liquidType || above === BlockType.AIR) {
+            return curr.dist;
+          }
+          
+          if (curr.dist >= maxSearch) continue;
+          
+          const dirs = [
+            { dx: 1, dz: 0 },
+            { dx: -1, dz: 0 },
+            { dx: 0, dz: 1 },
+            { dx: 0, dz: -1 }
+          ];
+          for (const d of dirs) {
+            const nx = curr.x + d.dx;
+            const nz = curr.z + d.dz;
+            const key = `${nx},${nz}`;
+            if (!visited.has(key)) {
+              visited.add(key);
+              if (getSimBlock(nx, sy, nz) === liquidType) {
+                queue.push({ x: nx, z: nz, dist: curr.dist + 1 });
+              }
+            }
+          }
+        }
+        return 999;
+      };
+      
+      for (let y = Math.max(0, py - rY); y <= Math.min(WORLD_HEIGHT - 1, py + rY); y++) {
+        for (let x = px - rX; x <= px + rX; x++) {
+          for (let z = pz - rZ; z <= pz + rZ; z++) {
+            const b = getSimBlock(x, y, z);
+            if (b === BlockType.WATER || b === BlockType.LAVA) {
+              const below = getSimBlock(x, y - 1, z);
+              if (below === BlockType.AIR || below === BlockType.MUSHROOM_BROWN || below === BlockType.MUSHROOM_RED || below === BlockType.FLOWER_RED || below === BlockType.FLOWER_YELLOW) {
+                updates.push({ x, y: y - 1, z, block: b });
+              } else if (below === BlockType.WATER && b === BlockType.LAVA) {
+                updates.push({ x, y: y - 1, z, block: BlockType.OBSIDIAN });
+              } else if (below === BlockType.LAVA && b === BlockType.WATER) {
+                updates.push({ x, y: y - 1, z, block: BlockType.OBSIDIAN });
+              } else {
+                const dist = getSourceDistance(x, y, z, b);
+                const maxDist = b === BlockType.WATER ? 4 : 2;
+                
+                if (dist < maxDist) {
+                  const dirs = [
+                    { dx: 1, dz: 0 },
+                    { dx: -1, dz: 0 },
+                    { dx: 0, dz: 1 },
+                    { dx: 0, dz: -1 }
+                  ];
+                  for (const d of dirs) {
+                    const nx = x + d.dx;
+                    const nz = z + d.dz;
+                    const sideBlock = getSimBlock(nx, y, nz);
+                    
+                    if (sideBlock === BlockType.AIR || sideBlock === BlockType.MUSHROOM_BROWN || sideBlock === BlockType.MUSHROOM_RED || sideBlock === BlockType.FLOWER_RED || sideBlock === BlockType.FLOWER_YELLOW) {
+                      updates.push({ x: nx, y, z: nz, block: b });
+                    } else if (sideBlock === BlockType.WATER && b === BlockType.LAVA) {
+                      updates.push({ x: nx, y, z: nz, block: BlockType.OBSIDIAN });
+                    } else if (sideBlock === BlockType.LAVA && b === BlockType.WATER) {
+                      updates.push({ x: nx, y, z: nz, block: BlockType.OBSIDIAN });
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      
+      if (updates.length > 0) {
+        const limitedUpdates = updates.slice(0, 10);
+        for (const up of limitedUpdates) {
+          const cx = Math.floor(up.x / CHUNK_SIZE);
+          const cz = Math.floor(up.z / CHUNK_SIZE);
+          const k = `${cx},${cz}`;
+          
+          if (!mutated[k]) {
+            if (currentChunks[k]) {
+              mutated[k] = new Uint8Array(currentChunks[k]);
+            } else {
+              continue;
+            }
+          }
+          
+          const lx = ((up.x % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
+          const lz = ((up.z % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
+          const idx = (lx * CHUNK_SIZE * WORLD_HEIGHT) + (up.y * CHUNK_SIZE) + lz;
+          mutated[k][idx] = up.block;
+          
+          if (editsRef.current) {
+            editsRef.current[`${up.x},${up.y},${up.z}`] = up.block;
+          }
+          if (onBlockEditRef.current) {
+            onBlockEditRef.current(up.x, up.y, up.z, up.block);
+          }
+        }
+        
+        setChunks(prev => ({ ...prev, ...mutated }));
+      }
+    }, 550);
+    
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [worldId]);
 
   const isSleepingRef = useRef(false);
   const [isSleeping, setIsSleeping] = useState(false);
@@ -2002,6 +2192,70 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
         for (let z = 0; z < CHUNK_SIZE; z++) {
           const wx = cx * CHUNK_SIZE + x;
           const wz = cz * CHUNK_SIZE + z;
+          
+          const isFar = Math.abs(wx) >= 1500 || Math.abs(wz) >= 1500 || worldType === "edge_farlands";
+          if (isFar) {
+            const farX = worldType === "edge_farlands" ? wx + 15000 : wx;
+            const farZ = worldType === "edge_farlands" ? wz + 15000 : wz;
+            const gridDiv = worldType === "edge_farlands" ? 4 : 6;
+            
+            const hFar = 95 + Math.floor(
+              Math.sin(farX * 0.03) * 12 + 
+              Math.cos(farZ * 0.03) * 12 +
+              (worldType === "edge_farlands" ? Math.sin(farX * 0.15) * 6 + Math.cos(farZ * 0.15) * 6 : 0)
+            );
+            for (let y = 0; y < WORLD_HEIGHT; y++) {
+              const idx = (x * CHUNK_SIZE * WORLD_HEIGHT) + (y * CHUNK_SIZE) + z;
+              if (y > hFar) {
+                data[idx] = BlockType.AIR;
+              } else if (y === 0) {
+                data[idx] = BlockType.BEDROCK;
+              } else {
+                const gridX = Math.floor(farX / gridDiv) % 2 === 0;
+                const gridZ = Math.floor(farZ / gridDiv) % 2 === 0;
+                const gridY = Math.floor(y / gridDiv) % 2 === 0;
+                const isSolidWall = (gridX || gridZ) && !gridY;
+                const holeProb = worldType === "edge_farlands" ? 0.28 : 0.18;
+                const randomHole = getSeededRandom(seed + 888, farX, farZ, y) < holeProb;
+                
+                if (isSolidWall && !randomHole) {
+                  if (y === hFar || (y < hFar && Math.floor(y / 12) % 3 === 2 && getSeededRandom(seed + 99, farX, farZ, y) < 0.3)) {
+                    if (worldType === "edge_farlands" && getSeededRandom(seed + 123, farX, farZ, y) < 0.12) {
+                      data[idx] = BlockType.OBSIDIAN;
+                    } else {
+                      data[idx] = BlockType.GRASS;
+                    }
+                  } else if (y > hFar - 4) {
+                    data[idx] = BlockType.DIRT;
+                  } else {
+                    const rOre = getSeededRandom(seed + 15, farX, farZ, y);
+                    if (rOre < 0.04) {
+                      data[idx] = BlockType.DIAMOND_ORE;
+                    } else if (rOre < 0.08) {
+                      data[idx] = BlockType.GOLD_ORE;
+                    } else if (rOre < 0.18) {
+                      data[idx] = BlockType.IRON_ORE;
+                    } else if (rOre < 0.3) {
+                      data[idx] = BlockType.COAL_ORE;
+                    } else {
+                      data[idx] = BlockType.STONE;
+                    }
+                  }
+                } else {
+                  if (y <= 56) {
+                    if (worldType === "edge_farlands" && getSeededRandom(seed + 456, farX, farZ, y) < 0.06) {
+                      data[idx] = BlockType.LAVA;
+                    } else {
+                      data[idx] = BlockType.WATER;
+                    }
+                  } else {
+                    data[idx] = BlockType.AIR;
+                  }
+                }
+              }
+            }
+            continue;
+          }
           
           const { h, biome } = getWorldHeight(wx, wz);
           
@@ -2700,7 +2954,7 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
       (onBlockEditRef.current as any)(wx, wy, wz, BlockType.AIR, brokenBlock);
     }
     
-    playBreakSound();
+    playBreakSound(brokenBlock);
 
     // Spawn block breaking particles (with simple optimization)
     const color = BLOCK_COLORS[brokenBlock as BlockType] || '#888888';
@@ -2789,7 +3043,7 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
           ...prev,
           [doorKey]: !isCurrentlyOpen
         }));
-        playPlaceSound();
+        playPlaceSound(BlockType.DOOR);
         triggerInGameMessageRef.current(isCurrentlyOpen ? "🚪 Puerta cerrada" : "🚪 Puerta abierta");
         return;
       }
@@ -2895,7 +3149,7 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
           if (editsRef.current) editsRef.current[`${clickWx},${clickWy},${clickWz}`] = BlockType.AIR;
           if (onBlockEditRef.current) onBlockEditRef.current(clickWx, clickWy, clickWz, BlockType.AIR);
           if (onSelectBlockRef.current) onSelectBlockRef.current(BlockType.BUCKET_WATER);
-          playPlaceSound();
+          playPlaceSound(BlockType.WATER);
           return;
         } else if (clickedBlock === BlockType.LAVA) {
           const newData = new Uint8Array(currentChunks[clickK]);
@@ -2904,7 +3158,7 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
           if (editsRef.current) editsRef.current[`${clickWx},${clickWy},${clickWz}`] = BlockType.AIR;
           if (onBlockEditRef.current) onBlockEditRef.current(clickWx, clickWy, clickWz, BlockType.AIR);
           if (onSelectBlockRef.current) onSelectBlockRef.current(BlockType.BUCKET_LAVA);
-          playPlaceSound();
+          playPlaceSound(BlockType.LAVA);
           return;
         }
       }
@@ -2990,7 +3244,7 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
       onSelectBlockRef.current(BlockType.BUCKET_EMPTY);
     }
 
-    playPlaceSound();
+    playPlaceSound(blockToActuallyPlace);
   }, []);
 
   const removeEntity = useCallback((id: string) => {
@@ -3160,7 +3414,7 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
           />
         ))}
 
-        <Player moveVector={moveVector} lookOffsetRef={lookOffsetRef} onUpdatePos={onBlockChange} isJumping={isJumping} getCollisionHeight={getCollisionHeight} checkSolid={checkSolid} perspective={perspective} gameMode={gameMode} worldType={worldType} chunks={chunks} playerPosRef={playerPosRef} />
+        <Player moveVector={moveVector} lookOffsetRef={lookOffsetRef} onUpdatePos={onBlockChange} isJumping={isJumping} getCollisionHeight={getCollisionHeight} checkSolid={checkSolid} perspective={perspective} gameMode={gameMode} worldType={worldType} chunks={chunks} playerPosRef={playerPosRef} playerPos={playerPos} />
         <ParticleSystem particlesRef={particlesRef} />
         <fog attach="fog" args={['#87ceeb', ultraOptimization ? 8 : 15, ultraOptimization ? 28 : 45]} />
       </Canvas>

@@ -55,6 +55,7 @@ export const dict = {
     world_type: 'Tipo de mundo',
     world_type_normal: 'Mundo normal',
     world_type_flat: 'Plano infinito (optimizado)',
+    world_type_edge_farlands: 'Edge Farlands (pasado de Far Lands)',
     screenshot_saved: '¡Captura de pantalla guardada!'
   },
   en: {
@@ -113,6 +114,7 @@ export const dict = {
     world_type: 'World Type',
     world_type_normal: 'Normal World',
     world_type_flat: 'Infinite Flat (optimized)',
+    world_type_edge_farlands: 'Edge Farlands (past Far Lands)',
     screenshot_saved: 'Screenshot saved!'
   },
   fr: {
@@ -171,6 +173,7 @@ export const dict = {
     world_type: 'Type de monde',
     world_type_normal: 'Monde normal',
     world_type_flat: 'Plat infini (optimisé)',
+    world_type_edge_farlands: 'Edge Farlands (au-delà des Far Lands)',
     screenshot_saved: 'Capture dʼécran sauvegardée !'
   },
   pt: {
@@ -229,6 +232,7 @@ export const dict = {
     world_type: 'Tipo de mundo',
     world_type_normal: 'Mundo normal',
     world_type_flat: 'Plano infinito (otimizado)',
+    world_type_edge_farlands: 'Edge Farlands (passando as Far Lands)',
     screenshot_saved: 'Captura de tela salva!'
   },
   de: {
@@ -287,6 +291,7 @@ export const dict = {
     world_type: 'Welttyp',
     world_type_normal: 'Normale Welt',
     world_type_flat: 'Flache Welt (optimiert)',
+    world_type_edge_farlands: 'Edge Farlands (hinter den Far Lands)',
     screenshot_saved: 'Screenshot gespeichert!'
   }
 };

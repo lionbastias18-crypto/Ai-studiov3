@@ -35,7 +35,7 @@
         },
         "worldType": {
           "type": "string",
-          "description": "World generation style: flat or normal"
+          "description": "World generation style: flat, normal, or edge_farlands"
         },
         "edits": {
           "type": "object",

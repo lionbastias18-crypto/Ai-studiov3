@@ -202,7 +202,12 @@ const App: React.FC = () => {
     "first",
   );
   const [fov, setFov] = useState<number>(65);
-  const [ultraOptimization, setUltraOptimization] = useState<boolean>(false);
+  const [ultraOptimization, setUltraOptimization] = useState<boolean>(() => {
+    if (typeof window !== "undefined") {
+      return 'ontouchstart' in window || navigator.maxTouchPoints > 0 || window.innerWidth <= 1024;
+    }
+    return false;
+  });
   const [showCameraFlash, setShowCameraFlash] = useState<boolean>(false);
   const [flashOpacity, setFlashOpacity] = useState<number>(0);
   const [screenshotToast, setScreenshotToast] = useState<string | null>(null);
@@ -279,6 +284,30 @@ const App: React.FC = () => {
         } else {
           setChatMessages((prev) => [...prev, "❌ Comandos válidos: /gamemode [creative | survival]"]);
         }
+      } else if (cmd === "tp" || cmd === "teleport") {
+        const dest = parts[1];
+        if (dest === "edge" || dest === "farlands" || dest === "edge_farlands") {
+          const targetPos = { x: 1530, y: 110, z: 1530 };
+          setPlayerPos(targetPos);
+          activePlayerPosRef.current = targetPos;
+          setChatMessages((prev) => [...prev, "🌀 [Sistema] Teletransportado a Edge Farlands (X: 1530, Y: 110, Z: 1530)."]);
+        } else {
+          const x = parseFloat(parts[1]);
+          const y = parseFloat(parts[2]);
+          const z = parseFloat(parts[3]);
+          if (!isNaN(x) && !isNaN(z)) {
+            const finalY = isNaN(y) ? 90 : y;
+            const targetPos = { x, y: finalY, z };
+            setPlayerPos(targetPos);
+            activePlayerPosRef.current = targetPos;
+            setChatMessages((prev) => [...prev, `🌀 [Sistema] Teletransportado a X: ${x.toFixed(0)}, Y: ${finalY.toFixed(0)}, Z: ${z.toFixed(0)}`]);
+          } else {
+            setChatMessages((prev) => [
+              ...prev,
+              "❌ Sintaxis: /tp edge_farlands  o  /tp [X] [Y] [Z]"
+            ]);
+          }
+        }
       } else {
         setChatMessages((prev) => [
           ...prev,
@@ -294,6 +323,7 @@ const App: React.FC = () => {
   const [worldSearchQuery, setWorldSearchQuery] = useState("");
 
   const [isTouchDevice, setIsTouchDevice] = useState(false);
+  const [isSmallScreen, setIsSmallScreen] = useState(false);
   const [touchControlsMode, setTouchControlsMode] = useState<"auto" | "yes" | "no">("auto");
 
   const showTouchControls = 
@@ -301,16 +331,25 @@ const App: React.FC = () => {
       ? true 
       : touchControlsMode === "no" 
         ? false 
-        : isTouchDevice;
+        : (isTouchDevice || isSmallScreen);
 
   useEffect(() => {
-    const checkTouch = () => {
-      setIsTouchDevice('ontouchstart' in window || navigator.maxTouchPoints > 0);
+    const checkTouchAndSize = () => {
+      const hasTouch = 
+        'ontouchstart' in window || 
+        (navigator.maxTouchPoints && navigator.maxTouchPoints > 0) || 
+        ((navigator as any).msMaxTouchPoints && (navigator as any).msMaxTouchPoints > 0) ||
+        (navigator.userAgent.includes('Macintosh') && navigator.maxTouchPoints > 1) ||
+        ('maxTouchPoints' in navigator && navigator.maxTouchPoints > 0) ||
+        window.matchMedia('(pointer: coarse)').matches;
+      setIsTouchDevice(hasTouch);
+      // Modern tablet landscape screens and larger widths can also run touch modes
+      setIsSmallScreen(window.innerWidth <= 1280);
     };
-    checkTouch();
-    window.addEventListener("resize", checkTouch);
+    checkTouchAndSize();
+    window.addEventListener("resize", checkTouchAndSize);
     return () => {
-      window.removeEventListener("resize", checkTouch);
+      window.removeEventListener("resize", checkTouchAndSize);
     };
   }, []);
 
@@ -343,7 +382,7 @@ const App: React.FC = () => {
   // World Creator inputs
   const [worldNameInput, setWorldNameInput] = useState("");
   const [newWorldGameMode, setNewWorldGameMode] = useState<"creative" | "survival" | "adventure">("survival");
-  const [newWorldType, setNewWorldType] = useState<"flat" | "normal">("normal");
+  const [newWorldType, setNewWorldType] = useState<"flat" | "normal" | "edge_farlands">("normal");
 
   const [googleUser, setGoogleUser] = useState<any | null>(null);
 
@@ -1354,7 +1393,7 @@ const App: React.FC = () => {
                               {world.gameMode === "creative" ? t.creative_mode : world.gameMode === "adventure" ? t.adventure_mode : t.survival_mode}
                             </span>
                             <span className="text-[8px] font-bold uppercase tracking-wider bg-zinc-900 text-sky-400 px-2 py-0.5 rounded-md border border-white/5">
-                              {world.worldType === "flat" ? t.world_type_flat : t.world_type_normal}
+                              {world.worldType === "flat" ? t.world_type_flat : world.worldType === "edge_farlands" ? t.world_type_edge_farlands : t.world_type_normal}
                             </span>
                             <span className="text-[8px] font-bold uppercase tracking-wider text-zinc-500 ml-1">
                               • {formattedDate}
@@ -1451,10 +1490,14 @@ const App: React.FC = () => {
                   <label className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider">
                     {t.world_type}
                   </label>
-                  <div className="grid grid-cols-2 gap-1 bg-zinc-950 p-1.5 rounded-xl border border-white/5">
-                    {(["normal", "flat"] as const).map((type) => {
+                  <div className="grid grid-cols-3 gap-1 bg-zinc-950 p-1.2 rounded-xl border border-white/5">
+                    {(["normal", "flat", "edge_farlands"] as const).map((type) => {
                       const isActive = newWorldType === type;
-                      const typeText = type === "normal" ? t.world_type_normal : t.world_type_flat;
+                      const typeText = type === "normal" 
+                        ? t.world_type_normal 
+                        : type === "flat" 
+                          ? t.world_type_flat 
+                          : t.world_type_edge_farlands;
                       return (
                         <button
                           key={type}
@@ -1463,13 +1506,13 @@ const App: React.FC = () => {
                             resumeAudio();
                             setNewWorldType(type);
                           }}
-                          className={`py-2 px-1 rounded-lg text-[9px] uppercase font-extrabold tracking-wider text-center transition-all ${
+                          className={`py-2 px-0.5 rounded-lg text-[8px] uppercase font-extrabold tracking-wider text-center h-full flex items-center justify-center transition-all ${
                             isActive
                               ? "bg-emerald-500 text-white shadow-md font-black"
                               : "text-zinc-500 hover:bg-white/5 hover:text-zinc-300"
                           }`}
                         >
-                          {typeText}
+                          <span className="truncate px-1" title={typeText}>{typeText}</span>
                         </button>
                       );
                     })}
@@ -1767,6 +1810,19 @@ const App: React.FC = () => {
                   >
                     <i className="fas fa-file-export" /> {lang === "es" ? "Exportar" : "Export"}
                   </button>
+                  <button
+                    onClick={() => {
+                      const farPos = { x: 1515, y: 110, z: 1515 };
+                      setPlayerPos(farPos);
+                      activePlayerPosRef.current = farPos;
+                      setAppState("playing");
+                      setScreenshotToast(lang === "es" ? "👾 ¡Viajado a los FAR LANDS (X:1515, Z:1515)!" : "👾 Traveled to the FAR LANDS (X:1515, Z:1515)!");
+                      setTimeout(() => setScreenshotToast(null), 3000);
+                    }}
+                    className="col-span-2 bg-gradient-to-r from-amber-600 to-yellow-600 hover:from-amber-500 hover:to-yellow-500 py-2 rounded-lg text-white font-bold text-[9px] uppercase tracking-wider flex items-center justify-center gap-1.5 transition active:scale-95 border border-yellow-400/20 shadow-lg"
+                  >
+                    <i className="fas fa-magic text-yellow-200 animate-pulse" /> {lang === "es" ? "Viajar a Far Lands (x:1515)" : "Travel to Far Lands (x:1515)"}
+                  </button>
                 </div>
               )}
 
@@ -1800,9 +1856,11 @@ const App: React.FC = () => {
     );
   }
 
+  const maxAbsCoord = Math.max(Math.abs(playerPos.x), Math.abs(playerPos.z));
+
   return (
     <div
-      className="w-full h-full relative overflow-hidden bg-black touch-none"
+      className={`w-full h-full relative overflow-hidden bg-black touch-none ${maxAbsCoord >= 1500 ? "glitch-heavy" : ""}`}
       onMouseDown={handleTouchStart}
       onMouseMove={handleTouchMove}
       onMouseUp={handleTouchEnd}
@@ -1811,6 +1869,101 @@ const App: React.FC = () => {
       onTouchEnd={handleTouchEnd}
       onTouchCancel={handleTouchEnd}
     >
+      {/* Glitch CRT Styles */}
+      <style>{`
+        @keyframes glitch-shake {
+          0% { transform: translate(0, 0) skew(0deg); }
+          10% { transform: translate(-2px, 1.5px) skew(-1.5deg); }
+          20% { transform: translate(1.5px, -1.5px) skew(2.5deg); }
+          30% { transform: translate(-3.5px, -2px) skew(-2deg); }
+          40% { transform: translate(2px, 3px) skew(1.5deg); }
+          50% { transform: translate(-1.5px, 2px) skew(0deg); }
+          60% { transform: translate(3.5px, -1px) skew(-1.5deg); }
+          70% { transform: translate(-2px, -3.5px) skew(3.5deg); }
+          80% { transform: translate(1.5px, 2.5px) skew(-2.5deg); }
+          90% { transform: translate(-3.5px, 1.5px) skew(1.5deg); }
+          100% { transform: translate(0, 0) skew(0deg); }
+        }
+        @keyframes scanline-anim {
+          0% { transform: translateY(-100%); }
+          100% { transform: translateY(100%); }
+        }
+        @keyframes noise-flicker-anim {
+          0% { opacity: 0.12; }
+          50% { opacity: 0.05; }
+          100% { opacity: 0.18; }
+        }
+        .glitch-heavy {
+          animation: glitch-shake 0.28s infinite steps(2);
+        }
+        .scanlines-overlay {
+          background: linear-gradient(
+            rgba(18, 16, 16, 0) 50%, 
+            rgba(0, 0, 0, 0.45) 50%
+          ), linear-gradient(
+            90deg,
+            rgba(255, 0, 0, 0.06),
+            rgba(0, 255, 0, 0.02),
+            rgba(0, 0, 255, 0.06)
+          );
+          background-size: 100% 4px, 6px 100%;
+        }
+        .scanline-light {
+          animation: scanline-anim 6s linear infinite;
+        }
+        .cyber-noise {
+          background: repeating-linear-gradient(
+            0deg,
+            rgba(0, 0, 0, 0.15),
+            rgba(0, 0, 0, 0.15) 1px,
+            transparent 1px,
+            transparent 2px
+          );
+          animation: noise-flicker-anim 0.08s infinite;
+        }
+      `}</style>
+
+      {/* Screen Warning Messages overlay based on player coordinates */}
+      {maxAbsCoord >= 1500 && (
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-[120px] pointer-events-none flex flex-col items-center gap-2 z-[9999]">
+          <div className="bg-red-950/85 border-2 border-red-500 text-red-100 px-6 py-3 rounded-2xl font-bold tracking-widest uppercase shadow-[0_0_25px_rgba(239,68,68,0.65)] font-mono text-center flex flex-col gap-1.5 animate-pulse">
+            <span className="text-red-400 font-extrabold flex items-center justify-center gap-2 text-xs md:text-sm">
+              <i className="fas fa-exclamation-triangle animate-bounce text-red-500" /> {lang === "es" ? "HAS LLEGADO AL LÍMITE" : "YOU HAVE REACHED THE LIMIT"}
+            </span>
+            <span className="text-[9px] text-red-200/90 font-semibold tracking-wide">
+              {lang === "es" ? "EL MUNDO SE ESTÁ CORROMPIENDO MUCHO..." : "THE WORLD IS SEVERELY CORRUPTING..."}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {maxAbsCoord >= 1400 && maxAbsCoord < 1500 && (
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-[120px] pointer-events-none flex flex-col items-center gap-2 z-[9999]">
+          <div className="bg-amber-950/80 border-2 border-amber-500 text-amber-100 px-5 py-2.5 rounded-2xl font-bold tracking-widest uppercase shadow-[0_0_15px_rgba(245,158,11,0.5)] font-mono text-center flex flex-col gap-1 text-[11px] md:text-xs">
+            <span className="text-amber-400 font-extrabold flex items-center justify-center gap-1.5">
+              <i className="fas fa-circle-exclamation animate-pulse" /> {lang === "es" ? "EL MUNDO EMPIEZA A CORROMPERSE" : "THE WORLD IS STARTING TO CORRUPT"}
+            </span>
+            <span className="text-[8.5px] text-amber-200/80 font-semibold tracking-wide">
+              {lang === "es" ? "EL MUNDO SE ESTÁ GLICHEANDO..." : "THE WORLD IS GLITCHING..."}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Screen Glitched full screen filter for x/z >= 1500 */}
+      {maxAbsCoord >= 1500 && (
+        <div className="absolute inset-0 pointer-events-none z-[9998] overflow-hidden">
+          {/* Scanlines layer */}
+          <div className="absolute inset-0 scanlines-overlay mix-blend-color-burn opacity-80" />
+          {/* Dynamic scanline sweeper */}
+          <div className="absolute top-0 left-0 w-full h-[6px] bg-red-500/25 scanline-light shadow-[0_0_12px_rgba(239,68,68,0.6)]" />
+          {/* Heavy Cyber Noise layer */}
+          <div className="absolute inset-0 cyber-noise opacity-[0.22] mix-blend-difference" />
+          {/* Corrupted ambient screen patches */}
+          <div className="absolute top-[15%] left-[5%] w-24 h-36 bg-purple-500/10 mix-blend-color-dodge blur-xl animate-pulse" />
+          <div className="absolute bottom-[20%] right-[10%] w-36 h-36 bg-red-500/10 mix-blend-color-dodge blur-xl animate-pulse" />
+        </div>
+      )}
       <VoxelWorld
         key={currentWorld?.id || "temp"}
         currentBlock={currentBlock}
@@ -1942,12 +2095,16 @@ const App: React.FC = () => {
                 onEnd={() => setMoveVector({ x: 0, y: 0 })}
               />
               <button
-                onPointerDown={() => setIsJumping(true)}
-                onPointerUp={() => setIsJumping(false)}
-                onPointerCancel={() => setIsJumping(false)}
-                className="w-16 h-16 rounded-full bg-white/20 border-2 border-white/50 flex items-center justify-center active:bg-white/40 active:scale-95 transition-all mb-2"
+                onPointerDown={(e) => { e.stopPropagation(); setIsJumping(true); }}
+                onPointerUp={(e) => { e.stopPropagation(); setIsJumping(false); }}
+                onPointerCancel={(e) => { e.stopPropagation(); setIsJumping(false); }}
+                onTouchStart={(e) => { e.preventDefault(); e.stopPropagation(); setIsJumping(true); }}
+                onTouchEnd={(e) => { e.preventDefault(); e.stopPropagation(); setIsJumping(false); }}
+                onTouchCancel={(e) => { e.preventDefault(); e.stopPropagation(); setIsJumping(false); }}
+                className="w-16 h-16 rounded-full bg-white/25 border-2 border-white/60 flex items-center justify-center active:bg-white/50 active:scale-95 transition-all mb-2 select-none pointer-events-auto touch-none"
+                style={{ touchAction: "none" }}
               >
-                <i className="fas fa-chevron-up text-white/80 text-xl" />
+                <i className="fas fa-arrow-up text-white/90 text-2xl animate-pulse" />
               </button>
             </div>
           ) : (
@@ -2545,6 +2702,7 @@ const App: React.FC = () => {
                   { label: "❤️ Curar", cmd: "/heal" },
                   { label: "⚡ Creativo", cmd: "/gamemode creative" },
                   { label: "🪓 Supervivencia", cmd: "/gamemode survival" },
+                  { label: "🌀 Tp Farlands", cmd: "/tp edge_farlands" },
                 ].map((item, idx) => (
                   <button
                     key={idx}

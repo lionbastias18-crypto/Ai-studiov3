@@ -13,7 +13,7 @@ export interface World {
   createdAt: number;
   playerPos: Vector3D;
   gameMode: "creative" | "survival" | "adventure";
-  worldType: "flat" | "normal";
+  worldType: "flat" | "normal" | "edge_farlands";
   edits: Record<string, number>; // Key: "x,y,z", Value: BlockType (0 for air)
   survivalInventory?: Record<number, number>;
 }

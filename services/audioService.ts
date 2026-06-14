@@ -13,52 +13,393 @@ const initAudio = () => {
   return audioCtx;
 };
 
-export const playPlaceSound = () => {
+export const playPlaceSound = (blockType?: BlockType) => {
   const ctx = initAudio();
-  const osc = ctx.createOscillator();
-  const gain = ctx.createGain();
+  if (ctx.state === 'suspended') return;
+  const currentTime = ctx.currentTime;
 
-  osc.type = 'sine';
-  osc.frequency.setValueAtTime(150, ctx.currentTime);
-  osc.frequency.exponentialRampToValueAtTime(40, ctx.currentTime + 0.1);
+  const type = blockType !== undefined ? blockType : BlockType.GRASS;
 
-  gain.gain.setValueAtTime(0.3, ctx.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.1);
+  if (type === BlockType.WATER || type === BlockType.LAVA) {
+    try {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(120, currentTime);
+      osc.frequency.exponentialRampToValueAtTime(60, currentTime + 0.15);
 
-  osc.connect(gain);
-  gain.connect(ctx.destination);
+      gain.gain.setValueAtTime(0.15, currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, currentTime + 0.15);
 
-  osc.start();
-  osc.stop(ctx.currentTime + 0.1);
+      const bufferSize = ctx.sampleRate * 0.1;
+      const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < bufferSize; i++) {
+        data[i] = Math.random() * 2 - 1;
+      }
+      const noise = ctx.createBufferSource();
+      noise.buffer = buffer;
+      const noiseGain = ctx.createGain();
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(450, currentTime);
+      filter.frequency.exponentialRampToValueAtTime(200, currentTime + 0.1);
+
+      noiseGain.gain.setValueAtTime(0.1, currentTime);
+      noiseGain.gain.exponentialRampToValueAtTime(0.001, currentTime + 0.1);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      noise.connect(filter);
+      filter.connect(noiseGain);
+      noiseGain.connect(ctx.destination);
+
+      osc.start();
+      osc.stop(currentTime + 0.15);
+      noise.start();
+    } catch (e) {}
+  } 
+  else if (
+    type === BlockType.STONE || 
+    type === BlockType.BEDROCK || 
+    type === BlockType.OBSIDIAN || 
+    type === BlockType.COAL_ORE || 
+    type === BlockType.IRON_ORE || 
+    type === BlockType.GOLD_ORE || 
+    type === BlockType.REDSTONE_ORE || 
+    type === BlockType.DIAMOND_ORE ||
+    type === BlockType.COPPER_ORE ||
+    type === BlockType.COPPER_BLOCK ||
+    type === BlockType.OXIDIZED_COPPER
+  ) {
+    try {
+      const osc = ctx.createOscillator();
+      const osc2 = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(200, currentTime);
+      osc.frequency.setValueAtTime(90, currentTime + 0.05);
+
+      osc2.type = 'triangle';
+      osc2.frequency.setValueAtTime(400, currentTime);
+      osc2.frequency.exponentialRampToValueAtTime(150, currentTime + 0.05);
+
+      gain.gain.setValueAtTime(0.2, currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, currentTime + 0.07);
+
+      osc.connect(gain);
+      osc2.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.start();
+      osc.stop(currentTime + 0.07);
+      osc2.start();
+      osc2.stop(currentTime + 0.07);
+    } catch (e) {}
+  } 
+  else if (
+    type === BlockType.WOOD || 
+    type === BlockType.LOG || 
+    type === BlockType.CRAFTING_TABLE || 
+    type === BlockType.DOOR ||
+    type === BlockType.BED
+  ) {
+    try {
+      const osc = ctx.createOscillator();
+      const filter = ctx.createBiquadFilter();
+      const gain = ctx.createGain();
+
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(100, currentTime);
+      osc.frequency.exponentialRampToValueAtTime(45, currentTime + 0.08);
+
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(200, currentTime);
+
+      gain.gain.setValueAtTime(0.25, currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, currentTime + 0.08);
+
+      osc.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.start();
+      osc.stop(currentTime + 0.08);
+    } catch (e) {}
+  } 
+  else if (type === BlockType.SAND) {
+    try {
+      const bufferSize = ctx.sampleRate * 0.08;
+      const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < bufferSize; i++) {
+        data[i] = Math.random() * 2 - 1;
+      }
+      const noise = ctx.createBufferSource();
+      noise.buffer = buffer;
+
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(900, currentTime);
+      filter.Q.setValueAtTime(1.5, currentTime);
+
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.15, currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, currentTime + 0.08);
+
+      noise.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+
+      noise.start();
+    } catch (e) {}
+  } 
+  else {
+    try {
+      const osc = ctx.createOscillator();
+      const filter = ctx.createBiquadFilter();
+      const gain = ctx.createGain();
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(80, currentTime);
+      osc.frequency.exponentialRampToValueAtTime(35, currentTime + 0.1);
+
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(150, currentTime);
+
+      gain.gain.setValueAtTime(0.2, currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, currentTime + 0.1);
+
+      const bufferSize = ctx.sampleRate * 0.04;
+      const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < bufferSize; i++) {
+        data[i] = Math.random() * 2 - 1;
+      }
+      const noise = ctx.createBufferSource();
+      noise.buffer = buffer;
+      const noiseGain = ctx.createGain();
+      const noiseFilter = ctx.createBiquadFilter();
+      noiseFilter.type = 'bandpass';
+      noiseFilter.frequency.setValueAtTime(250, currentTime);
+      noiseGain.gain.setValueAtTime(0.06, currentTime);
+      noiseGain.gain.exponentialRampToValueAtTime(0.001, currentTime + 0.04);
+
+      osc.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+
+      noise.connect(noiseFilter);
+      noiseFilter.connect(noiseGain);
+      noiseGain.connect(ctx.destination);
+
+      osc.start();
+      osc.stop(currentTime + 0.1);
+      noise.start();
+    } catch (e) {}
+  }
 };
 
-export const playBreakSound = () => {
+export const playBreakSound = (blockType?: BlockType) => {
   const ctx = initAudio();
-  const bufferSize = ctx.sampleRate * 0.1;
-  const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
-  const data = buffer.getChannelData(0);
+  if (ctx.state === 'suspended') return;
+  const currentTime = ctx.currentTime;
 
-  for (let i = 0; i < bufferSize; i++) {
-    data[i] = Math.random() * 2 - 1;
+  const type = blockType !== undefined ? blockType : BlockType.GRASS;
+
+  if (type === BlockType.WATER || type === BlockType.LAVA) {
+    try {
+      const bufferSize = ctx.sampleRate * 0.2;
+      const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < bufferSize; i++) {
+        data[i] = Math.random() * 2 - 1;
+      }
+      const noise = ctx.createBufferSource();
+      noise.buffer = buffer;
+
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(300, currentTime);
+      filter.frequency.exponentialRampToValueAtTime(80, currentTime + 0.18);
+
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.2, currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, currentTime + 0.2);
+
+      noise.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+
+      noise.start();
+    } catch (e) {}
+  } 
+  else if (
+    type === BlockType.STONE || 
+    type === BlockType.BEDROCK || 
+    type === BlockType.OBSIDIAN || 
+    type === BlockType.COAL_ORE || 
+    type === BlockType.IRON_ORE || 
+    type === BlockType.GOLD_ORE || 
+    type === BlockType.REDSTONE_ORE || 
+    type === BlockType.DIAMOND_ORE ||
+    type === BlockType.COPPER_ORE ||
+    type === BlockType.COPPER_BLOCK ||
+    type === BlockType.OXIDIZED_COPPER
+  ) {
+    try {
+      const bufferSize = ctx.sampleRate * 0.15;
+      const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < bufferSize; i++) {
+        data[i] = Math.random() * 2 - 1;
+      }
+      const noise = ctx.createBufferSource();
+      noise.buffer = buffer;
+
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(600, currentTime);
+      filter.frequency.exponentialRampToValueAtTime(150, currentTime + 0.12);
+
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.25, currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, currentTime + 0.15);
+
+      const osc = ctx.createOscillator();
+      const oscGain = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(140, currentTime);
+      osc.frequency.exponentialRampToValueAtTime(40, currentTime + 0.08);
+      oscGain.gain.setValueAtTime(0.15, currentTime);
+      oscGain.gain.exponentialRampToValueAtTime(0.001, currentTime + 0.08);
+
+      noise.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.connect(oscGain);
+      oscGain.connect(ctx.destination);
+
+      noise.start();
+      osc.start();
+      osc.stop(currentTime + 0.08);
+    } catch (e) {}
+  } 
+  else if (
+    type === BlockType.WOOD || 
+    type === BlockType.LOG || 
+    type === BlockType.CRAFTING_TABLE || 
+    type === BlockType.DOOR ||
+    type === BlockType.BED
+  ) {
+    try {
+      const bufferSize = ctx.sampleRate * 0.12;
+      const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < bufferSize; i++) {
+        data[i] = Math.random() * 2 - 1;
+      }
+      const noise = ctx.createBufferSource();
+      noise.buffer = buffer;
+
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(320, currentTime);
+      filter.frequency.exponentialRampToValueAtTime(90, currentTime + 0.10);
+
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.22, currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, currentTime + 0.12);
+
+      const osc = ctx.createOscillator();
+      const oscGain = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(90, currentTime);
+      osc.frequency.exponentialRampToValueAtTime(30, currentTime + 0.10);
+      oscGain.gain.setValueAtTime(0.2, currentTime);
+      oscGain.gain.exponentialRampToValueAtTime(0.001, currentTime + 0.10);
+
+      noise.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.connect(oscGain);
+      oscGain.connect(ctx.destination);
+
+      noise.start();
+      osc.start();
+      osc.stop(currentTime + 0.10);
+    } catch (e) {}
+  } 
+  else if (type === BlockType.SAND) {
+    try {
+      const bufferSize = ctx.sampleRate * 0.15;
+      const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < bufferSize; i++) {
+        data[i] = Math.random() * 2 - 1;
+      }
+      const noise = ctx.createBufferSource();
+      noise.buffer = buffer;
+
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(1000, currentTime);
+      filter.frequency.exponentialRampToValueAtTime(400, currentTime + 0.12);
+
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.2, currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, currentTime + 0.15);
+
+      noise.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+
+      noise.start();
+    } catch (e) {}
+  } 
+  else {
+    try {
+      const bufferSize = ctx.sampleRate * 0.12;
+      const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < bufferSize; i++) {
+        data[i] = Math.random() * 2 - 1;
+      }
+      const noise = ctx.createBufferSource();
+      noise.buffer = buffer;
+
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(250, currentTime);
+      filter.frequency.exponentialRampToValueAtTime(80, currentTime + 0.10);
+
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.25, currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, currentTime + 0.12);
+
+      const osc = ctx.createOscillator();
+      const oscGain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(75, currentTime);
+      osc.frequency.exponentialRampToValueAtTime(30, currentTime + 0.10);
+      oscGain.gain.setValueAtTime(0.18, currentTime);
+      oscGain.gain.exponentialRampToValueAtTime(0.001, currentTime + 0.10);
+
+      noise.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.connect(oscGain);
+      oscGain.connect(ctx.destination);
+
+      noise.start();
+      osc.start();
+      osc.stop(currentTime + 0.10);
+    } catch (e) {}
   }
-
-  const noise = ctx.createBufferSource();
-  noise.buffer = buffer;
-
-  const filter = ctx.createBiquadFilter();
-  filter.type = 'bandpass';
-  filter.frequency.setValueAtTime(400, ctx.currentTime);
-  filter.frequency.exponentialRampToValueAtTime(100, ctx.currentTime + 0.1);
-
-  const gain = ctx.createGain();
-  gain.gain.setValueAtTime(0.2, ctx.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.1);
-
-  noise.connect(filter);
-  filter.connect(gain);
-  gain.connect(ctx.destination);
-
-  noise.start();
 };
 
 export const playStepSound = (blockType: BlockType, volume = 0.04) => {
