@@ -2747,8 +2747,9 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
         if (chunksRef.current[k]) {
           // Keep existing chunk
         } else {
-          // If in immediate 3x3 radius, or if the world has no chunks generated yet, generate synchronously
-          if (dist <= SYNC_RADIUS || !hasLoadedAny) {
+          // If in immediate 3x3 radius, generate synchronously to avoid player spawn clipping
+          const finalSyncRadius = ultraOptimization ? 0 : SYNC_RADIUS;
+          if (dist <= finalSyncRadius) {
             const rawC = generateChunk(cx, cz);
             const rawE = generateEntities(cx, cz);
             chunksRef.current[k] = rawC;

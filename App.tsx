@@ -1142,15 +1142,41 @@ const App: React.FC = () => {
 
   if (appState === "login-prompt") {
     return (
-      <div className="w-full h-full bg-sky-200 flex flex-col items-center justify-start sm:justify-center p-4 sm:p-6 relative overflow-y-auto">
+      <div className="w-full h-full bg-slate-900 flex flex-col items-center justify-start sm:justify-center p-4 sm:p-6 relative overflow-y-auto">
+        {/* Tiled Minecraft-style Dirt/Stone elegant dark overlay */}
+        <div 
+          className="absolute inset-0 opacity-15 pointer-events-none"
+          style={{
+            backgroundImage: "radial-gradient(circle, #000 10%, transparent 10%), radial-gradient(circle, #000 10%, transparent 10%)",
+            backgroundSize: "20px 20px",
+            backgroundPosition: "0 0, 10px 10px"
+          }}
+        />
+
+        {/* Sky gradient background lights */}
+        <div className="absolute top-[-20%] left-[-20%] w-[60%] h-[60%] bg-emerald-500/10 rounded-full filter blur-[120px] pointer-events-none" />
+        <div className="absolute bottom-[-20%] right-[-20%] w-[60%] h-[60%] bg-sky-500/10 rounded-full filter blur-[120px] pointer-events-none" />
+
         {/* Decorative blocks behind menu */}
-        <div className="absolute inset-0 pointer-events-none opacity-20 flex flex-wrap gap-4 p-8 justify-center items-center">
-          {[...Array(20)].map((_, i) => (
-            <div
-              key={i}
-              className="w-16 h-16 bg-sky-600 rounded-lg transform rotate-12 shadow-xl"
-            />
-          ))}
+        <div className="absolute inset-0 pointer-events-none opacity-20 flex flex-wrap gap-4 p-8 justify-center items-center overflow-hidden">
+          {[...Array(24)].map((_, i) => {
+            const colors = ["#059669", "#92400e", "#3f3f46", "#52525b"];
+            const color = colors[i % colors.length];
+            const rotation = (i * 27) % 360;
+            const size = 12 + (i * 7) % 16;
+            return (
+              <div
+                key={i}
+                className="rounded-lg shadow-xl shrink-0"
+                style={{
+                  width: `${size * 4}px`,
+                  height: `${size * 4}px`,
+                  backgroundColor: color,
+                  transform: `rotate(${rotation}deg)`
+                }}
+              />
+            );
+          })}
         </div>
 
         <div className="z-10 bg-black/75 backdrop-blur-xl p-6 sm:p-8 rounded-3xl border border-white/20 flex flex-col items-center shadow-2xl max-w-md w-full my-auto">
@@ -1196,14 +1222,41 @@ const App: React.FC = () => {
 
   if (appState === "login") {
     return (
-      <div className="w-full h-full bg-sky-200 flex flex-col items-center justify-start sm:justify-center p-4 sm:p-6 relative overflow-y-auto">
-        <div className="absolute inset-0 pointer-events-none opacity-20 flex flex-wrap gap-4 p-8 justify-center items-center">
-          {[...Array(20)].map((_, i) => (
-            <div
-              key={i}
-              className="w-16 h-16 bg-sky-600 rounded-lg transform rotate-12 shadow-xl"
-            />
-          ))}
+      <div className="w-full h-full bg-slate-900 flex flex-col items-center justify-start sm:justify-center p-4 sm:p-6 relative overflow-y-auto">
+        {/* Tiled Minecraft-style Dirt/Stone elegant dark overlay */}
+        <div 
+          className="absolute inset-0 opacity-15 pointer-events-none"
+          style={{
+            backgroundImage: "radial-gradient(circle, #000 10%, transparent 10%), radial-gradient(circle, #000 10%, transparent 10%)",
+            backgroundSize: "20px 20px",
+            backgroundPosition: "0 0, 10px 10px"
+          }}
+        />
+
+        {/* Sky gradient background lights */}
+        <div className="absolute top-[-20%] left-[-20%] w-[60%] h-[60%] bg-emerald-500/10 rounded-full filter blur-[120px] pointer-events-none" />
+        <div className="absolute bottom-[-20%] right-[-20%] w-[60%] h-[60%] bg-sky-500/10 rounded-full filter blur-[120px] pointer-events-none" />
+
+        {/* Decorative blocks behind menu */}
+        <div className="absolute inset-0 pointer-events-none opacity-20 flex flex-wrap gap-4 p-8 justify-center items-center overflow-hidden">
+          {[...Array(24)].map((_, i) => {
+            const colors = ["#059669", "#92400e", "#3f3f46", "#52525b"];
+            const color = colors[i % colors.length];
+            const rotation = (i * 27) % 360;
+            const size = 12 + (i * 7) % 16;
+            return (
+              <div
+                key={i}
+                className="rounded-lg shadow-xl shrink-0"
+                style={{
+                  width: `${size * 4}px`,
+                  height: `${size * 4}px`,
+                  backgroundColor: color,
+                  transform: `rotate(${rotation}deg)`
+                }}
+              />
+            );
+          })}
         </div>
 
         <div className="z-10 bg-black/75 backdrop-blur-xl p-6 sm:p-8 rounded-3xl border border-white/20 flex flex-col items-center shadow-2xl max-w-sm w-full my-auto">
@@ -1551,15 +1604,41 @@ const App: React.FC = () => {
 
   if (appState === "menu") {
     return (
-      <div className="w-full h-full bg-sky-200 flex flex-col items-center justify-start sm:justify-center p-4 sm:p-6 relative overflow-y-auto">
+      <div className="w-full h-full bg-slate-900 flex flex-col items-center justify-start sm:justify-center p-4 sm:p-6 relative overflow-y-auto">
+        {/* Tiled Minecraft-style Dirt/Stone elegant dark overlay */}
+        <div 
+          className="absolute inset-0 opacity-15 pointer-events-none"
+          style={{
+            backgroundImage: "radial-gradient(circle, #000 10%, transparent 10%), radial-gradient(circle, #000 10%, transparent 10%)",
+            backgroundSize: "20px 20px",
+            backgroundPosition: "0 0, 10px 10px"
+          }}
+        />
+
+        {/* Sky gradient background lights */}
+        <div className="absolute top-[-20%] left-[-20%] w-[60%] h-[60%] bg-emerald-500/10 rounded-full filter blur-[120px] pointer-events-none" />
+        <div className="absolute bottom-[-20%] right-[-20%] w-[60%] h-[60%] bg-sky-500/10 rounded-full filter blur-[120px] pointer-events-none" />
+
         {/* Decorative blocks behind menu */}
-        <div className="absolute inset-0 pointer-events-none opacity-20 flex flex-wrap gap-4 p-8 justify-center items-center">
-          {[...Array(20)].map((_, i) => (
-            <div
-              key={i}
-              className="w-16 h-16 bg-sky-600 rounded-lg transform rotate-12 shadow-xl"
-            />
-          ))}
+        <div className="absolute inset-0 pointer-events-none opacity-20 flex flex-wrap gap-4 p-8 justify-center items-center overflow-hidden">
+          {[...Array(24)].map((_, i) => {
+            const colors = ["#059669", "#92400e", "#3f3f46", "#52525b"];
+            const color = colors[i % colors.length];
+            const rotation = (i * 27) % 360;
+            const size = 12 + (i * 7) % 16;
+            return (
+              <div
+                key={i}
+                className="rounded-lg shadow-xl shrink-0"
+                style={{
+                  width: `${size * 4}px`,
+                  height: `${size * 4}px`,
+                  backgroundColor: color,
+                  transform: `rotate(${rotation}deg)`
+                }}
+              />
+            );
+          })}
         </div>
 
         <div className="z-10 bg-black/60 backdrop-blur-xl p-6 sm:p-10 rounded-3xl border border-white/20 flex flex-col items-center shadow-2xl max-w-sm w-full my-auto">
@@ -1613,15 +1692,41 @@ const App: React.FC = () => {
 
   if (appState === "settings") {
     return (
-      <div className="w-full h-full bg-sky-200 flex flex-col items-center justify-start sm:justify-center p-4 sm:p-6 relative overflow-y-auto">
+      <div className="w-full h-full bg-slate-900 flex flex-col items-center justify-start sm:justify-center p-4 sm:p-6 relative overflow-y-auto">
+        {/* Tiled Minecraft-style Dirt/Stone elegant dark overlay */}
+        <div 
+          className="absolute inset-0 opacity-15 pointer-events-none"
+          style={{
+            backgroundImage: "radial-gradient(circle, #000 10%, transparent 10%), radial-gradient(circle, #000 10%, transparent 10%)",
+            backgroundSize: "20px 20px",
+            backgroundPosition: "0 0, 10px 10px"
+          }}
+        />
+
+        {/* Sky gradient background lights */}
+        <div className="absolute top-[-20%] left-[-20%] w-[60%] h-[60%] bg-emerald-500/10 rounded-full filter blur-[120px] pointer-events-none" />
+        <div className="absolute bottom-[-20%] right-[-20%] w-[60%] h-[60%] bg-sky-500/10 rounded-full filter blur-[120px] pointer-events-none" />
+
         {/* Decorative blocks behind menu */}
-        <div className="absolute inset-0 pointer-events-none opacity-20 flex flex-wrap gap-4 p-8 justify-center items-center">
-          {[...Array(20)].map((_, i) => (
-            <div
-              key={i}
-              className="w-16 h-16 bg-sky-600 rounded-lg transform rotate-12 shadow-xl"
-            />
-          ))}
+        <div className="absolute inset-0 pointer-events-none opacity-20 flex flex-wrap gap-4 p-8 justify-center items-center overflow-hidden">
+          {[...Array(24)].map((_, i) => {
+            const colors = ["#059669", "#92400e", "#3f3f46", "#52525b"];
+            const color = colors[i % colors.length];
+            const rotation = (i * 27) % 360;
+            const size = 12 + (i * 7) % 16;
+            return (
+              <div
+                key={i}
+                className="rounded-lg shadow-xl shrink-0"
+                style={{
+                  width: `${size * 4}px`,
+                  height: `${size * 4}px`,
+                  backgroundColor: color,
+                  transform: `rotate(${rotation}deg)`
+                }}
+              />
+            );
+          })}
         </div>
 
         <div className="z-10 bg-black/80 backdrop-blur-xl p-6 sm:p-10 rounded-3xl border border-white/20 flex flex-col items-center shadow-2xl max-w-sm w-full my-auto">
