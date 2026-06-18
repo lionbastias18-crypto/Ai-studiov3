@@ -42,11 +42,20 @@ try {
   dbInstance = initializeFirestore(app, {
     localCache: persistentLocalCache({
       tabManager: persistentMultipleTabManager()
-    })
+    }),
+    experimentalForceLongPolling: true,
+    experimentalAutoDetectLongPolling: true
   }, firebaseConfig.firestoreDatabaseId);
 } catch (e) {
-  console.warn("Failed to initialize Firestore with persistent multi-tab cache, falling back to default.", e);
-  dbInstance = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+  console.warn("Failed to initialize Firestore with persistent multi-tab cache, falling back to basic Firestore with long-polling.", e);
+  try {
+    dbInstance = initializeFirestore(app, {
+      experimentalForceLongPolling: true,
+      experimentalAutoDetectLongPolling: true
+    }, firebaseConfig.firestoreDatabaseId);
+  } catch (err) {
+    dbInstance = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+  }
 }
 
 export const db = dbInstance;

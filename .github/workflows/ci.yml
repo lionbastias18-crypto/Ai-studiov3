@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [ main, master ]
 
+env:
+  ACTIONS_RUNNER_FORCED_NODE_VERSION_WARNING: "false"
+
 jobs:
   build:
     name: Build & Lint (Node 22)
