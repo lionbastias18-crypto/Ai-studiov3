@@ -4,9 +4,10 @@ import React, { useState, useRef, useEffect } from 'react';
 interface JoystickProps {
   onMove: (vector: { x: number; y: number }) => void;
   onEnd: () => void;
+  size?: number;
 }
 
-const Joystick: React.FC<JoystickProps> = ({ onMove, onEnd }) => {
+const Joystick: React.FC<JoystickProps> = ({ onMove, onEnd, size = 160 }) => {
   const [position, setPosition] = useState({ x: 0, y: 0 });
   const [isActive, setIsActive] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -28,7 +29,7 @@ const Joystick: React.FC<JoystickProps> = ({ onMove, onEnd }) => {
     const relY = clientY - rect.top - centerY;
     
     const distance = Math.sqrt(relX * relX + relY * relY);
-    const maxRadius = rect.width / 2 - 20;
+    const maxRadius = size / 2 - 20;
     
     let moveX = relX;
     let moveY = relY;
@@ -79,11 +80,16 @@ const Joystick: React.FC<JoystickProps> = ({ onMove, onEnd }) => {
       onTouchStart={handleStart}
       onTouchMove={handleTouch}
       onTouchEnd={handleEnd}
-      className="w-40 h-40 bg-black/30 rounded-full border-4 border-white/20 flex items-center justify-center relative touch-none"
+      className="bg-black/30 rounded-full border-4 border-white/20 flex items-center justify-center relative touch-none shadow-inner"
+      style={{ width: `${size}px`, height: `${size}px` }}
     >
       <div 
-        className="w-16 h-16 bg-white/50 rounded-full shadow-lg pointer-events-none transition-transform duration-75"
-        style={{ transform: `translate(${position.x}px, ${position.y}px)` }}
+        className="bg-white/50 rounded-full shadow-lg pointer-events-none transition-transform duration-75"
+        style={{ 
+          width: `${size * 0.4}px`, 
+          height: `${size * 0.4}px`,
+          transform: `translate(${position.x}px, ${position.y}px)` 
+        }}
       />
     </div>
   );

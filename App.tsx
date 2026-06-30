@@ -211,6 +211,20 @@ const App: React.FC = () => {
   const [showCameraFlash, setShowCameraFlash] = useState<boolean>(false);
   const [flashOpacity, setFlashOpacity] = useState<number>(0);
   const [screenshotToast, setScreenshotToast] = useState<string | null>(null);
+  const [devicePreset, setDevicePreset] = useState<"auto" | "redmi" | "funtouch" | "galaxy">(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("minecraft_device_preset");
+      if (saved === "auto" || saved === "redmi" || saved === "funtouch" || saved === "galaxy") {
+        return saved as "auto" | "redmi" | "funtouch" | "galaxy";
+      }
+    }
+    return "auto";
+  });
+  const [screenSize, setScreenSize] = useState({
+    width: typeof window !== "undefined" ? window.innerWidth : 1280,
+    height: typeof window !== "undefined" ? window.innerHeight : 720,
+    aspectRatio: typeof window !== "undefined" ? (window.innerWidth / (window.innerHeight || 1)) : 1.78,
+  });
   const { health, food } = useGameState();
 
   // Active World
@@ -333,6 +347,110 @@ const App: React.FC = () => {
         ? false 
         : (isTouchDevice || isSmallScreen);
 
+  const activeDevice = (() => {
+    if (devicePreset !== "auto") return devicePreset;
+    const ratio = screenSize.aspectRatio;
+    
+    // Landscape or Portrait 5:3 (Redmi Pad SE 8.7: 1340 x 800)
+    if ((ratio >= 1.55 && ratio <= 1.75) || (ratio >= 0.55 && ratio <= 0.65)) {
+      return "redmi";
+    }
+    // Landscape or Portrait 3:2 / 4:3 (Funtouch Tablet)
+    if ((ratio >= 1.2 && ratio < 1.55) || (ratio >= 0.64 && ratio <= 0.83)) {
+      return "funtouch";
+    }
+    // Landscape or Portrait 20:9 (Galaxy A23)
+    if (ratio >= 1.95 || ratio <= 0.52) {
+      return "galaxy";
+    }
+    return "auto"; // Default / standard
+  })();
+
+  const isCompactHeight = screenSize.height < 520;
+  const isCompactWidth = screenSize.width < 768;
+  const useCompactUI = isCompactHeight || isCompactWidth;
+
+  const uiScaleConfig = (() => {
+    switch (activeDevice) {
+      case "redmi":
+        return {
+          name: "Redmi Pad SE 8.7 (5:3)",
+          joystickSize: useCompactUI ? 100 : 135,
+          jumpButtonSize: useCompactUI ? "w-11 h-11" : "w-16 h-16",
+          hotbarScale: useCompactUI ? "scale-[0.8] origin-bottom" : "scale-[1.08] origin-bottom",
+          controlPadding: useCompactUI ? "px-3 pb-1.5 pt-0.5" : "px-6 pb-6 pt-2",
+          marginClass: useCompactUI ? "mb-1 mx-2 px-1" : "mb-3 mx-4 px-2",
+          gapClass: useCompactUI ? "gap-2" : "gap-4",
+          fontSize: "text-[10px]",
+          badge: "bg-orange-500/20 text-orange-400 border border-orange-500/30",
+          desc: "Redmi Pad SE 8.7 (Pantalla compacta 5:3 / 1.67)",
+          containerPadding: useCompactUI ? "p-2" : "p-4 md:p-6",
+          statsPadding: useCompactUI ? "p-2.5" : "p-4",
+          statsTitle: useCompactUI ? "text-sm" : "text-lg",
+          statsText: useCompactUI ? "text-[8px]" : "text-[9px]",
+          btnSize: useCompactUI ? "w-9 h-9" : "w-12 h-12",
+          btnIcon: useCompactUI ? "text-xs" : "text-base",
+        };
+      case "funtouch":
+        return {
+          name: "Funtouch OS 15 (3:2)",
+          joystickSize: useCompactUI ? 110 : 165,
+          jumpButtonSize: useCompactUI ? "w-12 h-12" : "w-20 h-20",
+          hotbarScale: useCompactUI ? "scale-[0.85] origin-bottom" : "scale-[1.18] origin-bottom",
+          controlPadding: useCompactUI ? "px-4 pb-2 pt-0.5" : "px-10 pb-8 pt-3",
+          marginClass: useCompactUI ? "mb-1.5 mx-3 px-1.5" : "mb-6 mx-8 px-4",
+          gapClass: useCompactUI ? "gap-2.5" : "gap-6",
+          fontSize: "text-xs",
+          badge: "bg-cyan-500/20 text-cyan-400 border border-cyan-500/30",
+          desc: "Funtouch OS 15 Tablet (Pantalla grande 3:2 / 1.50)",
+          containerPadding: useCompactUI ? "p-2.5" : "p-4 md:p-6",
+          statsPadding: useCompactUI ? "p-3" : "p-4",
+          statsTitle: useCompactUI ? "text-sm sm:text-base" : "text-lg",
+          statsText: useCompactUI ? "text-[8.5px]" : "text-xs",
+          btnSize: useCompactUI ? "w-10 h-10" : "w-12 h-12",
+          btnIcon: useCompactUI ? "text-sm" : "text-base",
+        };
+      case "galaxy":
+        return {
+          name: "Galaxy A23 (20:9)",
+          joystickSize: useCompactUI ? 90 : 120,
+          jumpButtonSize: useCompactUI ? "w-10 h-10" : "w-14 h-14",
+          hotbarScale: useCompactUI ? "scale-[0.75] origin-bottom" : "scale-[0.92] origin-bottom",
+          controlPadding: useCompactUI ? "px-4 pb-1.5 pt-0.5" : "px-12 pb-4 pt-1",
+          marginClass: useCompactUI ? "mb-0.5 mx-2 px-0.5" : "mb-2 mx-6 px-1",
+          gapClass: useCompactUI ? "gap-1.5" : "gap-3",
+          fontSize: "text-[9px]",
+          badge: "bg-fuchsia-500/20 text-fuchsia-400 border border-fuchsia-500/30",
+          desc: "Galaxy A23 (Ultra panorámico 20:9 / 2.22)",
+          containerPadding: useCompactUI ? "p-2" : "p-4 md:p-6",
+          statsPadding: useCompactUI ? "p-2.5" : "p-4",
+          statsTitle: useCompactUI ? "text-xs" : "text-base",
+          statsText: useCompactUI ? "text-[8px]" : "text-[9px]",
+          btnSize: useCompactUI ? "w-8.5 h-8.5" : "w-12 h-12",
+          btnIcon: useCompactUI ? "text-[11px]" : "text-base",
+        };
+      default:
+        return {
+          name: "Adaptable Auto",
+          joystickSize: useCompactUI ? 105 : 150,
+          jumpButtonSize: useCompactUI ? "w-11 h-11" : "w-16 h-16",
+          hotbarScale: useCompactUI ? "scale-[0.8] origin-bottom" : "scale-100 origin-bottom",
+          controlPadding: useCompactUI ? "px-3 pb-1.5 pt-0.5" : "px-6 pb-6 pt-2",
+          marginClass: useCompactUI ? "mb-1 mx-2 px-1" : "mb-3 mx-4 px-2",
+          gapClass: useCompactUI ? "gap-2.5" : "gap-4",
+          fontSize: "text-[10px]",
+          badge: "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30",
+          desc: "Estándar auto-adaptable y flexible",
+          containerPadding: useCompactUI ? "p-2" : "p-4 md:p-6",
+          statsPadding: useCompactUI ? "p-2.5" : "p-4",
+          statsTitle: useCompactUI ? "text-sm" : "text-lg",
+          statsText: useCompactUI ? "text-[8px]" : "text-[9px]",
+          btnSize: useCompactUI ? "w-9 h-9" : "w-12 h-12",
+          btnIcon: useCompactUI ? "text-xs" : "text-base",
+        };
+    }
+  })();
+
   useEffect(() => {
     const checkTouchAndSize = () => {
       const hasTouch = 
@@ -345,6 +463,12 @@ const App: React.FC = () => {
       setIsTouchDevice(hasTouch);
       // Modern tablet landscape screens and larger widths can also run touch modes
       setIsSmallScreen(window.innerWidth <= 1280);
+      
+      setScreenSize({
+        width: window.innerWidth,
+        height: window.innerHeight,
+        aspectRatio: window.innerWidth / (window.innerHeight || 1),
+      });
     };
     checkTouchAndSize();
     window.addEventListener("resize", checkTouchAndSize);
@@ -1895,6 +2019,51 @@ const App: React.FC = () => {
               </p>
             </div>
 
+            {/* SOPORTE PARA TABLETS / DISPOSITIVOS */}
+            <div className="flex flex-col gap-1.5 bg-zinc-900/40 p-3 rounded-xl border border-white/5">
+              <label className="text-emerald-400 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5">
+                <i className="fas fa-tablet-screen-button text-xs animate-pulse" />
+                {lang === "es" ? "📱 AJUSTAR PANTALLA Y TABLET" : "📱 ADJUST TABLET & SCREEN"}
+              </label>
+              <div className="grid grid-cols-2 gap-1.5 mt-1">
+                {[
+                  { code: "auto", name: lang === "es" ? "Auto-Detectar" : "Auto-Detect" },
+                  { code: "redmi", name: "Redmi Pad 8.7" },
+                  { code: "funtouch", name: "Funtouch OS 15" },
+                  { code: "galaxy", name: "Galaxy A23 (20:9)" },
+                ].map((preset) => {
+                  const isActive = devicePreset === preset.code;
+                  return (
+                    <button
+                      key={preset.code}
+                      onClick={() => {
+                        resumeAudio();
+                        setDevicePreset(preset.code as any);
+                        localStorage.setItem("minecraft_device_preset", preset.code);
+                      }}
+                      className={`text-[8.5px] py-2 px-1 rounded-lg font-bold border transition-all uppercase tracking-tight text-center ${
+                        isActive
+                          ? "bg-emerald-500 border-transparent text-white shadow-md font-extrabold scale-102"
+                          : "bg-zinc-800 border-white/5 text-zinc-400 hover:text-white"
+                      }`}
+                    >
+                      {preset.name}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="text-[8px] text-zinc-400 font-mono mt-1 px-1 flex flex-col gap-0.5 border-t border-white/5 pt-1.5">
+                <div className="flex justify-between">
+                  <span>{lang === "es" ? "Resolución actual:" : "Current resolution:"}</span>
+                  <span className="text-white font-semibold">{screenSize.width}x{screenSize.height} (R:{screenSize.aspectRatio.toFixed(2)})</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>{lang === "es" ? "Perfil activo:" : "Active profile:"}</span>
+                  <span className="text-emerald-400 font-bold">{uiScaleConfig.desc}</span>
+                </div>
+              </div>
+            </div>
+
             {/* SISTEMA DE GUARDADO */}
             <div className="flex flex-col gap-1.5 bg-zinc-900/40 p-3 rounded-xl border border-white/5">
               <label className="text-emerald-400 text-[10px] font-bold uppercase tracking-wider font-mono">
@@ -2093,6 +2262,7 @@ const App: React.FC = () => {
           setIsInventoryOpen(true);
         }}
         survivalInventory={survivalInventory}
+        onUpdateSurvivalInventory={setSurvivalInventory}
       />
 
       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none opacity-30">
@@ -2101,63 +2271,96 @@ const App: React.FC = () => {
         </div>
       </div>
 
-      <div className="absolute inset-0 pointer-events-none p-6 flex flex-col justify-between">
-        <div className="flex justify-between items-start">
-          <div
-            className="bg-black/70 p-4 rounded-xl backdrop-blur-md border border-white/10 pointer-events-auto"
-            onPointerDown={(e) => e.stopPropagation()}
-            onTouchStart={(e) => e.stopPropagation()}
-          >
-            <h1 className="text-white text-lg font-bold minecraft-font uppercase tracking-tighter flex items-center gap-1.5 flex-wrap">
-              ALPHA <span className="text-emerald-400">MOBILE 1.0.2</span>
-            </h1>
-            <p className="text-white/40 text-[9px] mt-1 font-mono break-words">
-              <span id="player-coordinates-hud">
-                X:{playerPos.x.toFixed(0)} Y:{(playerPos.y - 55).toFixed(0)} Z:{playerPos.z.toFixed(0)}
-              </span>
-              <br/>
-              Chunks: {Object.keys(currentWorld?.edits || {}).length} | <FpsCounter />
-            </p>
-            <button
-              onClick={handleSaveAndExit}
-              className="mt-3 w-full bg-red-600/85 hover:bg-red-500 py-1.5 rounded-lg text-white font-bold text-[10px] uppercase tracking-wider flex items-center justify-center gap-1.5 transition active:scale-95"
+      <div className={`absolute inset-0 pointer-events-none flex flex-col justify-between transition-all duration-300 ${uiScaleConfig.containerPadding}`}>
+        <div className="flex justify-between items-start w-full">
+          <div className="flex flex-col gap-2 items-start max-w-[280px]">
+            <div
+              className={`bg-black/70 rounded-xl backdrop-blur-md border border-white/10 pointer-events-auto transition-all duration-300 ${uiScaleConfig.statsPadding}`}
+              onPointerDown={(e) => e.stopPropagation()}
+              onTouchStart={(e) => e.stopPropagation()}
             >
-              <i className="fas fa-sign-out-alt" /> {t.save_n_exit}
-            </button>
-          </div>
+              <h1 className={`text-white font-bold minecraft-font uppercase tracking-tighter flex items-center gap-1.5 flex-wrap ${uiScaleConfig.statsTitle}`}>
+                ALPHA <span className="text-emerald-400">MOBILE 1.0.2</span>
+              </h1>
+              <p className={`text-white/40 mt-1 font-mono break-words leading-normal ${uiScaleConfig.statsText}`}>
+                <span id="player-coordinates-hud">
+                  X:{playerPos.x.toFixed(0)} Y:{(playerPos.y - 55).toFixed(0)} Z:{playerPos.z.toFixed(0)}
+                </span>
+                <br/>
+                Chunks: {Object.keys(currentWorld?.edits || {}).length} | <FpsCounter />
+              </p>
 
-          {/* Persistent Minecraft-style HUD Chat Overlay */}
-          <div className="absolute left-6 top-[136px] w-64 max-h-48 flex flex-col gap-1 overflow-hidden pointer-events-none transition-opacity duration-300">
-            {chatMessages.slice(-4).map((msg, idx) => (
-              <div key={idx} className="bg-black/55 px-2.5 py-1 rounded text-[9px] text-white font-mono border-l-2 border-sky-400">
-                {msg}
+              {/* REAL-TIME SCREEN RESOLUTION & PRESET HUD - CLICK TO CYCLE */}
+              <div 
+                onClick={(e) => {
+                  e.stopPropagation();
+                  resumeAudio();
+                  const presets: ("auto" | "redmi" | "funtouch" | "galaxy")[] = ["auto", "redmi", "funtouch", "galaxy"];
+                  const nextIndex = (presets.indexOf(devicePreset) + 1) % presets.length;
+                  const nextPreset = presets[nextIndex];
+                  setDevicePreset(nextPreset);
+                  localStorage.setItem("minecraft_device_preset", nextPreset);
+                }}
+                className={`mt-2 px-2 py-1.5 rounded-lg text-[8px] font-mono leading-tight transition-all flex flex-col gap-0.5 pointer-events-auto cursor-pointer select-none hover:bg-white/5 active:scale-97 border ${uiScaleConfig.badge}`}
+                title="Toca para cambiar perfil de pantalla"
+              >
+                <div className="flex items-center justify-between gap-1 font-bold uppercase">
+                  <div className="flex items-center gap-1">
+                    <i className="fas fa-tablet-screen-button text-[9px] animate-pulse" />
+                    <span>Soporte de Pantalla</span>
+                  </div>
+                  <span className="text-[7px] bg-white/20 px-1 rounded uppercase tracking-tighter">Tap 🔄</span>
+                </div>
+                <div>
+                  Tam: {screenSize.width}x{screenSize.height} (R: {screenSize.aspectRatio.toFixed(2)})
+                </div>
+                <div className="text-[7.5px] opacity-90 border-t border-white/5 pt-0.5 mt-0.5 flex justify-between items-center">
+                  <span>Perfil: <strong>{uiScaleConfig.name}</strong></span>
+                  <span className="text-[6.5px] text-white/50 lowercase">({lang === "es" ? "tocar" : "cycle"})</span>
+                </div>
               </div>
-            ))}
+
+              <button
+                onClick={handleSaveAndExit}
+                className="mt-2 w-full bg-red-600/85 hover:bg-red-500 py-1 rounded-lg text-white font-bold text-[9px] uppercase tracking-wider flex items-center justify-center gap-1 transition active:scale-95"
+              >
+                <i className="fas fa-sign-out-alt" /> {t.save_n_exit}
+              </button>
+            </div>
+
+            {/* Persistent Minecraft-style HUD Chat Overlay - Grouped vertically below stats box to avoid any overlap! */}
+            <div className="w-64 max-h-[140px] sm:max-h-48 flex flex-col gap-1 overflow-hidden pointer-events-none transition-opacity duration-300">
+              {chatMessages.slice(isCompactHeight ? -2 : -4).map((msg, idx) => (
+                <div key={idx} className="bg-black/55 px-2 py-0.5 rounded text-[8px] sm:text-[9px] text-white font-mono border-l-2 border-sky-400">
+                  {msg}
+                </div>
+              ))}
+            </div>
           </div>
 
-          <div className="flex flex-col gap-2 pointer-events-auto">
+          <div className="flex flex-col gap-1.5 pointer-events-auto">
             <button
               onClick={handleGetBuildingSuggestion}
               onPointerDown={(e) => e.stopPropagation()}
               onTouchStart={(e) => e.stopPropagation()}
               disabled={isLoadingSuggestion}
-              className="bg-indigo-600/90 p-3 rounded-2xl shadow-xl active:scale-90 text-white flex items-center justify-center w-12 h-12 transition-all hover:bg-indigo-500"
+              className={`bg-indigo-600/90 rounded-2xl shadow-xl active:scale-90 text-white flex items-center justify-center transition-all hover:bg-indigo-500 ${uiScaleConfig.btnSize}`}
               title="Sugerencia de construcción"
               id="wand-btn"
             >
               <i
-                className={`fas ${isLoadingSuggestion ? "fa-spinner fa-spin" : "fa-wand-sparkles"}`}
+                className={`fas ${uiScaleConfig.btnIcon} ${isLoadingSuggestion ? "fa-spinner fa-spin" : "fa-wand-sparkles"}`}
               />
             </button>
             <button
               onClick={handleCaptureScreenshot}
               onPointerDown={(e) => e.stopPropagation()}
               onTouchStart={(e) => e.stopPropagation()}
-              className="bg-teal-600/95 hover:bg-teal-500 p-3 rounded-2xl shadow-xl active:scale-90 text-white flex items-center justify-center w-12 h-12 transition-all"
+              className={`bg-teal-600/95 hover:bg-teal-500 rounded-2xl shadow-xl active:scale-90 text-white flex items-center justify-center transition-all ${uiScaleConfig.btnSize}`}
               title="Capturar pantalla"
               id="camera-btn"
             >
-              <i className="fas fa-camera text-base" />
+              <i className={`fas fa-camera ${uiScaleConfig.btnIcon}`} />
             </button>
             <button
               onClick={() => {
@@ -2166,11 +2369,11 @@ const App: React.FC = () => {
               }}
               onPointerDown={(e) => e.stopPropagation()}
               onTouchStart={(e) => e.stopPropagation()}
-              className="bg-sky-600/95 hover:bg-sky-500 p-3 rounded-2xl shadow-xl active:scale-90 text-white flex items-center justify-center w-12 h-12 transition-all border border-white/10"
+              className={`bg-sky-600/95 hover:bg-sky-500 rounded-2xl shadow-xl active:scale-90 text-white flex items-center justify-center transition-all border border-white/10 ${uiScaleConfig.btnSize}`}
               title="Chat / Comandos"
               id="hud-chat-btn"
             >
-              <i className="fas fa-comment-dots text-base text-yellow-200 animate-pulse" />
+              <i className={`fas fa-comment-dots text-yellow-200 animate-pulse ${uiScaleConfig.btnIcon}`} />
             </button>
             <button
               onClick={() => {
@@ -2179,25 +2382,26 @@ const App: React.FC = () => {
               }}
               onPointerDown={(e) => e.stopPropagation()}
               onTouchStart={(e) => e.stopPropagation()}
-              className="bg-zinc-800/95 hover:bg-zinc-700 p-3 rounded-2xl shadow-xl active:scale-90 text-white flex items-center justify-center w-12 h-12 transition-all border border-white/10"
+              className={`bg-zinc-800/95 hover:bg-zinc-700 rounded-2xl shadow-xl active:scale-90 text-white flex items-center justify-center transition-all border border-white/10 ${uiScaleConfig.btnSize}`}
               title="Ajustes"
               id="hud-settings-btn"
             >
-              <i className="fas fa-cog text-emerald-400 text-base" />
+              <i className={`fas fa-cog text-emerald-400 ${uiScaleConfig.btnIcon}`} />
             </button>
           </div>
         </div>
 
-        <div className="flex justify-between items-end gap-6 mb-4">
+        <div className={`flex justify-between items-end transition-all duration-300 w-full ${uiScaleConfig.gapClass} ${uiScaleConfig.marginClass}`}>
           {showTouchControls ? (
             <div
-              className="pointer-events-auto flex gap-4 items-end"
+              className={`pointer-events-auto flex items-end ${uiScaleConfig.gapClass}`}
               onPointerDown={(e) => e.stopPropagation()}
               onTouchStart={(e) => e.stopPropagation()}
             >
               <Joystick
                 onMove={setMoveVector}
                 onEnd={() => setMoveVector({ x: 0, y: 0 })}
+                size={uiScaleConfig.joystickSize}
               />
               <button
                 onPointerDown={(e) => { e.stopPropagation(); setIsJumping(true); }}
@@ -2206,7 +2410,7 @@ const App: React.FC = () => {
                 onTouchStart={(e) => { e.preventDefault(); e.stopPropagation(); setIsJumping(true); }}
                 onTouchEnd={(e) => { e.preventDefault(); e.stopPropagation(); setIsJumping(false); }}
                 onTouchCancel={(e) => { e.preventDefault(); e.stopPropagation(); setIsJumping(false); }}
-                className="w-16 h-16 rounded-full bg-white/25 border-2 border-white/60 flex items-center justify-center active:bg-white/50 active:scale-95 transition-all mb-2 select-none pointer-events-auto touch-none"
+                className={`${uiScaleConfig.jumpButtonSize} rounded-full bg-white/25 border-2 border-white/60 flex items-center justify-center active:bg-white/50 active:scale-95 transition-all mb-2 select-none pointer-events-auto touch-none`}
                 style={{ touchAction: "none" }}
               >
                 <i className="fas fa-arrow-up text-white/90 text-2xl animate-pulse" />
@@ -2276,59 +2480,13 @@ const App: React.FC = () => {
             </div>
 
             <div
-              className="flex flex-col gap-5 items-center pointer-events-auto"
+              className={`flex flex-col gap-2 items-center pointer-events-auto transition-transform duration-300 ${uiScaleConfig.hotbarScale}`}
               onPointerDown={(e) => e.stopPropagation()}
               onTouchStart={(e) => e.stopPropagation()}
             >
-              <div className="flex gap-3">
-                <button
-                  onPointerDown={(e) => {
-                    e.stopPropagation();
-                    resumeAudio();
-                    setInteractionMode("break");
-                  }}
-                  onTouchStart={(e) => {
-                    e.stopPropagation();
-                    resumeAudio();
-                    setInteractionMode("break");
-                  }}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    resumeAudio();
-                    setInteractionMode("break");
-                  }}
-                  className={`w-16 h-16 rounded-2xl flex flex-col items-center justify-center border-4 transition-all shadow-lg pointer-events-auto ${"hidden"}`}
-                >
-                  <i className="fas fa-hand-fist text-white text-xl" />
-                  <span className="text-[8px] text-white font-bold uppercase mt-1">
-                    {t.break}
-                  </span>
-                </button>
-                <button
-                  onPointerDown={(e) => {
-                    e.stopPropagation();
-                    resumeAudio();
-                    setInteractionMode("place");
-                  }}
-                  onTouchStart={(e) => {
-                    e.stopPropagation();
-                    resumeAudio();
-                    setInteractionMode("place");
-                  }}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    resumeAudio();
-                    setInteractionMode("place");
-                  }}
-                  className={`w-16 h-16 rounded-2xl flex flex-col items-center justify-center border-4 transition-all shadow-lg pointer-events-auto ${"hidden"}`}
-                >
-                  <i className="fas fa-cube text-white text-xl" />
-                  <span className="text-[8px] text-white font-bold uppercase mt-1">
-                    {t.place}
-                  </span>
-                </button>
-                {(currentBlock === BlockType.MUSHROOM_RED ||
-                  currentBlock === BlockType.MUSHROOM_BROWN) && (
+              {/* Only render upper controls row if there are visible elements like the Eat button */}
+              {(currentBlock === BlockType.MUSHROOM_RED || currentBlock === BlockType.MUSHROOM_BROWN) && (
+                <div className="flex gap-2 mb-1">
                   <button
                     onPointerDown={(e) => {
                       e.stopPropagation();
@@ -2345,42 +2503,49 @@ const App: React.FC = () => {
                       resumeAudio();
                       gameState.eat(4);
                     }}
-                    className="w-16 h-16 rounded-2xl flex flex-col items-center justify-center border-4 transition-all shadow-lg bg-orange-600 border-orange-300 active:scale-95 pointer-events-auto"
+                    className="w-12 h-12 rounded-xl flex flex-col items-center justify-center border-4 transition-all shadow-lg bg-orange-600 border-orange-300 active:scale-95 pointer-events-auto"
                   >
-                    <i className="fas fa-drumstick-bite text-white text-xl" />
-                    <span className="text-[8px] text-white font-bold uppercase mt-1">
+                    <i className="fas fa-drumstick-bite text-white text-base" />
+                    <span className="text-[7px] text-white font-bold uppercase mt-0.5">
                       Eat
                     </span>
                   </button>
-                )}
-              </div>
+                </div>
+              )}
 
-              <div className="bg-black/80 p-2 rounded-2xl flex flex-wrap justify-center gap-2 border border-white/10 shadow-2xl max-w-[280px] sm:max-w-md pointer-events-auto">
-                {inventoryItems.map((type) => (
-                  <button
-                    key={type}
-                    onPointerDown={(e) => {
-                      e.stopPropagation();
-                      resumeAudio();
-                      setCurrentBlock(type);
-                      setInteractionMode("place");
-                    }}
-                    onTouchStart={(e) => {
-                      e.stopPropagation();
-                      resumeAudio();
-                      setCurrentBlock(type);
-                      setInteractionMode("place");
-                    }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      resumeAudio();
-                      setCurrentBlock(type);
-                      setInteractionMode("place");
-                    }}
-                    className={`w-10 h-10 sm:w-11 sm:h-11 rounded-lg border-2 transition-all ${currentBlock === type ? "border-emerald-400 scale-110" : "border-transparent opacity-60"}`}
-                    style={{ backgroundColor: BLOCK_COLORS[type] }}
-                  />
-                ))}
+              {/* Advanced Horizontal Swipeable Scroll Hotbar */}
+              <div className="bg-black/80 p-1.5 rounded-2xl flex flex-row items-center gap-1.5 border border-white/10 shadow-2xl min-w-0 max-w-[170px] xs:max-w-[230px] sm:max-w-[320px] md:max-w-[420px] lg:max-w-[500px] pointer-events-auto">
+                <div 
+                  className="flex flex-row gap-1.5 overflow-x-auto scrollbar-none py-0.5 px-0.5 min-w-0" 
+                  style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+                >
+                  {inventoryItems.map((type) => (
+                    <button
+                      key={type}
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                        resumeAudio();
+                        setCurrentBlock(type);
+                        setInteractionMode("place");
+                      }}
+                      onTouchStart={(e) => {
+                        e.stopPropagation();
+                        resumeAudio();
+                        setCurrentBlock(type);
+                        setInteractionMode("place");
+                      }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        resumeAudio();
+                        setCurrentBlock(type);
+                        setInteractionMode("place");
+                      }}
+                      className={`w-9 h-9 sm:w-10 sm:h-10 rounded-lg border-2 transition-all shrink-0 ${currentBlock === type ? "border-emerald-400 scale-105" : "border-transparent opacity-60"}`}
+                      style={{ backgroundColor: BLOCK_COLORS[type] }}
+                    />
+                  ))}
+                </div>
+                <div className="w-px h-6 bg-white/10 shrink-0" />
                 <button
                   onPointerDown={(e) => e.stopPropagation()}
                   onTouchStart={(e) => e.stopPropagation()}
@@ -2389,7 +2554,7 @@ const App: React.FC = () => {
                     resumeAudio();
                     setIsInventoryOpen(true);
                   }}
-                  className="w-10 h-10 sm:w-11 sm:h-11 bg-zinc-800 hover:bg-zinc-700 rounded-lg flex items-center justify-center text-white text-xs transition active:scale-95"
+                  className="w-9 h-9 sm:w-10 sm:h-10 bg-zinc-800 hover:bg-zinc-700 rounded-lg flex items-center justify-center text-white text-xs transition active:scale-95 shrink-0"
                 >
                   <i className="fas fa-th-large" />
                 </button>

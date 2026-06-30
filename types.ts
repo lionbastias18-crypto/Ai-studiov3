@@ -42,7 +42,12 @@ export enum BlockType {
   PICKAXE = 39,
   AXE = 40,
   SHOVEL = 41,
-  SULFUR = 42
+  SULFUR = 42,
+  JUKEBOX = 43,
+  MUSIC_DISC_CAT = 44,
+  MUSIC_DISC_CHIRP = 45,
+  MUSIC_DISC_BLOCKS = 46,
+  MUSIC_DISC_MELLOHI = 47
 }
 
 export enum EntityType {

@@ -908,3 +908,180 @@ export const playBowShootSound = () => {
     osc.stop(ctx.currentTime + 0.1);
   } catch (e) {}
 };
+
+// --- PROCEDURAL JUKEBOX & MUSIC DISC SYSTEM ---
+
+interface ActiveJukebox {
+  intervalId: any;
+  nodes: any[];
+}
+
+const activeJukeboxes: Record<string, ActiveJukebox> = {};
+
+export const playJukeboxMusic = (jukeboxKey: string, discType: BlockType) => {
+  try {
+    const ctx = initAudio();
+    if (!ctx) return;
+    if (ctx.state === 'suspended') {
+      ctx.resume();
+    }
+
+    // Ensure any existing music for this specific jukebox coordinate is stopped cleanly
+    stopJukeboxMusic(jukeboxKey);
+
+    let bpm = 120;
+    let melody: number[] = [];
+    let bass: number[] = [];
+    let waveType: OscillatorType = 'triangle';
+    let bassWaveType: OscillatorType = 'sine';
+
+    if (discType === BlockType.MUSIC_DISC_CAT) {
+      bpm = 125;
+      // Bright, cheerful major scale bouncy theme
+      melody = [64, 66, 68, 71, 73, 71, 68, 66, 64, 68, 71, 73, 76, 73, 71, 68];
+      bass = [40, 40, 44, 44, 45, 45, 47, 47];
+      waveType = 'triangle';
+      bassWaveType = 'sine';
+    } else if (discType === BlockType.MUSIC_DISC_CHIRP) {
+      bpm = 105;
+      // High-pitched retro-gaming synth slide style
+      melody = [67, 69, 71, 74, 76, 74, 71, 69, 67, 71, 74, 76, 79, 76, 74, 71];
+      bass = [43, 43, 47, 47, 48, 48, 50, 50];
+      waveType = 'sawtooth';
+      bassWaveType = 'triangle';
+    } else if (discType === BlockType.MUSIC_DISC_BLOCKS) {
+      bpm = 80;
+      // Very slow, atmospheric zen melody with soft attack and decay
+      melody = [60, 64, 67, 72, 67, 64, 60, 62, 65, 69, 74, 69, 65, 62];
+      bass = [36, 36, 36, 36, 38, 38, 38, 38];
+      waveType = 'sine';
+      bassWaveType = 'sine';
+    } else if (discType === BlockType.MUSIC_DISC_MELLOHI) {
+      bpm = 92;
+      // Eerie, beautiful waltz-tempo minor scale progression
+      melody = [57, 59, 60, 64, 62, 60, 59, 56, 57, 59, 60, 57, 52, 57, 59, 60];
+      bass = [33, 33, 32, 32, 33, 33, 33, 33];
+      waveType = 'sawtooth';
+      bassWaveType = 'triangle';
+    } else {
+      return;
+    }
+
+    const stepDuration = 60 / bpm / 2; // Eighth notes
+    let step = 0;
+    const nodes: any[] = [];
+
+    const playNote = (time: number, midiNote: number, dur: number, type: OscillatorType, volume: number) => {
+      if (midiNote === 0) return;
+      const freq = 440 * Math.pow(2, (midiNote - 69) / 12);
+      
+      try {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, time);
+        
+        // Retro pitch glide effect for 'Chirp'
+        if (discType === BlockType.MUSIC_DISC_CHIRP && Math.random() > 0.4) {
+          osc.frequency.exponentialRampToValueAtTime(freq * 0.96, time + dur);
+        }
+
+        gain.gain.setValueAtTime(volume, time);
+        gain.gain.exponentialRampToValueAtTime(0.001, time + dur - 0.015);
+
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        
+        osc.start(time);
+        osc.stop(time + dur);
+
+        nodes.push(osc, gain);
+      } catch (e) {}
+    };
+
+    const playDrum = (time: number) => {
+      // Delicate synthesized hi-hat tick to add groove
+      try {
+        const bufferSize = ctx.sampleRate * 0.025;
+        const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) {
+          data[i] = Math.random() * 2 - 1;
+        }
+        const source = ctx.createBufferSource();
+        source.buffer = buffer;
+        const gain = ctx.createGain();
+        gain.gain.setValueAtTime(0.012, time);
+        gain.gain.exponentialRampToValueAtTime(0.001, time + 0.025);
+        
+        const filter = ctx.createBiquadFilter();
+        filter.type = 'highpass';
+        filter.frequency.setValueAtTime(9000, time);
+
+        source.connect(filter);
+        filter.connect(gain);
+        gain.connect(ctx.destination);
+        source.start(time);
+        
+        nodes.push(source, gain);
+      } catch (e) {}
+    };
+
+    // Standard high-performance scheduled loop lookahead pattern
+    let nextNoteTime = ctx.currentTime + 0.05;
+    const scheduleAheadTime = 0.15;
+
+    const intervalId = setInterval(() => {
+      while (nextNoteTime < ctx.currentTime + scheduleAheadTime) {
+        const currentStep = step;
+        const mNote = melody[currentStep % melody.length];
+        const bNote = bass[Math.floor(currentStep / 2) % bass.length];
+
+        // Apply distinct volumes and settings per disc type
+        const vol = discType === BlockType.MUSIC_DISC_BLOCKS ? 0.05 : 0.035;
+        playNote(nextNoteTime, mNote, stepDuration * 0.85, waveType, vol);
+        
+        // Accompanying bass track on alternate beats
+        if (currentStep % 2 === 0) {
+          playNote(nextNoteTime, bNote, stepDuration * 1.7, bassWaveType, vol * 1.4);
+        }
+
+        // Retro drum machine ticks
+        if (discType === BlockType.MUSIC_DISC_CAT || discType === BlockType.MUSIC_DISC_CHIRP) {
+          if (currentStep % 2 === 1) {
+            playDrum(nextNoteTime);
+          }
+        }
+
+        nextNoteTime += stepDuration;
+        step++;
+      }
+    }, 45);
+
+    activeJukeboxes[jukeboxKey] = {
+      intervalId,
+      nodes
+    };
+  } catch (err) {
+    console.error("Failed to play jukebox music:", err);
+  }
+};
+
+export const stopJukeboxMusic = (jukeboxKey: string) => {
+  const active = activeJukeboxes[jukeboxKey];
+  if (active) {
+    clearInterval(active.intervalId);
+    active.nodes.forEach(node => {
+      try {
+        node.stop?.();
+        node.disconnect?.();
+      } catch (e) {}
+    });
+    delete activeJukeboxes[jukeboxKey];
+  }
+};
+
+export const stopAllJukeboxMusic = () => {
+  Object.keys(activeJukeboxes).forEach(stopJukeboxMusic);
+};

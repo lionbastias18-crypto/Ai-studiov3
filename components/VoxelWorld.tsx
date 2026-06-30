@@ -5,7 +5,7 @@ import { Sky, Stars } from '@react-three/drei';
 import * as THREE from 'three';
 import { CHUNK_SIZE, WORLD_HEIGHT, BLOCK_COLORS, VIEW_DISTANCE, BLOCK_NAMES } from '../constants';
 import { BlockType, EntityType, EntityData, Vector3D } from '../types';
-import { playPlaceSound, playBreakSound, playStepSound, resumeAudio, playSleepSound, playHurtSound, playZombieSound, playCreeperSizzle, playExplosionSound, playBowShootSound, updateAmbientEnvironment } from '../services/audioService';
+import { playPlaceSound, playBreakSound, playStepSound, resumeAudio, playSleepSound, playHurtSound, playZombieSound, playCreeperSizzle, playExplosionSound, playBowShootSound, updateAmbientEnvironment, playJukeboxMusic, stopJukeboxMusic, stopAllJukeboxMusic } from '../services/audioService';
 import { gameState } from '../store';
 import { createNoise2D, createNoise3D } from 'simplex-noise';
 
@@ -208,12 +208,13 @@ interface VoxelWorldProps {
   ultraOptimization?: boolean;
   worldId?: string;
   initialEdits?: Record<string, number>;
-  onBlockEdit?: (x: number, y: number, z: number, blockType: BlockType) => void;
+  onBlockEdit?: (x: number, y: number, z: number, blockType: BlockType, oldBlockType?: BlockType) => void;
   gameMode?: 'creative' | 'survival' | 'adventure' | 'creativo' | 'supervivencia' | 'aventura';
   worldType?: 'flat' | 'normal' | 'edge_farlands' | 'plano' | 'plano_infinito';
   onSelectBlock?: (block: BlockType) => void;
   onOpenCraftingTable?: () => void;
   survivalInventory?: Record<number, number>;
+  onUpdateSurvivalInventory?: React.Dispatch<React.SetStateAction<Record<number, number>>>;
 }
 
 // Animal: Componente controlador de todo tipo de entidades (Pasivas y Hostiles), optimizado al maximo
@@ -1213,6 +1214,11 @@ const Player: React.FC<{
   const yaw = useRef(0);
   const pitch = useRef(0);
   const playerGroupRef = useRef<THREE.Group>(null);
+  const leftArmRef = useRef<THREE.Group>(null);
+  const rightArmRef = useRef<THREE.Group>(null);
+  const leftLegRef = useRef<THREE.Group>(null);
+  const rightLegRef = useRef<THREE.Group>(null);
+  const headGroupRef = useRef<THREE.Group>(null);
   const stepTimer = useRef(0);
   const lastStepPlayed = useRef(false);
   const lastStateUpdate = useRef(0);
@@ -1589,6 +1595,61 @@ const Player: React.FC<{
     if (playerGroupRef.current) {
         playerGroupRef.current.position.set(px, py - 1.5, pz);
         playerGroupRef.current.rotation.set(0, yaw.current, 0);
+
+        // --- DYNAMIC PROCEDURAL LIMB ANIMATIONS ---
+        const isMoving = isGrounded && (Math.abs(moveVector.x) > 0.01 || Math.abs(moveVector.y) > 0.01);
+        const timeVal = state.clock.getElapsedTime();
+        const swingSpeed = 13.0; // Dynamic run tempo frequency
+        const swingAmp = 0.52;  // Swing rotation magnitude in radians
+
+        if (isMoving) {
+          const angle = Math.sin(timeVal * swingSpeed) * swingAmp;
+          if (leftArmRef.current) leftArmRef.current.rotation.x = -angle;
+          if (rightArmRef.current) rightArmRef.current.rotation.x = angle;
+          if (leftLegRef.current) leftLegRef.current.rotation.x = angle;
+          if (rightLegRef.current) rightLegRef.current.rotation.x = -angle;
+          if (headGroupRef.current) {
+            headGroupRef.current.rotation.y = Math.sin(timeVal * 3.5) * 0.04; // Gentle run head bob
+            headGroupRef.current.rotation.x = 0.05 + Math.abs(Math.cos(timeVal * swingSpeed)) * 0.05;
+          }
+        } else {
+          // Breathing / idle return to home position
+          const breathVal = Math.sin(timeVal * 2.2) * 0.03;
+          if (leftArmRef.current) {
+            leftArmRef.current.rotation.x = THREE.MathUtils.lerp(leftArmRef.current.rotation.x, 0, 0.12);
+            leftArmRef.current.rotation.z = THREE.MathUtils.lerp(leftArmRef.current.rotation.z, -0.06 - breathVal, 0.12);
+          }
+          if (rightArmRef.current) {
+            rightArmRef.current.rotation.x = THREE.MathUtils.lerp(rightArmRef.current.rotation.x, 0, 0.12);
+            rightArmRef.current.rotation.z = THREE.MathUtils.lerp(rightArmRef.current.rotation.z, 0.06 + breathVal, 0.12);
+          }
+          if (leftLegRef.current) {
+            leftLegRef.current.rotation.x = THREE.MathUtils.lerp(leftLegRef.current.rotation.x, 0, 0.12);
+          }
+          if (rightLegRef.current) {
+            rightLegRef.current.rotation.x = THREE.MathUtils.lerp(rightLegRef.current.rotation.x, 0, 0.12);
+          }
+          if (headGroupRef.current) {
+            headGroupRef.current.rotation.y = THREE.MathUtils.lerp(headGroupRef.current.rotation.y, 0, 0.12);
+            headGroupRef.current.rotation.x = THREE.MathUtils.lerp(headGroupRef.current.rotation.x, breathVal * 0.6, 0.12);
+          }
+        }
+
+        // Mid-air flying/falling spreading arm poses
+        if (!isGrounded && !isFlying.current) {
+          const fallVel = velocityY.current;
+          const targetSpread = Math.min(0.4, Math.max(0.1, Math.abs(fallVel) * 0.12));
+          if (leftArmRef.current) {
+            leftArmRef.current.rotation.z = THREE.MathUtils.lerp(leftArmRef.current.rotation.z, -targetSpread - 0.15, 0.15);
+            leftArmRef.current.rotation.x = THREE.MathUtils.lerp(leftArmRef.current.rotation.x, -0.2, 0.15);
+          }
+          if (rightArmRef.current) {
+            rightArmRef.current.rotation.z = THREE.MathUtils.lerp(rightArmRef.current.rotation.z, targetSpread + 0.15, 0.15);
+            rightArmRef.current.rotation.x = THREE.MathUtils.lerp(rightArmRef.current.rotation.x, -0.2, 0.15);
+          }
+          if (leftLegRef.current) leftLegRef.current.rotation.x = THREE.MathUtils.lerp(leftLegRef.current.rotation.x, 0.2, 0.15);
+          if (rightLegRef.current) rightLegRef.current.rotation.x = THREE.MathUtils.lerp(rightLegRef.current.rotation.x, -0.1, 0.15);
+        }
     }
 
     const now = performance.now();
@@ -1615,49 +1676,187 @@ const Player: React.FC<{
 
   if (perspective === 'first') return null;
 
-  // Render a blocky player model when in second or third person perspective
   return (
     <group ref={playerGroupRef} position={[physPos.current.x, physPos.current.y - 1.5, physPos.current.z]} rotation={[0, yaw.current, 0]}>
-      {/* Head */}
-      <mesh position={[0, 1.3, 0]}>
-        <boxGeometry args={[0.4, 0.4, 0.4]} />
-        <meshBasicMaterial color="#ffdbac" />
-      </mesh>
-      {/* Hair */}
-      <mesh position={[0, 1.45, 0.05]}>
-        <boxGeometry args={[0.42, 0.1, 0.42]} />
-        <meshBasicMaterial color="#3d2314" />
-      </mesh>
-      {/* Eyes & Face accents */}
-      <mesh position={[0, 1.3, 0.2]}>
-        <boxGeometry args={[0.3, 0.08, 0.02]} />
-        <meshBasicMaterial color="#ffffff" />
-      </mesh>
-      {/* Torso / Clothes (Teal shirt) */}
+      {/* 1. HEAD & HAIR MODULE (Joint at bottom, neck at Y=1.1) */}
+      <group ref={headGroupRef} position={[0, 1.1, 0]}>
+        {/* Face skin */}
+        <mesh position={[0, 0.2, 0]}>
+          <boxGeometry args={[0.38, 0.38, 0.38]} />
+          <meshLambertMaterial color="#fbc5a1" />
+        </mesh>
+        
+        {/* Hair base */}
+        <mesh position={[0, 0.3, 0.02]}>
+          <boxGeometry args={[0.4, 0.2, 0.39]} />
+          <meshLambertMaterial color="#2d1609" />
+        </mesh>
+        
+        {/* 3D Hair Strands/Sides overlay */}
+        <mesh position={[-0.19, 0.22, 0]}>
+          <boxGeometry args={[0.03, 0.24, 0.36]} />
+          <meshLambertMaterial color="#2d1609" />
+        </mesh>
+        <mesh position={[0.19, 0.22, 0]}>
+          <boxGeometry args={[0.03, 0.24, 0.36]} />
+          <meshLambertMaterial color="#2d1609" />
+        </mesh>
+        
+        {/* Gaming Headphones */}
+        <mesh position={[-0.2, 0.22, 0]}>
+          <boxGeometry args={[0.03, 0.14, 0.14]} />
+          <meshLambertMaterial color="#1a1a1a" />
+        </mesh>
+        <mesh position={[0.2, 0.22, 0]}>
+          <boxGeometry args={[0.03, 0.14, 0.14]} />
+          <meshLambertMaterial color="#1a1a1a" />
+        </mesh>
+        {/* Headphone Band */}
+        <mesh position={[0, 0.4, 0]}>
+          <boxGeometry args={[0.39, 0.03, 0.08]} />
+          <meshLambertMaterial color="#1a1a1a" />
+        </mesh>
+        {/* Headphone green neon accents */}
+        <mesh position={[-0.21, 0.22, 0]}>
+          <boxGeometry args={[0.02, 0.06, 0.06]} />
+          <meshLambertMaterial color="#00ffcc" />
+        </mesh>
+        <mesh position={[0.21, 0.22, 0]}>
+          <boxGeometry args={[0.02, 0.06, 0.06]} />
+          <meshLambertMaterial color="#00ffcc" />
+        </mesh>
+
+        {/* 3D Sunglasses/Cool Eyes */}
+        <mesh position={[0, 0.22, 0.191]}>
+          <boxGeometry args={[0.28, 0.06, 0.02]} />
+          <meshLambertMaterial color="#111111" />
+        </mesh>
+        {/* Sunglass lenses glow */}
+        <mesh position={[-0.07, 0.22, 0.201]}>
+          <boxGeometry args={[0.08, 0.04, 0.01]} />
+          <meshLambertMaterial color="#00ffcc" />
+        </mesh>
+        <mesh position={[0.07, 0.22, 0.201]}>
+          <boxGeometry args={[0.08, 0.04, 0.01]} />
+          <meshLambertMaterial color="#00ffcc" />
+        </mesh>
+      </group>
+
+      {/* 2. TORSO / HOODIE (Y=0.4 to 1.1) */}
       <mesh position={[0, 0.75, 0]}>
-        <boxGeometry args={[0.55, 0.7, 0.25]} />
-        <meshBasicMaterial color="#008080" />
+        <boxGeometry args={[0.54, 0.7, 0.26]} />
+        <meshLambertMaterial color="#ff3366" /> {/* Radiant Hoodie */}
       </mesh>
-      {/* Left arm */}
-      <mesh position={[-0.35, 0.75, 0]}>
-        <boxGeometry args={[0.12, 0.65, 0.2]} />
-        <meshBasicMaterial color="#008080" />
+      {/* Hoodie hood on back */}
+      <mesh position={[0, 0.85, -0.15]}>
+        <boxGeometry args={[0.4, 0.4, 0.08]} />
+        <meshLambertMaterial color="#dd2255" />
       </mesh>
-      {/* Right arm */}
-      <mesh position={[0.35, 0.75, 0]}>
-        <boxGeometry args={[0.12, 0.65, 0.2]} />
-        <meshBasicMaterial color="#008080" />
+      {/* Hoodie drawstrings */}
+      <mesh position={[-0.08, 0.7, 0.131]}>
+        <boxGeometry args={[0.02, 0.15, 0.01]} />
+        <meshLambertMaterial color="#ffffff" />
       </mesh>
-      {/* Left Leg (Blue pants) */}
-      <mesh position={[-0.14, 0.2, 0]}>
-        <boxGeometry args={[0.18, 0.4, 0.22]} />
-        <meshBasicMaterial color="#0000ff" />
+      <mesh position={[0.08, 0.7, 0.131]}>
+        <boxGeometry args={[0.02, 0.15, 0.01]} />
+        <meshLambertMaterial color="#ffffff" />
       </mesh>
-      {/* Right Leg */}
-      <mesh position={[0.14, 0.2, 0]}>
-        <boxGeometry args={[0.18, 0.4, 0.22]} />
-        <meshBasicMaterial color="#0000ff" />
+      {/* Belt */}
+      <mesh position={[0, 0.42, 0]}>
+        <boxGeometry args={[0.55, 0.06, 0.27]} />
+        <meshLambertMaterial color="#222222" />
       </mesh>
+      {/* Golden buckle */}
+      <mesh position={[0, 0.42, 0.136]}>
+        <boxGeometry args={[0.1, 0.06, 0.01]} />
+        <meshLambertMaterial color="#ffcc00" />
+      </mesh>
+
+      {/* Leather backpack on back */}
+      <mesh position={[0, 0.72, -0.2]}>
+        <boxGeometry args={[0.32, 0.42, 0.14]} />
+        <meshLambertMaterial color="#5a3d28" />
+      </mesh>
+      {/* Backpack pocket */}
+      <mesh position={[0, 0.62, -0.28]}>
+        <boxGeometry args={[0.24, 0.18, 0.06]} />
+        <meshLambertMaterial color="#412c1e" />
+      </mesh>
+      {/* Backpack straps */}
+      <mesh position={[-0.14, 0.75, 0.11]}>
+        <boxGeometry args={[0.05, 0.38, 0.05]} />
+        <meshLambertMaterial color="#412c1e" />
+      </mesh>
+      <mesh position={[0.14, 0.75, 0.11]}>
+        <boxGeometry args={[0.05, 0.38, 0.05]} />
+        <meshLambertMaterial color="#412c1e" />
+      </mesh>
+
+      {/* 3. LEFT ARM (Shoulder joint at [-0.33, 1.05, 0]) */}
+      <group ref={leftArmRef} position={[-0.33, 1.05, 0]}>
+        {/* Sleeve */}
+        <mesh position={[0, -0.2, 0]}>
+          <boxGeometry args={[0.12, 0.4, 0.2]} />
+          <meshLambertMaterial color="#ff3366" />
+        </mesh>
+        {/* Hand */}
+        <mesh position={[0, -0.48, 0]}>
+          <boxGeometry args={[0.12, 0.16, 0.2]} />
+          <meshLambertMaterial color="#fbc5a1" />
+        </mesh>
+      </group>
+
+      {/* 4. RIGHT ARM (Shoulder joint at [0.33, 1.05, 0]) */}
+      <group ref={rightArmRef} position={[0.33, 1.05, 0]}>
+        {/* Sleeve */}
+        <mesh position={[0, -0.2, 0]}>
+          <boxGeometry args={[0.12, 0.4, 0.2]} />
+          <meshLambertMaterial color="#ff3366" />
+        </mesh>
+        {/* Hand */}
+        <mesh position={[0, -0.48, 0]}>
+          <boxGeometry args={[0.12, 0.16, 0.2]} />
+          <meshLambertMaterial color="#fbc5a1" />
+        </mesh>
+      </group>
+
+      {/* 5. LEFT LEG (Hip joint at [-0.14, 0.4, 0]) */}
+      <group ref={leftLegRef} position={[-0.14, 0.4, 0]}>
+        {/* Black cargo pants */}
+        <mesh position={[0, -0.2, 0]}>
+          <boxGeometry args={[0.18, 0.4, 0.22]} />
+          <meshLambertMaterial color="#1a1a1a" />
+        </mesh>
+        {/* Sneakers */}
+        <mesh position={[0, -0.45, 0.01]}>
+          <boxGeometry args={[0.18, 0.1, 0.24]} />
+          <meshLambertMaterial color="#ffffff" />
+        </mesh>
+        {/* Sneaker soles */}
+        <mesh position={[0, -0.51, 0.01]}>
+          <boxGeometry args={[0.19, 0.02, 0.25]} />
+          <meshLambertMaterial color="#ff3366" />
+        </mesh>
+      </group>
+
+      {/* 6. RIGHT LEG (Hip joint at [0.14, 0.4, 0]) */}
+      <group ref={rightLegRef} position={[0.14, 0.4, 0]}>
+        {/* Cargo pants */}
+        <mesh position={[0, -0.2, 0]}>
+          <boxGeometry args={[0.18, 0.4, 0.22]} />
+          <meshLambertMaterial color="#1a1a1a" />
+        </mesh>
+        {/* Sneakers */}
+        <mesh position={[0, -0.45, 0.01]}>
+          <boxGeometry args={[0.18, 0.1, 0.24]} />
+          <meshLambertMaterial color="#ffffff" />
+        </mesh>
+        {/* Sneaker soles */}
+        <mesh position={[0, -0.51, 0.01]}>
+          <boxGeometry args={[0.19, 0.02, 0.25]} />
+          <meshLambertMaterial color="#ff3366" />
+        </mesh>
+      </group>
     </group>
   );
 };
@@ -1747,7 +1946,8 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
     gameMode = 'survival', worldType = 'normal',
     onSelectBlock,
     onOpenCraftingTable,
-    survivalInventory
+    survivalInventory,
+    onUpdateSurvivalInventory
 }) => {
   activeWorldId = worldId || 'temp';
   activeWorldType = worldType || 'normal';
@@ -1768,6 +1968,13 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
   const survivalInventoryRef = useRef(survivalInventory);
   survivalInventoryRef.current = survivalInventory;
 
+  const onUpdateSurvivalInventoryRef = useRef(onUpdateSurvivalInventory);
+  onUpdateSurvivalInventoryRef.current = onUpdateSurvivalInventory;
+
+  const [playingJukeboxes, setPlayingJukeboxes] = useState<Record<string, BlockType>>({});
+  const playingJukeboxesRef = useRef<Record<string, BlockType>>({});
+  playingJukeboxesRef.current = playingJukeboxes;
+
   const pendingChunksRef = useRef<string[]>([]);
   const processingQueueRef = useRef<boolean>(false);
   const asyncLoaderTimerRef = useRef<any>(null);
@@ -1777,6 +1984,7 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
       if (asyncLoaderTimerRef.current) {
         clearTimeout(asyncLoaderTimerRef.current);
       }
+      stopAllJukeboxMusic();
     };
   }, []);
 
@@ -2954,6 +3162,28 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
     if (onBlockEditRef.current) {
       (onBlockEditRef.current as any)(wx, wy, wz, BlockType.AIR, brokenBlock);
     }
+
+    if (brokenBlock === BlockType.JUKEBOX) {
+      const jbKey = `${wx},${wy},${wz}`;
+      const activeDisc = playingJukeboxesRef.current[jbKey];
+      if (activeDisc) {
+        stopJukeboxMusic(jbKey);
+        setPlayingJukeboxes(prev => {
+          const copy = { ...prev };
+          delete copy[jbKey];
+          return copy;
+        });
+        if (gameModeRef.current === 'survival' || gameModeRef.current === 'supervivencia') {
+          if (onUpdateSurvivalInventoryRef.current) {
+            onUpdateSurvivalInventoryRef.current(prev => ({
+              ...prev,
+              [activeDisc]: (prev[activeDisc] || 0) + 1
+            }));
+          }
+        }
+        triggerInGameMessageRef.current(`💿 Tocadiscos destruido. Recuperado: ${BLOCK_NAMES[activeDisc]}`);
+      }
+    }
     
     playBreakSound(brokenBlock);
 
@@ -3046,6 +3276,79 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
         }));
         playPlaceSound(BlockType.DOOR);
         triggerInGameMessageRef.current(isCurrentlyOpen ? "🚪 Puerta cerrada" : "🚪 Puerta abierta");
+        return;
+      }
+
+      if (clickedBlock === BlockType.JUKEBOX) {
+        const jbKey = `${clickWx},${clickWy},${clickWz}`;
+        const activeDisc = playingJukeboxesRef.current[jbKey];
+
+        if (activeDisc) {
+          // --- EJECT ACTIVE DISC ---
+          stopJukeboxMusic(jbKey);
+          
+          setPlayingJukeboxes(prev => {
+            const copy = { ...prev };
+            delete copy[jbKey];
+            return copy;
+          });
+
+          if (gameModeRef.current === 'survival' || gameModeRef.current === 'supervivencia') {
+            if (onUpdateSurvivalInventoryRef.current) {
+              onUpdateSurvivalInventoryRef.current(prev => ({
+                ...prev,
+                [activeDisc]: (prev[activeDisc] || 0) + 1
+              }));
+            }
+          }
+
+          playPlaceSound(BlockType.WOOD);
+          triggerInGameMessageRef.current(`💿 Disco expulsado: ${BLOCK_NAMES[activeDisc]}`);
+        } else {
+          // --- INSERT MUSIC DISC ---
+          const heldBlock = currentBlockRef.current;
+          const isDisc = heldBlock === BlockType.MUSIC_DISC_CAT ||
+                         heldBlock === BlockType.MUSIC_DISC_CHIRP ||
+                         heldBlock === BlockType.MUSIC_DISC_BLOCKS ||
+                         heldBlock === BlockType.MUSIC_DISC_MELLOHI;
+
+          if (isDisc) {
+            if (gameModeRef.current === 'survival' || gameModeRef.current === 'supervivencia') {
+              const currentInv = survivalInventoryRef.current || {};
+              const count = currentInv[heldBlock] || 0;
+              if (count <= 0) {
+                triggerInGameMessageRef.current("¡No tienes este disco en tu inventario!");
+                return;
+              }
+
+              if (onUpdateSurvivalInventoryRef.current) {
+                onUpdateSurvivalInventoryRef.current(prev => {
+                  const next = {
+                    ...prev,
+                    [heldBlock]: Math.max(0, (prev[heldBlock] || 0) - 1)
+                  };
+                  if (next[heldBlock] <= 0 && currentBlockRef.current === heldBlock) {
+                    const another = Object.keys(next).map(Number).find((k) => next[k] > 0);
+                    if (another && onSelectBlockRef.current) {
+                      onSelectBlockRef.current(another);
+                    }
+                  }
+                  return next;
+                });
+              }
+            }
+
+            setPlayingJukeboxes(prev => ({
+              ...prev,
+              [jbKey]: heldBlock
+            }));
+
+            playJukeboxMusic(jbKey, heldBlock);
+            triggerInGameMessageRef.current(`🎵 Sonando ahora: ${BLOCK_NAMES[heldBlock]}`);
+          } else {
+            triggerInGameMessageRef.current("📻 El Tocadiscos está vacío. Inserta un Disco de Música.");
+          }
+        }
         return;
       }
 
@@ -3417,6 +3720,7 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
 
         <Player moveVector={moveVector} lookOffsetRef={lookOffsetRef} onUpdatePos={onBlockChange} isJumping={isJumping} getCollisionHeight={getCollisionHeight} checkSolid={checkSolid} perspective={perspective} gameMode={gameMode} worldType={worldType} chunks={chunks} playerPosRef={playerPosRef} playerPos={playerPos} />
         <ParticleSystem particlesRef={particlesRef} />
+        <JukeboxEmitter playingJukeboxesRef={playingJukeboxesRef} particlesRef={particlesRef} />
         <fog attach="fog" args={['#87ceeb', ultraOptimization ? 8 : 15, ultraOptimization ? 28 : 45]} />
       </Canvas>
 
@@ -3440,6 +3744,61 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
       )}
     </div>
   );
+};
+
+interface JukeboxEmitterProps {
+  playingJukeboxesRef: React.MutableRefObject<Record<string, BlockType>>;
+  particlesRef: React.MutableRefObject<any[]>;
+}
+
+const JukeboxEmitter: React.FC<JukeboxEmitterProps> = ({ playingJukeboxesRef, particlesRef }) => {
+  const lastEmitRef = useRef<number>(0);
+
+  useFrame((state) => {
+    const now = state.clock.getElapsedTime();
+    // Emit note particles every 0.35 seconds
+    if (now - lastEmitRef.current > 0.35) {
+      lastEmitRef.current = now;
+      const jukeboxes = playingJukeboxesRef.current;
+      const jbKeys = Object.keys(jukeboxes);
+      if (jbKeys.length === 0) return;
+
+      const colors = ['#00ffcc', '#ff3366', '#ffcc00', '#aa33ff', '#33ccff', '#ff66ff'];
+
+      jbKeys.forEach(key => {
+        const [wx, wy, wz] = key.split(',').map(Number);
+        
+        // Spawn 1-2 musical note particles
+        const count = Math.random() > 0.5 ? 2 : 1;
+        for (let i = 0; i < count; i++) {
+          const px = wx + (Math.random() * 0.4 - 0.2);
+          const py = wy + 0.6; // Slightly above top of the Jukebox
+          const pz = wz + (Math.random() * 0.4 - 0.2);
+
+          const vx = (Math.random() - 0.5) * 1.0;
+          const vy = 6.8 + Math.random() * 1.5; // High initial velocity to float upwards against gravity (4.5)
+          const vz = (Math.random() - 0.5) * 1.0;
+
+          const color = colors[Math.floor(Math.random() * colors.length)];
+
+          particlesRef.current.push({
+            id: Date.now() + Math.random(),
+            x: px,
+            y: py,
+            z: pz,
+            vx,
+            vy,
+            vz,
+            color,
+            size: 0.16 + Math.random() * 0.08,
+            life: 1.0 + Math.random() * 0.4
+          });
+        }
+      });
+    }
+  });
+
+  return null;
 };
 
 interface MinecraftEnvironmentProps {

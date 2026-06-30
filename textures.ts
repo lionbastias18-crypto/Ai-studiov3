@@ -367,6 +367,85 @@ const createProceduralTexture = (
     ctx.fillRect(6, 2, 4, 4);
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(6, 2, 1, 1);
+  } else if (blockType === BlockType.JUKEBOX) {
+    if (face === 'top') {
+      // Wood top base
+      ctx.fillStyle = '#513725';
+      ctx.fillRect(0, 0, 16, 16);
+      drawNoise(10);
+      
+      // Brass corner screws
+      ctx.fillStyle = '#caaa33';
+      ctx.fillRect(1, 1, 1, 1);
+      ctx.fillRect(14, 1, 1, 1);
+      ctx.fillRect(1, 14, 1, 1);
+      ctx.fillRect(14, 14, 1, 1);
+      
+      // Dark turntable circle
+      ctx.fillStyle = '#1c1c1c';
+      ctx.beginPath();
+      ctx.arc(8, 8, 4, 0, Math.PI * 2);
+      ctx.fill();
+      
+      // Needle arm
+      ctx.fillStyle = '#9e9e9e';
+      ctx.fillRect(4, 4, 2, 1);
+      ctx.fillRect(5, 5, 1, 3);
+      
+      // Center neon/turquoise core
+      ctx.fillStyle = '#00ffd2';
+      ctx.fillRect(8, 8, 1, 1);
+    } else { // side and bottom
+      // Dark wood paneling with stripes/border
+      ctx.fillStyle = '#412c1e';
+      ctx.fillRect(0, 0, 16, 16);
+      drawNoise(12);
+      
+      // Outer border
+      ctx.fillStyle = '#2c1e14';
+      ctx.strokeRect(1, 1, 14, 14);
+      
+      // Inner speaker design
+      ctx.fillStyle = '#1e140d';
+      ctx.fillRect(4, 4, 8, 8);
+      ctx.fillStyle = '#2c1e14';
+      ctx.fillRect(5, 5, 6, 6);
+    }
+  } else if (
+    blockType === BlockType.MUSIC_DISC_CAT ||
+    blockType === BlockType.MUSIC_DISC_CHIRP ||
+    blockType === BlockType.MUSIC_DISC_BLOCKS ||
+    blockType === BlockType.MUSIC_DISC_MELLOHI
+  ) {
+    ctx.clearRect(0, 0, 16, 16);
+    // Draw vinyl record disc item
+    ctx.fillStyle = '#1c1c1c';
+    ctx.beginPath();
+    ctx.arc(8, 8, 6, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Grooves
+    ctx.strokeStyle = '#2b2b2b';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(8, 8, 4, 0, Math.PI * 2);
+    ctx.stroke();
+    
+    // Center label color corresponding to the disc type
+    let labelColor = '#ffffff';
+    if (blockType === BlockType.MUSIC_DISC_CAT) labelColor = '#00ffcc';
+    else if (blockType === BlockType.MUSIC_DISC_CHIRP) labelColor = '#ff3366';
+    else if (blockType === BlockType.MUSIC_DISC_BLOCKS) labelColor = '#ffcc00';
+    else if (blockType === BlockType.MUSIC_DISC_MELLOHI) labelColor = '#aa33ff';
+    
+    ctx.fillStyle = labelColor;
+    ctx.beginPath();
+    ctx.arc(8, 8, 2, 0, Math.PI * 2);
+    ctx.fill();
+    
+    // Hole
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(7, 7, 2, 2);
   } else if (String(BlockType[blockType]).startsWith('TERRACOTTA')) {
     drawNoise(15);
   } else {
@@ -432,11 +511,15 @@ export const TextureCache = {
                blockType === BlockType.MUSHROOM_RED || blockType === BlockType.MUSHROOM_BROWN || 
                blockType === BlockType.FLOWER_RED || blockType === BlockType.FLOWER_YELLOW ||
                blockType === BlockType.BED || blockType === BlockType.DOOR || blockType === BlockType.CRAFTING_TABLE ||
-               blockType === BlockType.SWORD || blockType === BlockType.PICKAXE || blockType === BlockType.AXE || blockType === BlockType.SHOVEL) {
+               blockType === BlockType.SWORD || blockType === BlockType.PICKAXE || blockType === BlockType.AXE || blockType === BlockType.SHOVEL ||
+               blockType === BlockType.JUKEBOX || blockType === BlockType.MUSIC_DISC_CAT || blockType === BlockType.MUSIC_DISC_CHIRP ||
+               blockType === BlockType.MUSIC_DISC_BLOCKS || blockType === BlockType.MUSIC_DISC_MELLOHI) {
         const isTransparentFlora = blockType === BlockType.MUSHROOM_RED || blockType === BlockType.MUSHROOM_BROWN || 
                                    blockType === BlockType.FLOWER_RED || blockType === BlockType.FLOWER_YELLOW || 
                                    blockType === BlockType.DOOR ||
-                                   blockType === BlockType.SWORD || blockType === BlockType.PICKAXE || blockType === BlockType.AXE || blockType === BlockType.SHOVEL;
+                                   blockType === BlockType.SWORD || blockType === BlockType.PICKAXE || blockType === BlockType.AXE || blockType === BlockType.SHOVEL ||
+                                   blockType === BlockType.MUSIC_DISC_CAT || blockType === BlockType.MUSIC_DISC_CHIRP ||
+                                   blockType === BlockType.MUSIC_DISC_BLOCKS || blockType === BlockType.MUSIC_DISC_MELLOHI;
         material = [
             new THREE.MeshLambertMaterial({ map: side, transparent: false, alphaTest: isTransparentFlora ? 0.5 : 0 }),
             new THREE.MeshLambertMaterial({ map: side, transparent: false, alphaTest: isTransparentFlora ? 0.5 : 0 }),

@@ -49,6 +49,11 @@ export const BLOCK_COLORS: Record<BlockType, string> = {
   [BlockType.AXE]: '#c7a480',
   [BlockType.SHOVEL]: '#df9c5c',
   [BlockType.SULFUR]: '#ecec13',
+  [BlockType.JUKEBOX]: '#5a3d28',
+  [BlockType.MUSIC_DISC_CAT]: '#00ffcc',
+  [BlockType.MUSIC_DISC_CHIRP]: '#ff3366',
+  [BlockType.MUSIC_DISC_BLOCKS]: '#ffcc00',
+  [BlockType.MUSIC_DISC_MELLOHI]: '#aa33ff',
 };
 
 export const BLOCK_NAMES: Record<BlockType, string> = {
@@ -95,4 +100,9 @@ export const BLOCK_NAMES: Record<BlockType, string> = {
   [BlockType.AXE]: 'Hacha de Madera (Herramienta)',
   [BlockType.SHOVEL]: 'Pala de Tierra (Herramienta)',
   [BlockType.SULFUR]: 'Mineral de Azufre',
+  [BlockType.JUKEBOX]: 'Tocadiscos',
+  [BlockType.MUSIC_DISC_CAT]: 'Disco de Música (Cat)',
+  [BlockType.MUSIC_DISC_CHIRP]: 'Disco de Música (Chirp)',
+  [BlockType.MUSIC_DISC_BLOCKS]: 'Disco de Música (Blocks)',
+  [BlockType.MUSIC_DISC_MELLOHI]: 'Disco de Música (Mellohi)',
 };
