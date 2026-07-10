@@ -52,7 +52,10 @@ export function loadWorlds(): World[] {
 
 export function saveWorlds(worlds: World[]): void {
   try {
-    localStorage.setItem(WORLDS_KEY, JSON.stringify(worlds));
+    // Sort descending by createdAt (most recent first) and keep at most 100
+    const sorted = [...worlds].sort((a, b) => b.createdAt - a.createdAt);
+    const limited = sorted.slice(0, 100);
+    localStorage.setItem(WORLDS_KEY, JSON.stringify(limited));
   } catch (e) {
     console.error("Error saving worlds", e);
   }

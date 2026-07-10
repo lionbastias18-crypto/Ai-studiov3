@@ -14,18 +14,37 @@ import {
   loadWorlds,
   saveWorlds,
   getActiveSession,
-  setActiveSession,
+  setActiveSession as setActiveSessionPersistence,
   Profile,
   World
 } from "./services/worldPersistence";
 import {
   auth,
+  db,
   loginWithGoogle,
   logoutGoogle,
   saveWorldToFirestore,
   loadWorldsFromFirestore,
-  deleteWorldFromFirestore
+  deleteWorldFromFirestore,
+  handleFirestoreError,
+  OperationType
 } from "./services/firebaseService";
+import {
+  doc,
+  setDoc,
+  deleteDoc,
+  collection,
+  onSnapshot,
+  query,
+  getDocs,
+  where,
+  orderBy,
+  limit,
+  increment,
+  updateDoc,
+  deleteField,
+  getDoc
+} from "firebase/firestore";
 
 interface CraftingRecipe {
   id: string;
@@ -178,10 +197,71 @@ const CRAFTING_RECIPES: CraftingRecipe[] = [
   }
 ];
 
+// Nether Portal Frame and Blocks Validation Helpers
+const isFrameValidX = (ix: number, iy: number, iz: number, getBlockAt: (x: number, y: number, z: number) => BlockType) => {
+  const left0 = getBlockAt(ix - 1, iy, iz) === BlockType.OBSIDIAN;
+  const left1 = getBlockAt(ix - 1, iy + 1, iz) === BlockType.OBSIDIAN;
+  const left2 = getBlockAt(ix - 1, iy + 2, iz) === BlockType.OBSIDIAN;
+
+  const right0 = getBlockAt(ix + 2, iy, iz) === BlockType.OBSIDIAN;
+  const right1 = getBlockAt(ix + 2, iy + 1, iz) === BlockType.OBSIDIAN;
+  const right2 = getBlockAt(ix + 2, iy + 2, iz) === BlockType.OBSIDIAN;
+
+  const bottom0 = getBlockAt(ix, iy - 1, iz) === BlockType.OBSIDIAN;
+  const bottom1 = getBlockAt(ix + 1, iy - 1, iz) === BlockType.OBSIDIAN;
+
+  const top0 = getBlockAt(ix, iy + 3, iz) === BlockType.OBSIDIAN;
+  const top1 = getBlockAt(ix + 1, iy + 3, iz) === BlockType.OBSIDIAN;
+
+  return left0 && left1 && left2 && right0 && right1 && right2 && bottom0 && bottom1 && top0 && top1;
+};
+
+const isFrameValidZ = (ix: number, iy: number, iz: number, getBlockAt: (x: number, y: number, z: number) => BlockType) => {
+  const left0 = getBlockAt(ix, iy, iz - 1) === BlockType.OBSIDIAN;
+  const left1 = getBlockAt(ix, iy + 1, iz - 1) === BlockType.OBSIDIAN;
+  const left2 = getBlockAt(ix, iy + 2, iz - 1) === BlockType.OBSIDIAN;
+
+  const right0 = getBlockAt(ix, iy, iz + 2) === BlockType.OBSIDIAN;
+  const right1 = getBlockAt(ix, iy + 1, iz + 2) === BlockType.OBSIDIAN;
+  const right2 = getBlockAt(ix, iy + 2, iz + 2) === BlockType.OBSIDIAN;
+
+  const bottom0 = getBlockAt(ix, iy - 1, iz) === BlockType.OBSIDIAN;
+  const bottom1 = getBlockAt(ix, iy - 1, iz + 1) === BlockType.OBSIDIAN;
+
+  const top0 = getBlockAt(ix, iy + 3, iz) === BlockType.OBSIDIAN;
+  const top1 = getBlockAt(ix, iy + 3, iz + 1) === BlockType.OBSIDIAN;
+
+  return left0 && left1 && left2 && right0 && right1 && right2 && bottom0 && bottom1 && top0 && top1;
+};
+
+const isPortalBlockValid = (px: number, py: number, pz: number, getBlockAt: (x: number, y: number, z: number) => BlockType) => {
+  for (let dx = 0; dx <= 1; dx++) {
+    for (let dy = 0; dy <= 2; dy++) {
+      if (isFrameValidX(px - dx, py - dy, pz, getBlockAt)) {
+        return true;
+      }
+    }
+  }
+  for (let dz = 0; dz <= 1; dz++) {
+    for (let dy = 0; dy <= 2; dy++) {
+      if (isFrameValidZ(px, py - dy, pz - dz, getBlockAt)) {
+        return true;
+      }
+    }
+  }
+  return false;
+};
+
 const App: React.FC = () => {
   const [profiles, setProfiles] = useState<Profile[]>(() => loadProfiles());
   const [worlds, setWorlds] = useState<World[]>(() => loadWorlds());
   const [currentUser, setCurrentUser] = useState<string | null>(() => getActiveSession());
+  const [activeSession, setActiveSessionState] = useState<string | null>(() => getActiveSession());
+
+  const setActiveSession = useCallback((val: string | null) => {
+    setActiveSessionPersistence(val);
+    setActiveSessionState(val);
+  }, []);
 
   const [currentBlock, setCurrentBlock] = useState<BlockType>(BlockType.WOOD);
   const [playerPos, setPlayerPos] = useState<Vector3D>({ x: 0, y: 80, z: 0 });
@@ -198,6 +278,40 @@ const App: React.FC = () => {
   );
   const [lang, setLang] = useState<Language>("es");
   const [isJumping, setIsJumping] = useState(false);
+  const [weather, setWeather] = useState<"clear" | "rain" | "snow" | "thunderstorm" | "snow_rain">("clear");
+  const [dimension, setDimension] = useState<"overworld" | "nether">("overworld");
+  const [isGameMenuOpen, setIsGameMenuOpen] = useState<boolean>(false);
+
+  // Portal Teleportation cinematic & state
+  const [isTeleporting, setIsTeleporting] = useState(false);
+
+  // Friends & Multiplayer states
+  const [isFriendsOpen, setIsFriendsOpen] = useState(false);
+  const [friendSearchEmail, setFriendSearchEmail] = useState("");
+  const [friendships, setFriendships] = useState<any[]>([]);
+  const [onlinePlayers, setOnlinePlayers] = useState<Record<string, any>>({});
+  const [friendshipError, setFriendshipError] = useState("");
+  const [friendshipSuccess, setFriendshipSuccess] = useState("");
+  const [friendshipLoading, setFriendshipLoading] = useState(false);
+
+  const handlePortalTeleport = useCallback(() => {
+    setIsTeleporting(true);
+    setTimeout(() => {
+      setDimension((prev) => {
+        const nextDim = prev === "overworld" ? "nether" : "overworld";
+        if (nextDim === "nether") {
+          setPlayerPos({ x: 0, y: 70, z: 0 });
+        } else {
+          setPlayerPos({ x: 0, y: 80, z: 0 });
+        }
+        return nextDim;
+      });
+      setTimeout(() => {
+        setIsTeleporting(false);
+      }, 1000);
+    }, 1200);
+  }, []);
+
   const [perspective, setPerspective] = useState<"first" | "second" | "third">(
     "first",
   );
@@ -230,6 +344,25 @@ const App: React.FC = () => {
   // Active World
   const [currentWorld, setCurrentWorld] = useState<World | null>(null);
 
+  // New Custom States
+  const [autoJumpEnabled, setAutoJumpEnabled] = useState<boolean>(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("minecraft_autojump");
+      return saved !== "false";
+    }
+    return true;
+  });
+  const [userRole, setUserRole] = useState<string>("user");
+  const [biomeConfig, setBiomeConfig] = useState<{ surface: number; underground: number; flora: number } | null>(null);
+  const [activePlayers, setActivePlayers] = useState<Array<{ id: string; name: string; pos: Vector3D; dimension: string }>>([]);
+  const [activityLogs, setActivityLogs] = useState<Array<{ id: string; playerEmail: string; playerName: string; action: string; timestamp: number }>>([]);
+  const [allUserRolesList, setAllUserRolesList] = useState<Array<{ email: string; role: string; biomeSurface?: number; biomeUnderground?: number; biomeFlora?: number; blocksPlaced?: number; blocksBroken?: number; worldsCreated?: number; score?: number; displayName?: string; lastActive?: number }>>([]);
+  const [isLeaderboardOpen, setIsLeaderboardOpen] = useState(false);
+  const [leaderboardToast, setLeaderboardToast] = useState<string | null>(null);
+  const [leaderboardSearch, setLeaderboardSearch] = useState("");
+  const blocksPlacedRef = useRef(0);
+  const blocksBrokenRef = useRef(0);
+
   const [survivalInventory, setSurvivalInventory] = useState<Record<number, number>>({
     [BlockType.DIRT]: 16,
     [BlockType.WOOD]: 8,
@@ -237,6 +370,26 @@ const App: React.FC = () => {
     [BlockType.CRAFTING_TABLE]: 1,
   });
   const [inventoryTab, setInventoryTab] = useState<"items" | "crafting">("items");
+
+  const getDimensionEdits = useCallback(() => {
+    if (!currentWorld) return {};
+    const edits: Record<string, number> = {};
+    if (dimension === "nether") {
+      for (const [key, value] of Object.entries(currentWorld.edits || {})) {
+        if (key.startsWith("nether:")) {
+          const rawKey = key.substring(7); // remove "nether:"
+          edits[rawKey] = value;
+        }
+      }
+    } else {
+      for (const [key, value] of Object.entries(currentWorld.edits || {})) {
+        if (!key.startsWith("nether:")) {
+          edits[key] = value;
+        }
+      }
+    }
+    return edits;
+  }, [currentWorld, dimension]);
 
   // Chat & Commands State
   const [isChatOpen, setIsChatOpen] = useState(false);
@@ -532,11 +685,421 @@ const App: React.FC = () => {
     return unsubscribe;
   }, []);
 
-  // Keep latest state in a ref to avoid resetting the auto-save interval on every block/inventory change!
-  const latestSaveDataRef = useRef({ currentWorld, survivalInventory, googleUser });
+  // Activity logging helper
+  const logUserActivity = useCallback(async (actionText: string) => {
+    if (!auth.currentUser) return;
+    const user = auth.currentUser;
+    const email = user.email?.toLowerCase() || "anonimo";
+    const displayName = user.displayName || user.email || "Usuario de Google";
+    const logId = `${user.uid}_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+    const logRef = doc(db, "activity_logs", logId);
+    
+    try {
+      await setDoc(logRef, {
+        id: logId,
+        playerEmail: email,
+        playerName: displayName,
+        action: actionText,
+        timestamp: Date.now()
+      });
+    } catch (err) {
+      console.error("Error writing activity log:", err);
+      handleFirestoreError(err, OperationType.WRITE, `activity_logs/${logId}`);
+    }
+  }, []);
+
+  // Real-time listener for user role, custom biome config, presence, and logs
   useEffect(() => {
-    latestSaveDataRef.current = { currentWorld, survivalInventory, googleUser };
-  }, [currentWorld, survivalInventory, googleUser]);
+    if (!googleUser || !googleUser.email) {
+      setUserRole("user");
+      setBiomeConfig(null);
+      return;
+    }
+
+    const emailKey = googleUser.email.toLowerCase();
+
+    // 1. Check/Listen to role document
+    const roleRef = doc(db, "user_roles", emailKey);
+
+    // If admin email, guarantee role is 'owner' in DB
+    if (emailKey === "lionbastias18@gmail.com") {
+      setUserRole("owner");
+      setDoc(roleRef, {
+        email: emailKey,
+        role: "owner",
+        displayName: googleUser.displayName || "LionBastias18",
+        lastActive: Date.now()
+      }, { merge: true }).catch(err => {
+        console.error("Error enforcing admin role:", err);
+        handleFirestoreError(err, OperationType.WRITE, `user_roles/${emailKey}`);
+      });
+    } else {
+      // For any other user, ensure their metadata is set/updated on login
+      setDoc(roleRef, {
+        displayName: googleUser.displayName || googleUser.email || emailKey,
+        lastActive: Date.now()
+      }, { merge: true }).catch(err => {
+        console.error("Error updating user metadata:", err);
+      });
+    }
+
+    const unsubRole = onSnapshot(roleRef, (snapshot) => {
+      if (snapshot.exists()) {
+        const data = snapshot.data();
+        if (emailKey === "lionbastias18@gmail.com") {
+          setUserRole("owner");
+        } else if (data && data.role) {
+          setUserRole(data.role);
+        }
+        if (data && data.biomeSurface !== undefined) {
+          setBiomeConfig({
+            surface: data.biomeSurface ?? BlockType.MOSS,
+            underground: data.biomeUnderground ?? BlockType.DIRT,
+            flora: data.biomeFlora ?? BlockType.VINES
+          });
+        } else {
+          setBiomeConfig(null);
+        }
+      } else {
+        if (emailKey !== "lionbastias18@gmail.com") {
+          setUserRole("user");
+          setBiomeConfig(null);
+          // Register user in the database so they show up on the leaderboard
+          setDoc(roleRef, {
+            email: emailKey,
+            role: "user",
+            displayName: googleUser.displayName || googleUser.email || emailKey,
+            blocksPlaced: 0,
+            blocksBroken: 0,
+            worldsCreated: 0,
+            score: 0,
+            lastActive: Date.now()
+          }, { merge: true }).catch(err => {
+            console.error("Error auto-registering user role:", err);
+          });
+        }
+      }
+    }, (error) => {
+      console.error("Error watching user role:", error);
+      handleFirestoreError(error, OperationType.GET, `user_roles/${emailKey}`);
+    });
+
+    return () => {
+      unsubRole();
+    };
+  }, [googleUser]);
+
+  // Handle active gameplay presence and multiplayer syncing
+  useEffect(() => {
+    if (appState !== "playing" || !currentWorld) {
+      setActivePlayers([]);
+      return;
+    }
+
+    const worldId = currentWorld.id;
+    const userId = googleUser ? googleUser.uid : activeSession;
+    const userEmail = googleUser ? (googleUser.email?.toLowerCase() || "") : "invitado@example.com";
+    const userName = googleUser ? (googleUser.displayName || googleUser.email || "Usuario de Google") : `${currentUser || "Invitado"} (Invitado)`;
+
+    if (!userId) return;
+
+    const presenceRef = doc(db, "worlds", worldId, "players", userId);
+
+    // Write presence heartbeat every 3 seconds
+    const updatePresence = async () => {
+      try {
+        const now = Date.now();
+        // 1. Write player's local subcollection presence
+        await setDoc(presenceRef, {
+          id: userId,
+          email: userEmail,
+          name: userName,
+          pos: activePlayerPosRef.current,
+          dimension: dimension,
+          lastActive: now
+        });
+
+        // 2. Also write/refresh global /online_players presence
+        const onlinePlayerRef = doc(db, "online_players", userId);
+        await setDoc(onlinePlayerRef, {
+          id: userId,
+          name: userName,
+          email: userEmail,
+          worldId: worldId,
+          worldName: currentWorld.name,
+          dimension: dimension,
+          lastActive: now
+        }, { merge: true });
+
+      } catch (err) {
+        console.error("Error writing presence heartbeat:", err);
+        handleFirestoreError(err, OperationType.WRITE, `worlds/${worldId}/players/${userId}`);
+      }
+    };
+
+    updatePresence();
+    const intervalId = setInterval(updatePresence, 3000);
+
+    // Listen to presence subcollection
+    const playersColRef = collection(db, "worlds", worldId, "players");
+    const unsubPlayers = onSnapshot(playersColRef, (snapshot) => {
+      const list: any[] = [];
+      const now = Date.now();
+      snapshot.forEach((docSnap) => {
+        const data = docSnap.data();
+        // Ignore self and ignore dead/inactive heartbeats (> 15 seconds)
+        if (data.id !== userId && (now - (data.lastActive || 0) < 15000)) {
+          list.push({
+            id: data.id,
+            name: data.name || data.email || "Jugador",
+            pos: data.pos || { x: 0, y: 80, z: 0 },
+            dimension: data.dimension || "overworld"
+          });
+        }
+      });
+      setActivePlayers(list);
+    }, (error) => {
+      console.error("Error watching world players:", error);
+      handleFirestoreError(error, OperationType.LIST, `worlds/${worldId}/players`);
+    });
+
+    // Write a join world log
+    logUserActivity(`Entró al mundo '${currentWorld.name}' (Generación: ${currentWorld.worldType})`);
+
+    // Clean up presence on unmount / exit playing
+    return () => {
+      clearInterval(intervalId);
+      unsubPlayers();
+      deleteDoc(presenceRef).catch(err => {
+        console.error("Error removing presence on exit:", err);
+      });
+      // Delete from online_players as well
+      deleteDoc(doc(db, "online_players", userId)).catch(() => {});
+      logUserActivity(`Salió del mundo '${currentWorld.name}'`);
+    };
+  }, [appState, currentWorld?.id, dimension, googleUser, activeSession, currentUser, logUserActivity]);
+
+  // Listen to world edits in real-time for multiplayer
+  useEffect(() => {
+    if (appState !== "playing" || !currentWorld) return;
+
+    const worldRef = doc(db, "worlds", currentWorld.id);
+    const unsubWorld = onSnapshot(worldRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        if (data && data.edits) {
+          const dbEdits = data.edits;
+          setCurrentWorld((prev) => {
+            if (!prev) return prev;
+            // Check if there are differences
+            let hasDiff = false;
+            const prevEditsKeys = Object.keys(prev.edits);
+            const dbEditsKeys = Object.keys(dbEdits);
+            if (prevEditsKeys.length !== dbEditsKeys.length) {
+              hasDiff = true;
+            } else {
+              for (const key of dbEditsKeys) {
+                if (prev.edits[key] !== dbEdits[key]) {
+                  hasDiff = true;
+                  break;
+                }
+              }
+            }
+            if (hasDiff) {
+              return {
+                ...prev,
+                edits: dbEdits
+              };
+            }
+            return prev;
+          });
+        }
+      }
+    });
+
+    return () => {
+      unsubWorld();
+    };
+  }, [appState, currentWorld?.id]);
+
+  // Listen to friendships and online players in real-time
+  useEffect(() => {
+    if (!activeSession) return;
+
+    // Listen to friendships where current user is sender
+    const q1 = query(collection(db, "friendships"), where("senderId", "==", activeSession));
+    const unsub1 = onSnapshot(q1, (snap) => {
+      setFriendships((prev) => {
+        const other = prev.filter((f) => f.senderId !== activeSession);
+        const mine = snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+        return [...other, ...mine];
+      });
+    }, () => {});
+
+    // Listen to friendships where current user is receiver (by ID or Google email)
+    const q2 = query(collection(db, "friendships"), where("receiverId", "==", activeSession));
+    const unsub2 = onSnapshot(q2, (snap) => {
+      setFriendships((prev) => {
+        const other = prev.filter((f) => f.receiverId !== activeSession);
+        const mine = snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+        return [...other, ...mine];
+      });
+    }, () => {});
+
+    // Also look for Google email receivers if signed in
+    let unsub3 = () => {};
+    if (googleUser && googleUser.email) {
+      const q3 = query(collection(db, "friendships"), where("receiverId", "==", googleUser.email.toLowerCase()));
+      unsub3 = onSnapshot(q3, (snap) => {
+        setFriendships((prev) => {
+          const other = prev.filter((f) => f.receiverId !== googleUser.email.toLowerCase());
+          const mine = snap.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+          return [...other, ...mine];
+        });
+      }, () => {});
+    }
+
+    // Listen to online players to see who is active
+    const unsubOnline = onSnapshot(collection(db, "online_players"), (snap) => {
+      const players: Record<string, any> = {};
+      snap.forEach((doc) => {
+        players[doc.id] = doc.data();
+      });
+      setOnlinePlayers(players);
+    }, () => {});
+
+    return () => {
+      unsub1();
+      unsub2();
+      unsub3();
+      unsubOnline();
+    };
+  }, [activeSession, googleUser]);
+
+  // Main menu and Lobby presence heartbeat
+  useEffect(() => {
+    if (appState !== "menu" && appState !== "settings" && appState !== "worlds-list") {
+      return;
+    }
+    if (!activeSession) return;
+
+    const updateMenuPresence = async () => {
+      try {
+        const onlinePlayerRef = doc(db, "online_players", activeSession);
+        await setDoc(onlinePlayerRef, {
+          id: activeSession,
+          name: currentUser,
+          email: googleUser?.email || "Invitado",
+          worldId: null,
+          worldName: lang === "es" ? "En el Menú Principal" : "In Main Menu",
+          dimension: null,
+          lastActive: Date.now()
+        }, { merge: true });
+      } catch (err) {
+        console.warn("Error updating menu presence:", err);
+      }
+    };
+
+    updateMenuPresence();
+    const intervalId = setInterval(updateMenuPresence, 4000);
+
+    return () => {
+      clearInterval(intervalId);
+      // Clean up when leaving menu (online_players/{userId} is deleted, unless active playing takes over)
+      setTimeout(async () => {
+        const latestState = latestSaveDataRef.current;
+        if (latestState.appState !== "playing") {
+          try {
+            await deleteDoc(doc(db, "online_players", activeSession));
+          } catch (e) {}
+        }
+      }, 500);
+    };
+  }, [appState, activeSession, currentUser, googleUser, lang]);
+
+  // Staff and Mod specific collections watchers (all users list and activity logs)
+  useEffect(() => {
+    if (!activeSession) {
+      setActivityLogs([]);
+      setAllUserRolesList([]);
+      return;
+    }
+
+    // 1. Subscribe to activity logs (Only for staff, mod, or owner)
+    let unsubLogs = () => {};
+    const isStaffOrModUser = userRole === "staff" || userRole === "mod" || userRole === "owner" || googleUser?.email?.toLowerCase() === "lionbastias18@gmail.com";
+    if (isStaffOrModUser) {
+      const logsCol = collection(db, "activity_logs");
+      const qLogs = query(logsCol, orderBy("timestamp", "desc"), limit(50));
+      unsubLogs = onSnapshot(qLogs, (snapshot) => {
+        const logs: any[] = [];
+        snapshot.forEach((docSnap) => {
+          logs.push(docSnap.data());
+        });
+        setActivityLogs(logs);
+      }, (error) => {
+        console.warn("Failed to stream activity logs:", error);
+      });
+    } else {
+      setActivityLogs([]);
+    }
+
+    // 2. Subscribe to user roles list (leaderboard) - For ALL logged-in users and guests!
+    const rolesCol = collection(db, "user_roles");
+    const unsubRoles = onSnapshot(rolesCol, (snapshot) => {
+      const roles: any[] = [];
+      snapshot.forEach((docSnap) => {
+        roles.push(docSnap.data());
+      });
+      setAllUserRolesList(roles);
+    }, (error) => {
+      console.warn("Failed to stream user roles:", error);
+    });
+
+    return () => {
+      unsubLogs();
+      unsubRoles();
+    };
+  }, [activeSession, googleUser, userRole]);
+
+  // Keep latest state in a ref to avoid resetting the auto-save interval on every block/inventory change!
+  const latestSaveDataRef = useRef({ currentWorld, survivalInventory, googleUser, appState });
+  useEffect(() => {
+    latestSaveDataRef.current = { currentWorld, survivalInventory, googleUser, appState };
+  }, [currentWorld, survivalInventory, googleUser, appState]);
+
+  const flushUserStats = useCallback(async () => {
+    const { googleUser: activeUser } = latestSaveDataRef.current;
+    if (!activeUser || !activeUser.email) return;
+
+    const placed = blocksPlacedRef.current;
+    const broken = blocksBrokenRef.current;
+    if (placed === 0 && broken === 0) return;
+
+    // Reset local counters immediately to avoid double counting if save takes time
+    blocksPlacedRef.current = 0;
+    blocksBrokenRef.current = 0;
+
+    const emailKey = activeUser.email.toLowerCase();
+    const roleRef = doc(db, "user_roles", emailKey);
+
+    try {
+      const addedScore = placed * 10 + broken * 5;
+      await setDoc(roleRef, {
+        blocksPlaced: increment(placed),
+        blocksBroken: increment(broken),
+        score: increment(addedScore),
+        lastActive: Date.now(),
+        displayName: activeUser.displayName || activeUser.email || emailKey,
+      }, { merge: true });
+      console.log(`[Stats] Flushed: +${placed} placed, +${broken} broken. Added +${addedScore} score.`);
+    } catch (err) {
+      console.error("[Stats] Error flushing user stats to Firestore:", err);
+      // Restore counts in case of error so we don't lose them
+      blocksPlacedRef.current += placed;
+      blocksBrokenRef.current += broken;
+    }
+  }, []);
 
   // Quiet background auto-save every 30 seconds during active gameplay
   useEffect(() => {
@@ -558,6 +1121,8 @@ const App: React.FC = () => {
           await saveWorldToFirestore(updatedWorld);
           const dbWorlds = await loadWorldsFromFirestore(activeUser.uid);
           setWorlds(dbWorlds);
+          // Flush user stats too!
+          await flushUserStats();
         } catch (e) {
           console.error("[Auto-Save] Error al guardar automáticamente en Firestore:", e);
         }
@@ -571,6 +1136,52 @@ const App: React.FC = () => {
         });
       }
     }, 30000);
+
+    return () => clearInterval(intervalId);
+  }, [appState]);
+
+  // Dynamic random weather cycle during gameplay
+  useEffect(() => {
+    if (appState !== "playing") return;
+
+    const intervalId = setInterval(() => {
+      // 35% chance of weather shifting every 40 seconds
+      if (Math.random() < 0.35) {
+        const rand = Math.random();
+        let nextWeather: "clear" | "rain" | "snow" | "thunderstorm" | "snow_rain" = "clear";
+
+        if (rand < 0.60) {
+          nextWeather = "clear";
+        } else if (rand < 0.70) {
+          nextWeather = "rain";
+        } else if (rand < 0.80) {
+          nextWeather = "thunderstorm";
+        } else if (rand < 0.90) {
+          nextWeather = "snow";
+        } else {
+          nextWeather = "snow_rain";
+        }
+
+        setWeather((currentWeather) => {
+          if (currentWeather === nextWeather) return currentWeather; // Avoid duplicate messages
+          
+          const weatherNamesES: Record<string, string> = {
+            clear: "Despejado ☀️",
+            rain: "Lluvia 🌧️",
+            snow: "Nieve ❄️",
+            thunderstorm: "Tormenta Eléctrica ⛈️",
+            snow_rain: "Lluvia de Nieve 🌨️"
+          };
+
+          setChatMessages((prev) => [
+            ...prev,
+            `[Clima] El tiempo ha cambiado a ${weatherNamesES[nextWeather] || nextWeather}`
+          ]);
+
+          return nextWeather;
+        });
+      }
+    }, 40000);
 
     return () => clearInterval(intervalId);
   }, [appState]);
@@ -612,8 +1223,18 @@ const App: React.FC = () => {
 
   const handleChooseGuest = () => {
     resumeAudio();
-    setCurrentUser("Invitado");
-    setActiveSession("Invitado");
+    let guestId = localStorage.getItem("minecraft_guest_id");
+    let guestName = localStorage.getItem("minecraft_guest_name");
+    if (!guestId) {
+      guestId = `guest_${Math.random().toString(36).substring(2, 9)}`;
+      localStorage.setItem("minecraft_guest_id", guestId);
+    }
+    if (!guestName) {
+      guestName = `Invitado_${Math.floor(100 + Math.random() * 900)}`;
+      localStorage.setItem("minecraft_guest_name", guestName);
+    }
+    setCurrentUser(guestName);
+    setActiveSession(guestId);
     setAppState("menu");
   };
 
@@ -774,6 +1395,15 @@ const App: React.FC = () => {
     (x: number, y: number, z: number, blockType: BlockType, oldBlockType?: BlockType) => {
       if (!currentWorld) return;
 
+      if (blockType === BlockType.AIR) {
+        blocksBrokenRef.current += 1;
+      } else {
+        blocksPlacedRef.current += 1;
+      }
+
+      const actName = blockType === BlockType.AIR ? "Destruyó bloque" : `Colocó bloque de ${BLOCK_NAMES[blockType] || blockType}`;
+      logUserActivity(`${actName} en coord [X: ${x}, Y: ${y}, Z: ${z}] (${dimension === "nether" ? "Nether" : "Overworld"})`);
+
       const isSurvival = (currentWorld.gameMode as string) === "survival" || (currentWorld.gameMode as string) === "supervivencia";
       if (isSurvival) {
         if (blockType === BlockType.AIR) {
@@ -808,21 +1438,101 @@ const App: React.FC = () => {
         }
       }
 
-      const editKey = `${x},${y},${z}`;
+      const editKey = dimension === "nether" ? `nether:${x},${y},${z}` : `${x},${y},${z}`;
 
       setCurrentWorld((prev) => {
         if (!prev) return prev;
         const updatedEdits = { ...prev.edits };
+
+        // Helper to get block in the local copy of edits
+        const getLocalBlockAt = (bx: number, by: number, bz: number) => {
+          const key = dimension === "nether" ? `nether:${bx},${by},${bz}` : `${bx},${by},${bz}`;
+          return updatedEdits[key] ?? BlockType.AIR;
+        };
+
+        const setLocalBlockAt = (bx: number, by: number, bz: number, type: BlockType) => {
+          const key = dimension === "nether" ? `nether:${bx},${by},${bz}` : `${bx},${by},${bz}`;
+          if (type === BlockType.AIR) {
+            delete updatedEdits[key];
+          } else {
+            updatedEdits[key] = type;
+          }
+        };
+
+        // Standard edit update first
         if (blockType === BlockType.AIR) {
           updatedEdits[editKey] = BlockType.AIR;
         } else {
           updatedEdits[editKey] = blockType;
         }
+
+        // 1. Check if any portal frame is completed/valid in the neighborhood of (x, y, z)
+        let portalCreated = false;
+        // Search in a small box around the edited block
+        for (let tx = x - 3; tx <= x + 3; tx++) {
+          for (let ty = y - 3; ty <= y + 3; ty++) {
+            for (let tz = z - 3; tz <= z + 3; tz++) {
+              // Try X-aligned frame starting at (tx, ty, tz)
+              if (isFrameValidX(tx, ty, tz, getLocalBlockAt)) {
+                // Fill the 6 inner blocks
+                for (let dx = 0; dx <= 1; dx++) {
+                  for (let dy = 0; dy <= 2; dy++) {
+                    const blockAtPos = getLocalBlockAt(tx + dx, ty + dy, tz);
+                    if (blockAtPos !== BlockType.OBSIDIAN && blockAtPos !== BlockType.PORTAL) {
+                      setLocalBlockAt(tx + dx, ty + dy, tz, BlockType.PORTAL);
+                      portalCreated = true;
+                    }
+                  }
+                }
+              }
+              // Try Z-aligned frame starting at (tx, ty, tz)
+              if (isFrameValidZ(tx, ty, tz, getLocalBlockAt)) {
+                // Fill the 6 inner blocks
+                for (let dz = 0; dz <= 1; dz++) {
+                  for (let dy = 0; dy <= 2; dy++) {
+                    const blockAtPos = getLocalBlockAt(tx, ty + dy, tz + dz);
+                    if (blockAtPos !== BlockType.OBSIDIAN && blockAtPos !== BlockType.PORTAL) {
+                      setLocalBlockAt(tx, ty + dy, tz + dz, BlockType.PORTAL);
+                      portalCreated = true;
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        if (portalCreated) {
+          setTimeout(() => {
+            setChatMessages((p) => [...p, "¡Portal al Inframundo activado con éxito! 🌀"]);
+          }, 50);
+        }
+
+        // 2. Always check and revalidate existing portal blocks in a neighborhood of (x, y, z)
+        // If they are no longer part of a valid frame, break them (set to AIR)
+        for (let tx = x - 4; tx <= x + 4; tx++) {
+          for (let ty = y - 4; ty <= y + 4; ty++) {
+            for (let tz = z - 4; tz <= z + 4; tz++) {
+              if (getLocalBlockAt(tx, ty, tz) === BlockType.PORTAL) {
+                if (!isPortalBlockValid(tx, ty, tz, getLocalBlockAt)) {
+                  setLocalBlockAt(tx, ty, tz, BlockType.AIR);
+                }
+              }
+            }
+          }
+        }
+
         const updatedWorld = {
           ...prev,
           edits: updatedEdits,
           survivalInventory: (prev as any).survivalInventory
         };
+
+        // Sync edits to Firestore in real-time so other players see them instantly!
+        if (db) {
+          updateDoc(doc(db, "worlds", prev.id), { edits: updatedEdits }).catch((err) => {
+            console.warn("Error syncing block edits to Firestore:", err);
+          });
+        }
 
         setWorlds((allWorlds) => {
           const next = allWorlds.map((w) =>
@@ -837,7 +1547,7 @@ const App: React.FC = () => {
         return updatedWorld;
       });
     },
-    [currentWorld, googleUser, currentBlock],
+    [currentWorld, googleUser, currentBlock, dimension],
   );
 
   const handleManualSave = async () => {
@@ -946,6 +1656,7 @@ const App: React.FC = () => {
           await saveWorldToFirestore(updatedWorld);
           const dbWorlds = await loadWorldsFromFirestore(googleUser.uid);
           setWorlds(dbWorlds);
+          await flushUserStats();
         } catch (e) {
           console.error("Error saving world to firestore on exit:", e);
         }
@@ -1009,6 +1720,14 @@ const App: React.FC = () => {
         BlockType.BUCKET_WATER,
         BlockType.BUCKET_LAVA,
         BlockType.SULFUR,
+        BlockType.NETHERRACK,
+        BlockType.SOUL_SAND,
+        BlockType.GLOWSTONE,
+        BlockType.NETHER_QUARTZ_ORE,
+        BlockType.NETHER_BRICKS,
+        BlockType.CRIMSON_NYLIUM,
+        BlockType.WARPED_NYLIUM,
+        BlockType.PORTAL,
       ]
     : Object.keys(survivalInventory)
         .map(Number)
@@ -1028,6 +1747,7 @@ const App: React.FC = () => {
       activeKeys.current = {};
       setMoveVector(prev => (prev.x !== 0 || prev.y !== 0) ? { x: 0, y: 0 } : prev);
       setIsJumping(prev => prev ? false : prev);
+      setDimension("overworld");
       return;
     }
 
@@ -1083,13 +1803,13 @@ const App: React.FC = () => {
         return;
       }
 
-      // Escape key to exit inventory or open settings
+      // Escape key to exit inventory or open in-game menu
       if (e.key === "Escape") {
         if (isInventoryOpenRef.current) {
           setIsInventoryOpen(false);
         } else {
           resumeAudio();
-          setAppState("settings");
+          setIsGameMenuOpen(prev => !prev);
         }
         e.preventDefault();
         return;
@@ -1726,6 +2446,585 @@ const App: React.FC = () => {
     );
   }
 
+  const handleJoinFriendWorld = async (worldId: string) => {
+    try {
+      setIsFriendsOpen(false);
+      setFriendshipLoading(true);
+      const worldSnap = await getDoc(doc(db, "worlds", worldId));
+      if (worldSnap.exists()) {
+        const worldData = worldSnap.data() as World;
+        setCurrentWorld(worldData);
+        setAppState("playing");
+        setChatMessages((p) => [...p, `¡Te uniste al mundo de tu amigo: '${worldData.name}'! 🌍`]);
+      } else {
+        setFriendshipError("El mundo del amigo ya no está disponible o es privado.");
+      }
+    } catch (err) {
+      console.error(err);
+      setFriendshipError("Error al unirse al mundo del amigo.");
+    } finally {
+      setFriendshipLoading(false);
+    }
+  };
+
+  const handleSendFriendRequest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setFriendshipError("");
+    setFriendshipSuccess("");
+    const target = friendSearchEmail.trim();
+    if (!target) return;
+
+    if (target.toLowerCase() === activeSession?.toLowerCase() || (googleUser && target.toLowerCase() === googleUser.email?.toLowerCase())) {
+      setFriendshipError(lang === "es" ? "No puedes enviarte una solicitud a ti mismo." : "You cannot send a request to yourself.");
+      return;
+    }
+
+    setFriendshipLoading(true);
+    try {
+      const friendshipId = [activeSession, target.replace(/[@.]/g, "_")].sort().join("__");
+      await setDoc(doc(db, "friendships", friendshipId), {
+        id: friendshipId,
+        senderId: activeSession,
+        senderName: currentUser || "Invitado",
+        receiverId: target.toLowerCase(),
+        status: "pending",
+        timestamp: Date.now()
+      });
+      setFriendshipSuccess(lang === "es" ? "¡Solicitud de amistad enviada con éxito!" : "Friend request sent successfully!");
+      setFriendSearchEmail("");
+    } catch (err) {
+      console.error(err);
+      setFriendshipError(lang === "es" ? "Error al enviar solicitud." : "Error sending request.");
+    } finally {
+      setFriendshipLoading(false);
+    }
+  };
+
+  const handleAcceptFriend = async (id: string) => {
+    setFriendshipError("");
+    setFriendshipSuccess("");
+    setFriendshipLoading(true);
+    try {
+      await setDoc(doc(db, "friendships", id), { status: "accepted" }, { merge: true });
+      setFriendshipSuccess(lang === "es" ? "¡Solicitud aceptada!" : "Request accepted!");
+    } catch (err) {
+      console.error(err);
+      setFriendshipError(lang === "es" ? "Error al aceptar solicitud." : "Error accepting request.");
+    } finally {
+      setFriendshipLoading(false);
+    }
+  };
+
+  const handleDeclineOrRemoveFriend = async (id: string) => {
+    setFriendshipError("");
+    setFriendshipSuccess("");
+    setFriendshipLoading(true);
+    try {
+      await deleteDoc(doc(db, "friendships", id));
+      setFriendshipSuccess(lang === "es" ? "Amigo eliminado / Solicitud rechazada" : "Friend removed / Request declined");
+    } catch (err) {
+      console.error(err);
+      setFriendshipError(lang === "es" ? "Error al procesar la acción." : "Error processing action.");
+    } finally {
+      setFriendshipLoading(false);
+    }
+  };
+
+  const renderFriendsModal = () => {
+    if (!isFriendsOpen) return null;
+
+    // Filter incoming requests: status is pending AND receiver is me
+    const incomingRequests = friendships.filter(
+      (f) => f.status === "pending" && (f.receiverId === activeSession || (googleUser && f.receiverId === googleUser.email?.toLowerCase()))
+    );
+
+    // Filter sent requests: status is pending AND sender is me
+    const sentRequests = friendships.filter(
+      (f) => f.status === "pending" && f.senderId === activeSession
+    );
+
+    // Filter accepted friendships
+    const friendsList = friendships.filter((f) => f.status === "accepted");
+
+    return (
+      <div 
+        onPointerDown={(e) => e.stopPropagation()}
+        onPointerUp={(e) => e.stopPropagation()}
+        onPointerMove={(e) => e.stopPropagation()}
+        onTouchStart={(e) => e.stopPropagation()}
+        onTouchEnd={(e) => e.stopPropagation()}
+        onTouchMove={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+        onMouseUp={(e) => e.stopPropagation()}
+        onMouseMove={(e) => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()}
+        className="fixed inset-0 bg-black/85 backdrop-blur-md z-[100020] flex items-center justify-center p-4 overflow-y-auto pointer-events-auto text-left animate-in fade-in duration-200"
+      >
+        <div className="bg-zinc-900 border-4 border-purple-600 p-6 sm:p-8 rounded-2xl w-full max-w-2xl shadow-2xl flex flex-col gap-4 relative text-white font-sans max-h-[90vh]">
+          
+          {/* Header */}
+          <div className="flex justify-between items-center border-b border-zinc-700 pb-3">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-purple-500/20 rounded-xl flex items-center justify-center border border-purple-500/40">
+                <i className="fas fa-users text-purple-400 text-xl" />
+              </div>
+              <div className="text-left">
+                <h2 className="text-2xl font-bold minecraft-font uppercase tracking-wide text-purple-400">
+                  {lang === "es" ? "Sistema de Amigos" : "Friends System"}
+                </h2>
+                <p className="text-xs text-zinc-400 font-mono uppercase tracking-wider font-bold">
+                  {lang === "es" ? "Multijugador en Línea y Conexiones" : "Online Multiplayer & Connections"}
+                </p>
+              </div>
+            </div>
+            
+            <button
+              onClick={() => {
+                setIsFriendsOpen(false);
+                setFriendshipError("");
+                setFriendshipSuccess("");
+              }}
+              className="bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white w-8 h-8 rounded-lg flex items-center justify-center border border-zinc-700 transition"
+            >
+              <i className="fas fa-times" />
+            </button>
+          </div>
+
+          {/* Error and Success alerts */}
+          {friendshipError && (
+            <div className="bg-red-500/10 border border-red-500/30 text-red-400 px-4 py-2.5 rounded-xl text-xs font-semibold flex items-center gap-2 font-mono">
+              <i className="fas fa-circle-exclamation" /> {friendshipError}
+            </div>
+          )}
+          {friendshipSuccess && (
+            <div className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 px-4 py-2.5 rounded-xl text-xs font-semibold flex items-center gap-2 font-mono">
+              <i className="fas fa-circle-check" /> {friendshipSuccess}
+            </div>
+          )}
+
+          {/* Add Friend Form */}
+          <form onSubmit={handleSendFriendRequest} className="flex gap-2">
+            <input
+              type="text"
+              placeholder={lang === "es" ? "Ingresa ID de Invitado o Correo de Google..." : "Enter Guest ID or Google Email..."}
+              value={friendSearchEmail}
+              onChange={(e) => setFriendSearchEmail(e.target.value)}
+              className="flex-1 bg-zinc-950 border border-zinc-800 focus:border-purple-500 text-white rounded-lg px-4 py-2 text-xs focus:outline-none transition font-mono"
+            />
+            <button
+              type="submit"
+              disabled={friendshipLoading}
+              className="bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white font-bold px-4 py-2 rounded-lg text-xs uppercase tracking-wider transition-all active:scale-95 flex items-center gap-2 shrink-0"
+            >
+              {friendshipLoading ? (
+                <i className="fas fa-spinner animate-spin" />
+              ) : (
+                <i className="fas fa-user-plus" />
+              )}
+              {lang === "es" ? "Añadir" : "Add"}
+            </button>
+          </form>
+
+          {/* Content tabs / columns */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 overflow-y-auto pr-1 max-h-[50vh]">
+            
+            {/* Friends list */}
+            <div className="flex flex-col gap-2.5">
+              <h3 className="text-zinc-400 text-xs font-bold uppercase tracking-wider border-b border-zinc-800 pb-1 flex items-center gap-2">
+                <i className="fas fa-user-group text-purple-400" />
+                {lang === "es" ? "Mis Amigos" : "My Friends"} ({friendsList.length})
+              </h3>
+              
+              {friendsList.length === 0 ? (
+                <div className="text-zinc-500 text-xs italic py-6 text-center">
+                  {lang === "es" ? "No has agregado amigos aún." : "No friends added yet."}
+                </div>
+              ) : (
+                friendsList.map((f) => {
+                  const isSenderMe = f.senderId === activeSession;
+                  const friendId = isSenderMe ? f.receiverId : f.senderId;
+                  const friendName = isSenderMe ? (f.receiverName || f.receiverId) : f.senderName;
+                  
+                  // Lookup if friend is online
+                  const onlineData = onlinePlayers[friendId] || Object.values(onlinePlayers).find(p => p.email?.toLowerCase() === friendId.toLowerCase());
+                  const isOnline = !!onlineData && (Date.now() - (onlineData.lastActive || 0) < 15000);
+                  const isPlaying = isOnline && !!onlineData.worldId;
+
+                  return (
+                    <div key={f.id} className="bg-zinc-950/60 border border-zinc-800/80 rounded-xl p-3 flex flex-col gap-2 transition hover:border-zinc-700/60">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <div className={`w-2.5 h-2.5 rounded-full ${isOnline ? "bg-emerald-400 shadow-[0_0_8px_#34d399]" : "bg-zinc-600"}`} />
+                          <div className="text-left">
+                            <p className="text-xs font-bold truncate max-w-[140px] text-zinc-100">{friendName}</p>
+                            <p className="text-[9px] text-zinc-500 font-mono truncate max-w-[140px] uppercase">{friendId}</p>
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => handleDeclineOrRemoveFriend(f.id)}
+                          className="text-zinc-600 hover:text-red-400 text-[10px] uppercase font-bold p-1 transition"
+                          title={lang === "es" ? "Eliminar Amigo" : "Remove Friend"}
+                        >
+                          <i className="fas fa-user-minus" />
+                        </button>
+                      </div>
+
+                      {isOnline && (
+                        <div className="bg-purple-950/20 border border-purple-900/30 rounded-lg p-2 flex flex-col gap-1.5 mt-0.5">
+                          <p className="text-[9px] text-purple-300 font-mono font-semibold flex items-center gap-1">
+                            <i className="fas fa-gamepad animate-pulse text-purple-400" />
+                            {isPlaying ? `${lang === "es" ? "Jugando:" : "Playing:"} ${onlineData.worldName}` : (lang === "es" ? "En el menú" : "In menu")}
+                          </p>
+                          {isPlaying && (
+                            <button
+                              onClick={() => handleJoinFriendWorld(onlineData.worldId)}
+                              className="w-full bg-emerald-500 hover:bg-emerald-400 text-white text-[9px] font-bold py-1.5 px-2 rounded uppercase tracking-wider transition-all active:scale-95 flex items-center justify-center gap-1.5 shadow"
+                            >
+                              <i className="fas fa-arrow-right-to-bracket animate-bounce" />
+                              {lang === "es" ? "Unirse al Mundo" : "Join World"}
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            {/* Requests columns */}
+            <div className="flex flex-col gap-4">
+              
+              {/* Incoming */}
+              <div className="flex flex-col gap-2">
+                <h3 className="text-zinc-400 text-xs font-bold uppercase tracking-wider border-b border-zinc-800 pb-1 flex items-center gap-2">
+                  <i className="fas fa-envelope-open-text text-amber-400" />
+                  {lang === "es" ? "Solicitudes Recibidas" : "Incoming Requests"} ({incomingRequests.length})
+                </h3>
+                
+                {incomingRequests.length === 0 ? (
+                  <div className="text-zinc-500 text-[10px] italic py-4 text-center">
+                    {lang === "es" ? "No tienes solicitudes pendientes." : "No pending requests."}
+                  </div>
+                ) : (
+                  incomingRequests.map((r) => (
+                    <div key={r.id} className="bg-zinc-950/40 border border-zinc-800 rounded-xl p-3 flex items-center justify-between gap-2">
+                      <div className="text-left truncate">
+                        <p className="text-xs font-bold text-zinc-200 truncate">{r.senderName}</p>
+                        <p className="text-[8px] text-zinc-500 font-mono truncate">{r.senderId}</p>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          onClick={() => handleAcceptFriend(r.id)}
+                          className="bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold px-2 py-1 rounded text-[10px] uppercase transition active:scale-95"
+                        >
+                          <i className="fas fa-check" />
+                        </button>
+                        <button
+                          onClick={() => handleDeclineOrRemoveFriend(r.id)}
+                          className="bg-zinc-800 hover:bg-red-900/60 text-zinc-400 hover:text-white font-extrabold px-2 py-1 rounded text-[10px] uppercase transition active:scale-95"
+                        >
+                          <i className="fas fa-times" />
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              {/* Sent Requests */}
+              <div className="flex flex-col gap-2">
+                <h3 className="text-zinc-400 text-xs font-bold uppercase tracking-wider border-b border-zinc-800 pb-1 flex items-center gap-2">
+                  <i className="fas fa-paper-plane text-zinc-400" />
+                  {lang === "es" ? "Solicitudes Enviadas" : "Sent Requests"} ({sentRequests.length})
+                </h3>
+                
+                {sentRequests.length === 0 ? (
+                  <div className="text-zinc-500 text-[10px] italic py-4 text-center">
+                    {lang === "es" ? "No has enviado solicitudes." : "No sent requests."}
+                  </div>
+                ) : (
+                  sentRequests.map((r) => (
+                    <div key={r.id} className="bg-zinc-950/20 border border-zinc-800/50 rounded-xl p-2.5 flex items-center justify-between gap-2">
+                      <div className="text-left truncate">
+                        <p className="text-xs text-zinc-400 truncate font-semibold">{r.receiverId}</p>
+                      </div>
+                      <button
+                        onClick={() => handleDeclineOrRemoveFriend(r.id)}
+                        className="text-zinc-500 hover:text-red-400 text-[10px] p-1"
+                      >
+                        <i className="fas fa-trash-can" />
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+
+            </div>
+          </div>
+
+        </div>
+      </div>
+    );
+  };
+
+  const renderLeaderboardModal = () => {
+    if (!isLeaderboardOpen) return null;
+    return (
+      <div 
+        onPointerDown={(e) => e.stopPropagation()}
+        onPointerUp={(e) => e.stopPropagation()}
+        onPointerMove={(e) => e.stopPropagation()}
+        onTouchStart={(e) => e.stopPropagation()}
+        onTouchEnd={(e) => e.stopPropagation()}
+        onTouchMove={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+        onMouseUp={(e) => e.stopPropagation()}
+        onMouseMove={(e) => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()}
+        className="fixed inset-0 bg-black/85 backdrop-blur-md z-[100010] flex items-center justify-center p-4 overflow-y-auto pointer-events-auto text-left"
+      >
+        <div className="bg-zinc-900 border-4 border-yellow-600 p-6 sm:p-8 rounded-2xl w-full max-w-4xl shadow-2xl flex flex-col gap-4 relative animate-in fade-in zoom-in-95 duration-200 text-white font-sans max-h-[90vh]">
+          
+          {/* Header with Trophy */}
+          <div className="flex justify-between items-center border-b border-zinc-700 pb-3">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-yellow-500/20 rounded-xl flex items-center justify-center border border-yellow-500/40">
+                <i className="fas fa-trophy text-yellow-400 text-xl" />
+              </div>
+              <div className="text-left">
+                <h2 className="text-2xl font-bold minecraft-font uppercase tracking-wide text-yellow-400">
+                  {lang === "es" ? "Tabla de Clasificación" : "Leaderboard"}
+                </h2>
+                <p className="text-xs text-zinc-400 font-mono uppercase tracking-wider font-bold">
+                  {lang === "es" ? "Top 100 Jugadores de la Comunidad" : "Top 100 Community Players"}
+                </p>
+              </div>
+            </div>
+            
+            <button
+              onClick={() => setIsLeaderboardOpen(false)}
+              className="bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white w-8 h-8 rounded-lg flex items-center justify-center border border-zinc-700 transition"
+            >
+              <i className="fas fa-times" />
+            </button>
+          </div>
+
+          {/* Custom Toast inside Leaderboard */}
+          {leaderboardToast && (
+            <div className="bg-emerald-500/95 text-white font-bold py-2 px-4 rounded-xl text-[10px] uppercase tracking-wider text-center border border-emerald-400 animate-pulse font-mono shadow-lg">
+              <i className="fas fa-circle-check mr-2" />
+              {leaderboardToast}
+            </div>
+          )}
+
+          {/* Search and Filters */}
+          <div className="flex gap-2">
+            <div className="relative flex-1">
+              <i className="fas fa-magnifying-glass absolute left-3 top-2.5 text-zinc-500 text-xs" />
+              <input
+                type="text"
+                placeholder={lang === "es" ? "Buscar jugador por nombre o correo..." : "Search player by name or email..."}
+                value={leaderboardSearch}
+                onChange={(e) => setLeaderboardSearch(e.target.value)}
+                className="w-full bg-zinc-950 border border-zinc-800 focus:border-yellow-500 text-white rounded-lg pl-9 pr-4 py-2 text-xs focus:outline-none transition font-mono"
+              />
+            </div>
+            {leaderboardSearch && (
+              <button
+                onClick={() => setLeaderboardSearch("")}
+                className="bg-zinc-800 hover:bg-zinc-700 px-3 rounded-lg text-xs font-semibold"
+              >
+                {lang === "es" ? "Limpiar" : "Clear"}
+              </button>
+            )}
+          </div>
+
+          {/* Leaderboard Table Container */}
+          <div className="overflow-x-auto overflow-y-auto max-h-[50vh] rounded-xl border border-zinc-800 bg-zinc-950/50 scrollbar-thin">
+            <table className="w-full text-left border-collapse font-mono text-xs">
+              <thead>
+                <tr className="bg-zinc-900 border-b border-zinc-800 text-zinc-400 text-[10px] uppercase tracking-wider select-none">
+                  <th className="py-3 px-4 text-center w-12">#</th>
+                  <th className="py-3 px-4">{lang === "es" ? "Jugador / Email" : "Player / Email"}</th>
+                  <th className="py-3 px-4 w-36">{lang === "es" ? "Rol" : "Role"}</th>
+                  <th className="py-3 px-4 text-center w-24">{lang === "es" ? "Bloques Puestos" : "Blocks Placed"}</th>
+                  <th className="py-3 px-4 text-center w-24">{lang === "es" ? "Bloques Rotos" : "Blocks Broken"}</th>
+                  <th className="py-3 px-4 text-center w-20">{lang === "es" ? "Mundos" : "Worlds"}</th>
+                  <th className="py-3 px-4 text-right w-24 pr-6">{lang === "es" ? "Puntaje" : "Score"}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(() => {
+                  const mapped = [...allUserRolesList].map(u => {
+                    const blocksPlaced = u.blocksPlaced ?? 0;
+                    const blocksBroken = u.blocksBroken ?? 0;
+                    const worldsCreated = u.worldsCreated ?? 0;
+                    const computedScore = u.score !== undefined ? u.score : (blocksPlaced * 10 + blocksBroken * 5 + worldsCreated * 100);
+                    return {
+                      ...u,
+                      blocksPlaced,
+                      blocksBroken,
+                      worldsCreated,
+                      score: computedScore,
+                      displayName: u.displayName || u.email.split("@")[0] || u.email
+                    };
+                  });
+
+                  // Sort by score descending
+                  const sorted = mapped.sort((a, b) => b.score - a.score);
+
+                  // Filter search
+                  const filtered = sorted.filter(u => {
+                    const s = leaderboardSearch.toLowerCase().trim();
+                    if (!s) return true;
+                    return u.email.toLowerCase().includes(s) || u.displayName.toLowerCase().includes(s);
+                  });
+
+                  if (filtered.length === 0) {
+                    return (
+                      <tr>
+                        <td colSpan={7} className="py-10 text-center text-zinc-500 italic">
+                          {lang === "es" ? "No se encontraron jugadores que coincidan con la búsqueda." : "No players found matching your search."}
+                        </td>
+                      </tr>
+                    );
+                  }
+
+                  return filtered.map((u) => {
+                    // Original global rank is index + 1 in sorted array
+                    const globalRank = sorted.findIndex(item => item.email === u.email) + 1;
+                    
+                    let rankBadge = "";
+                    let rankRowBg = "hover:bg-white/5 border-b border-zinc-900";
+                    
+                    if (globalRank === 1) {
+                      rankBadge = "👑 1º";
+                      rankRowBg = "bg-yellow-500/10 hover:bg-yellow-500/15 border-b border-yellow-500/20";
+                    } else if (globalRank === 2) {
+                      rankBadge = "⭐ 2º";
+                      rankRowBg = "bg-slate-300/10 hover:bg-slate-300/15 border-b border-slate-300/20";
+                    } else if (globalRank === 3) {
+                      rankBadge = "✨ 3º";
+                      rankRowBg = "bg-amber-700/15 hover:bg-amber-700/20 border-b border-amber-700/25";
+                    } else {
+                      rankBadge = `#${globalRank}`;
+                    }
+
+                    const isSelf = googleUser && googleUser.email && googleUser.email.toLowerCase() === u.email.toLowerCase();
+
+                    return (
+                      <tr key={u.email} className={`${rankRowBg} ${isSelf ? "outline outline-1 outline-yellow-500/40" : ""}`}>
+                        <td className="py-3.5 px-4 text-center font-bold text-xs">
+                          <span className={
+                            globalRank === 1 ? "text-yellow-400 text-sm font-extrabold" :
+                            globalRank === 2 ? "text-slate-200 font-extrabold" :
+                            globalRank === 3 ? "text-amber-500 font-extrabold" : "text-zinc-400"
+                          }>
+                            {rankBadge}
+                          </span>
+                        </td>
+                        <td className="py-3.5 px-4 text-left">
+                          <div className="flex flex-col">
+                            <span className="font-semibold text-white flex items-center gap-1.5">
+                              {u.displayName}
+                              {isSelf && (
+                                <span className="text-[7.5px] bg-yellow-500/20 text-yellow-300 font-bold px-1 py-0.5 rounded uppercase tracking-wider scale-90">
+                                  {lang === "es" ? "Tú" : "You"}
+                                </span>
+                              )}
+                            </span>
+                            <span className="text-[9.5px] text-zinc-500">{u.email}</span>
+                          </div>
+                        </td>
+                        <td className="py-3.5 px-4 text-left">
+                          {/* Role Selection for lionbastias18@gmail.com */}
+                          {googleUser?.email?.toLowerCase() === "lionbastias18@gmail.com" ? (
+                            <select
+                              value={u.role || "user"}
+                              onChange={async (e) => {
+                                const newRole = e.target.value;
+                                const targetEmail = u.email.toLowerCase().trim();
+                                try {
+                                  await setDoc(doc(db, "user_roles", targetEmail), {
+                                    role: newRole
+                                  }, { merge: true });
+                                  setLeaderboardToast(lang === "es" ? `¡Rol de ${targetEmail} cambiado a ${newRole.toUpperCase()}!` : `Role of ${targetEmail} changed to ${newRole.toUpperCase()}!`);
+                                  setTimeout(() => setLeaderboardToast(null), 3500);
+                                  logUserActivity(`Actualizó rol del usuario ${targetEmail} a ${newRole} desde la clasificación`);
+                                } catch (err) {
+                                  console.error("Error setting role from leaderboard:", err);
+                                  handleFirestoreError(err, OperationType.WRITE, `user_roles/${targetEmail}`);
+                                }
+                              }}
+                              className="bg-zinc-950 border border-zinc-800 text-[10px] rounded text-white p-1 focus:outline-none focus:border-yellow-500 cursor-pointer font-sans font-bold"
+                            >
+                              <option value="user">Usuario</option>
+                              <option value="mod">Mod</option>
+                              <option value="staff">Staff</option>
+                              <option value="owner">Owner</option>
+                            </select>
+                          ) : (
+                            // Beautiful static role badge for others
+                            (() => {
+                              let badgeStyle = "bg-zinc-800 text-zinc-400";
+                              let label = lang === "es" ? "USUARIO" : "USER";
+
+                              if (u.role === "owner") {
+                                badgeStyle = "bg-gradient-to-r from-yellow-500 to-amber-500 text-white border border-yellow-400 animate-pulse";
+                                label = lang === "es" ? "DUEÑO" : "OWNER";
+                              } else if (u.role === "staff") {
+                                badgeStyle = "bg-red-500/20 text-red-400 border border-red-500/30";
+                                label = "STAFF";
+                              } else if (u.role === "mod") {
+                                badgeStyle = "bg-purple-500/20 text-purple-400 border border-purple-500/30";
+                                label = "MOD";
+                              }
+
+                              return (
+                                <span className={`text-[8px] px-1.5 py-0.5 rounded font-sans font-extrabold uppercase tracking-widest ${badgeStyle}`}>
+                                  {label}
+                                </span>
+                              );
+                            })()
+                          )}
+                        </td>
+                        <td className="py-3.5 px-4 text-center font-mono text-zinc-300">{u.blocksPlaced.toLocaleString()}</td>
+                        <td className="py-3.5 px-4 text-center font-mono text-zinc-300">{u.blocksBroken.toLocaleString()}</td>
+                        <td className="py-3.5 px-4 text-center font-mono text-zinc-300">{u.worldsCreated}</td>
+                        <td className="py-3.5 px-4 text-right font-bold font-mono pr-6">
+                          <span className={
+                            globalRank === 1 ? "text-yellow-400 text-shadow-yellow animate-pulse" :
+                            globalRank === 2 ? "text-slate-100" :
+                            globalRank === 3 ? "text-amber-400" : "text-emerald-400"
+                          }>
+                            {u.score.toLocaleString()}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  });
+                })()}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Footer with short scoring explanation */}
+          <div className="flex flex-col sm:flex-row justify-between items-center text-[9px] text-zinc-500 font-mono pt-2 border-t border-zinc-800 gap-2">
+            <span className="text-center sm:text-left">* {lang === "es" ? "Score = 10 pts por bloque puesto + 5 pts por bloque roto + 100 pts por mundo" : "Score = 10 pts per block placed + 5 pts per block broken + 100 pts per world"}</span>
+            <button
+              onClick={() => setIsLeaderboardOpen(false)}
+              className="bg-yellow-600 hover:bg-yellow-500 text-white px-5 py-2 rounded-xl text-xs uppercase font-bold tracking-widest border border-yellow-500/30 transition active:scale-95"
+            >
+              {lang === "es" ? "Cerrar" : "Close"}
+            </button>
+          </div>
+
+        </div>
+      </div>
+    );
+  };
+
   if (appState === "menu") {
     return (
       <div className="w-full h-full bg-slate-900 flex flex-col items-center justify-start sm:justify-center p-4 sm:p-6 relative overflow-y-auto">
@@ -1781,9 +3080,37 @@ const App: React.FC = () => {
             <span className="text-white/40 font-mono text-[10px] tracking-wider uppercase font-bold select-none">
               alpha Mobile 1.0.2
             </span>
+            {googleUser && (
+              <div className="mt-1 flex items-center gap-1.5 bg-black/40 border border-white/5 py-1 px-3 rounded-full">
+                <span className="text-zinc-400 font-mono text-[8px] uppercase tracking-wider font-bold">
+                  {lang === "es" ? "Rol actual:" : "Current role:"}
+                </span>
+                {(() => {
+                  let badgeStyle = "bg-zinc-800 text-zinc-400";
+                  let label = lang === "es" ? "USUARIO" : "USER";
+
+                  if (userRole === "owner") {
+                    badgeStyle = "bg-gradient-to-r from-yellow-500 to-amber-500 text-white border border-yellow-400 animate-pulse";
+                    label = lang === "es" ? "DUEÑO (OWNER)" : "OWNER";
+                  } else if (userRole === "staff") {
+                    badgeStyle = "bg-red-600 text-white border border-red-500";
+                    label = "STAFF";
+                  } else if (userRole === "mod") {
+                    badgeStyle = "bg-purple-600 text-white border border-purple-500";
+                    label = "MOD";
+                  }
+
+                  return (
+                    <span className={`text-[8px] px-2 py-0.5 rounded font-sans font-extrabold uppercase tracking-widest ${badgeStyle}`}>
+                      {label}
+                    </span>
+                  );
+                })()}
+              </div>
+            )}
           </div>
 
-          <div className="flex flex-col w-full gap-4 mt-8">
+          <div className="flex flex-col w-full gap-3 mt-8">
             <button
               onClick={() => {
                 resumeAudio();
@@ -1793,23 +3120,46 @@ const App: React.FC = () => {
             >
               {t.play}
             </button>
+            
+            <button
+              onClick={() => {
+                resumeAudio();
+                setIsLeaderboardOpen(true);
+              }}
+              className="bg-gradient-to-r from-amber-600 to-yellow-500 hover:from-amber-500 hover:to-yellow-400 text-white font-bold py-3 rounded-xl text-xs uppercase tracking-widest shadow-lg border border-yellow-500/30 transition-all active:scale-95 flex items-center justify-center gap-2"
+            >
+              <i className="fas fa-trophy text-white text-xs" /> {lang === "es" ? "Clasificación (Top 100)" : "Leaderboard (Top 100)"}
+            </button>
+
+            <button
+              onClick={() => {
+                resumeAudio();
+                setIsFriendsOpen(true);
+              }}
+              className="bg-purple-600 hover:bg-purple-500 text-white font-bold py-3 rounded-xl text-xs uppercase tracking-widest shadow-lg border border-purple-500/30 transition-all active:scale-95 flex items-center justify-center gap-2"
+            >
+              <i className="fas fa-users text-white text-xs" /> {lang === "es" ? "Amigos (Multijugador)" : "Friends (Multiplayer)"}
+            </button>
+
             <button
               onClick={() => {
                 resumeAudio();
                 setAppState("settings");
               }}
-              className="bg-zinc-800 hover:bg-zinc-700 text-white/90 font-bold py-4 rounded-xl text-sm uppercase tracking-widest shadow-lg border border-white/10 transition-all active:scale-95 flex items-center justify-center gap-2"
+              className="bg-zinc-800 hover:bg-zinc-700 text-white/90 font-bold py-3 rounded-xl text-xs uppercase tracking-widest shadow-lg border border-white/10 transition-all active:scale-95 flex items-center justify-center gap-2"
             >
               <i className="fas fa-cog text-emerald-400" /> {t.settings}
             </button>
             <button
               onClick={handleLogout}
-              className="bg-zinc-900 border border-white/5 hover:bg-red-950/40 hover:text-red-400 text-white/50 font-semibold py-3 rounded-xl text-xs uppercase tracking-widest transition-all active:scale-95 mt-1"
+              className="bg-zinc-900 border border-white/5 hover:bg-red-950/40 hover:text-red-400 text-white/50 font-semibold py-2.5 rounded-xl text-[10px] uppercase tracking-widest transition-all active:scale-95 mt-1"
             >
               <i className="fas fa-door-open mr-1" /> {t.logout}
             </button>
           </div>
         </div>
+        {renderLeaderboardModal()}
+        {renderFriendsModal()}
       </div>
     );
   }
@@ -2134,7 +3484,7 @@ const App: React.FC = () => {
 
   return (
     <div
-      className={`w-full h-full relative overflow-hidden bg-black touch-none ${maxAbsCoord >= 1500 ? "glitch-heavy" : ""}`}
+      className={`w-full h-full relative overflow-hidden bg-black touch-none ${maxAbsCoord >= 2000 ? "glitch-heavy" : maxAbsCoord >= 1500 ? "glitch-moderate" : ""}`}
       onMouseDown={handleTouchStart}
       onMouseMove={handleTouchMove}
       onMouseUp={handleTouchEnd}
@@ -2167,8 +3517,11 @@ const App: React.FC = () => {
           50% { opacity: 0.05; }
           100% { opacity: 0.18; }
         }
+        .glitch-moderate {
+          animation: glitch-shake 0.45s infinite steps(2);
+        }
         .glitch-heavy {
-          animation: glitch-shake 0.28s infinite steps(2);
+          animation: glitch-shake 0.15s infinite steps(1);
         }
         .scanlines-overlay {
           background: linear-gradient(
@@ -2198,30 +3551,61 @@ const App: React.FC = () => {
       `}</style>
 
       {/* Screen Warning Messages overlay based on player coordinates */}
-      {maxAbsCoord >= 1500 && (
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-[120px] pointer-events-none flex flex-col items-center gap-2 z-[9999]">
-          <div className="bg-red-950/85 border-2 border-red-500 text-red-100 px-6 py-3 rounded-2xl font-bold tracking-widest uppercase shadow-[0_0_25px_rgba(239,68,68,0.65)] font-mono text-center flex flex-col gap-1.5 animate-pulse">
-            <span className="text-red-400 font-extrabold flex items-center justify-center gap-2 text-xs md:text-sm">
-              <i className="fas fa-exclamation-triangle animate-bounce text-red-500" /> {lang === "es" ? "HAS LLEGADO AL LÍMITE" : "YOU HAVE REACHED THE LIMIT"}
+      {maxAbsCoord >= 2300 ? (
+        <div className="absolute inset-0 bg-black/60 pointer-events-none flex flex-col items-center justify-center gap-4 z-[9999] overflow-hidden">
+          {/* Static Scanline noise sweeps */}
+          <div className="absolute inset-0 scanlines-overlay mix-blend-color-burn opacity-95" />
+          <div className="absolute top-0 left-0 w-full h-[15px] bg-red-600/40 scanline-light shadow-[0_0_20px_rgba(239,68,68,0.85)] animate-bounce" />
+          <div className="absolute inset-0 cyber-noise opacity-[0.4] mix-blend-difference" />
+          
+          <div className="bg-black/95 border-4 border-red-600 text-red-500 px-8 py-5 rounded-3xl font-extrabold tracking-[0.2em] uppercase shadow-[0_0_50px_rgba(220,38,38,0.95)] font-mono text-center flex flex-col gap-2 scale-110">
+            <span className="text-2xl md:text-4xl text-red-600 font-black tracking-widest animate-pulse">
+              ⚠️ SEÑAL CORROMPIDA ⚠️
             </span>
-            <span className="text-[9px] text-red-200/90 font-semibold tracking-wide">
-              {lang === "es" ? "EL MUNDO SE ESTÁ CORROMPIENDO MUCHO..." : "THE WORLD IS SEVERELY CORRUPTING..."}
+            <span className="text-[10px] text-zinc-400 font-semibold tracking-wider">
+              FALLA CRÍTICA DE SEÑAL - MUNDO DISOLVIÉNDOSE
             </span>
           </div>
         </div>
-      )}
+      ) : (
+        <>
+          {maxAbsCoord >= 2000 && maxAbsCoord < 2300 && (
+            <div className="absolute top-[40%] left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none flex flex-col items-center gap-2 z-[9999]">
+              <div className="bg-red-950/95 border-2 border-red-600/80 px-6 py-3 rounded-lg font-bold tracking-widest uppercase shadow-[0_0_20px_rgba(239,68,68,0.75)] font-mono text-center flex flex-col gap-1 text-[11px] md:text-sm animate-pulse">
+                <span className="text-red-500 font-extrabold flex items-center justify-center gap-2 tracking-[0.2em]">
+                  <span className="inline-block w-2.5 h-2.5 rounded-full bg-red-600 animate-ping mr-1" />
+                  SEÑAL CORROMPIDA
+                </span>
+              </div>
+            </div>
+          )}
 
-      {maxAbsCoord >= 1400 && maxAbsCoord < 1500 && (
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-[120px] pointer-events-none flex flex-col items-center gap-2 z-[9999]">
-          <div className="bg-amber-950/80 border-2 border-amber-500 text-amber-100 px-5 py-2.5 rounded-2xl font-bold tracking-widest uppercase shadow-[0_0_15px_rgba(245,158,11,0.5)] font-mono text-center flex flex-col gap-1 text-[11px] md:text-xs">
-            <span className="text-amber-400 font-extrabold flex items-center justify-center gap-1.5">
-              <i className="fas fa-circle-exclamation animate-pulse" /> {lang === "es" ? "EL MUNDO EMPIEZA A CORROMPERSE" : "THE WORLD IS STARTING TO CORRUPT"}
-            </span>
-            <span className="text-[8.5px] text-amber-200/80 font-semibold tracking-wide">
-              {lang === "es" ? "EL MUNDO SE ESTÁ GLICHEANDO..." : "THE WORLD IS GLITCHING..."}
-            </span>
-          </div>
-        </div>
+          {maxAbsCoord >= 1500 && maxAbsCoord < 2000 && (
+            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-[120px] pointer-events-none flex flex-col items-center gap-2 z-[9999]">
+              <div className="bg-red-950/85 border-2 border-red-500 text-red-100 px-6 py-3 rounded-2xl font-bold tracking-widest uppercase shadow-[0_0_25px_rgba(239,68,68,0.65)] font-mono text-center flex flex-col gap-1.5 animate-pulse">
+                <span className="text-red-400 font-extrabold flex items-center justify-center gap-2 text-xs md:text-sm">
+                  <i className="fas fa-exclamation-triangle animate-bounce text-red-500" /> {lang === "es" ? "HAS LLEGADO AL LÍMITE" : "YOU HAVE REACHED THE LIMIT"}
+                </span>
+                <span className="text-[9px] text-red-200/90 font-semibold tracking-wide">
+                  {lang === "es" ? "EL MUNDO SE ESTÁ CORROMPIENDO MUCHO..." : "THE WORLD IS SEVERELY CORRUPTING..."}
+                </span>
+              </div>
+            </div>
+          )}
+
+          {maxAbsCoord >= 1400 && maxAbsCoord < 1500 && (
+            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-[120px] pointer-events-none flex flex-col items-center gap-2 z-[9999]">
+              <div className="bg-amber-950/80 border-2 border-amber-500 text-amber-100 px-5 py-2.5 rounded-2xl font-bold tracking-widest uppercase shadow-[0_0_15px_rgba(245,158,11,0.5)] font-mono text-center flex flex-col gap-1 text-[11px] md:text-xs">
+                <span className="text-amber-400 font-extrabold flex items-center justify-center gap-1.5">
+                  <i className="fas fa-circle-exclamation animate-pulse" /> {lang === "es" ? "EL MUNDO EMPIEZA A CORROMPERSE" : "THE WORLD IS STARTING TO CORRUPT"}
+                </span>
+                <span className="text-[8.5px] text-amber-200/80 font-semibold tracking-wide">
+                  {lang === "es" ? "EL MUNDO SE ESTÁ GLICHEANDO..." : "THE WORLD IS GLITCHING..."}
+                </span>
+              </div>
+            </div>
+          )}
+        </>
       )}
 
       {/* Screen Glitched full screen filter for x/z >= 1500 */}
@@ -2239,7 +3623,7 @@ const App: React.FC = () => {
         </div>
       )}
       <VoxelWorld
-        key={currentWorld?.id || "temp"}
+        key={(currentWorld?.id || "temp") + "_" + dimension}
         currentBlock={currentBlock}
         playerPos={playerPos}
         onBlockChange={handlePosChange}
@@ -2251,7 +3635,7 @@ const App: React.FC = () => {
         fov={fov}
         ultraOptimization={ultraOptimization}
         worldId={currentWorld?.id || "temp"}
-        initialEdits={currentWorld?.edits || {}}
+        initialEdits={getDimensionEdits()}
         onBlockEdit={handleBlockEdit}
         onSelectBlock={setCurrentBlock}
         worldType={currentWorld?.worldType || "normal"}
@@ -2263,6 +3647,13 @@ const App: React.FC = () => {
         }}
         survivalInventory={survivalInventory}
         onUpdateSurvivalInventory={setSurvivalInventory}
+        weather={weather}
+        dimension={dimension}
+        onPortalTeleport={handlePortalTeleport}
+        autoJumpEnabled={autoJumpEnabled}
+        userRole={userRole}
+        biomeConfig={biomeConfig}
+        activePlayers={activePlayers}
       />
 
       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none opacity-30">
@@ -3031,6 +4422,359 @@ const App: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Minecraft-style Game Pause Menu */}
+      {isGameMenuOpen && (
+        <div 
+          className="absolute inset-0 bg-zinc-950/80 backdrop-blur-md z-[10005] flex flex-col items-center justify-center p-4 overflow-y-auto"
+          onPointerDown={(e) => e.stopPropagation()}
+          onTouchStart={(e) => e.stopPropagation()}
+        >
+          {/* Menu Card Container */}
+          <div className="bg-zinc-900 border-4 border-zinc-700 p-6 sm:p-8 rounded-2xl w-full max-w-md shadow-2xl flex flex-col gap-5 relative">
+            
+            {/* Minecraft header banner */}
+            <div className="text-center">
+              <h2 className="text-white text-3xl font-bold minecraft-font uppercase tracking-wider drop-shadow-lg flex items-center justify-center gap-2">
+                <i className="fas fa-gamepad text-emerald-400" />
+                {lang === "es" ? "Menú de Juego" : "Game Menu"}
+              </h2>
+              <div className="h-[2px] bg-emerald-500/30 w-full mt-2" />
+              
+              <div className="flex items-center justify-center gap-1.5 mt-2">
+                <span className="text-[9px] text-zinc-400 font-mono uppercase tracking-wider font-bold">
+                  {lang === "es" ? "Tu Rol:" : "Your Role:"}
+                </span>
+                {(() => {
+                  let badgeStyle = "bg-zinc-800 text-zinc-400";
+                  let label = lang === "es" ? "USUARIO" : "USER";
+
+                  if (userRole === "owner") {
+                    badgeStyle = "bg-gradient-to-r from-yellow-500 to-amber-500 text-white border border-yellow-400 animate-pulse";
+                    label = lang === "es" ? "DUEÑO (OWNER)" : "OWNER";
+                  } else if (userRole === "staff") {
+                    badgeStyle = "bg-red-600 text-white border border-red-500";
+                    label = "STAFF";
+                  } else if (userRole === "mod") {
+                    badgeStyle = "bg-purple-600 text-white border border-purple-500";
+                    label = "MOD";
+                  }
+
+                  return (
+                    <span className={`text-[8.5px] px-2 py-0.5 rounded font-sans font-extrabold uppercase tracking-widest ${badgeStyle}`}>
+                      {label}
+                    </span>
+                  );
+                })()}
+              </div>
+            </div>
+
+            {/* Menu Buttons Grid */}
+            <div className="flex flex-col gap-3">
+              
+              {/* Button: Resume Game */}
+              <button
+                onClick={() => {
+                  resumeAudio();
+                  setIsGameMenuOpen(false);
+                }}
+                className="w-full bg-emerald-500 hover:bg-emerald-400 text-white py-3 rounded-lg font-bold text-sm uppercase tracking-widest border border-emerald-400/30 shadow-md transition-all active:scale-95 flex items-center justify-center gap-2"
+              >
+                <i className="fas fa-play text-xs" />
+                {lang === "es" ? "Volver al Juego" : "Resume Game"}
+              </button>
+
+              {/* Button: Leaderboard / Tabla de Clasificación */}
+              <button
+                onClick={() => {
+                  resumeAudio();
+                  setIsLeaderboardOpen(true);
+                }}
+                className="w-full bg-gradient-to-r from-amber-600 to-yellow-500 hover:from-amber-500 hover:to-yellow-400 text-white py-3 rounded-lg font-bold text-sm uppercase tracking-widest border border-yellow-400/30 shadow-md transition-all active:scale-95 flex items-center justify-center gap-2"
+              >
+                <i className="fas fa-trophy text-white text-xs animate-pulse" />
+                {lang === "es" ? "Tabla de Clasificación" : "Leaderboard"}
+              </button>
+
+              {/* Button: Friends / Amigos */}
+              <button
+                onClick={() => {
+                  resumeAudio();
+                  setIsFriendsOpen(true);
+                }}
+                className="w-full bg-purple-600 hover:bg-purple-500 text-white py-3 rounded-lg font-bold text-sm uppercase tracking-widest border border-purple-500/30 shadow-md transition-all active:scale-95 flex items-center justify-center gap-2"
+              >
+                <i className="fas fa-users text-white text-xs" />
+                {lang === "es" ? "Amigos (Multijugador)" : "Friends (Multiplayer)"}
+              </button>
+
+              {/* Button: Auto-Jump Toggle */}
+              <button
+                onClick={() => {
+                  resumeAudio();
+                  setAutoJumpEnabled(prev => {
+                    const next = !prev;
+                    localStorage.setItem("minecraft_autojump", String(next));
+                    return next;
+                  });
+                }}
+                className={`w-full py-3 rounded-lg font-bold text-sm uppercase tracking-widest border shadow-md transition-all active:scale-95 flex items-center justify-center gap-2 ${
+                  autoJumpEnabled 
+                    ? "bg-sky-600 hover:bg-sky-500 text-white border-sky-400/30" 
+                    : "bg-zinc-800 hover:bg-zinc-700 text-zinc-400 border-zinc-700"
+                }`}
+              >
+                <i className={`fas ${autoJumpEnabled ? "fa-circle-check" : "fa-circle"} text-xs`} />
+                {lang === "es" ? `Salto Automático: ${autoJumpEnabled ? "SÍ" : "NO"}` : `Auto-Jump: ${autoJumpEnabled ? "ON" : "OFF"}`}
+              </button>
+
+              {/* Button: Open Inventory/Crafting */}
+              <button
+                onClick={() => {
+                  resumeAudio();
+                  setIsGameMenuOpen(false);
+                  setIsInventoryOpen(true);
+                }}
+                className="w-full bg-zinc-800 hover:bg-zinc-700 text-white py-3 rounded-lg font-bold text-sm uppercase tracking-widest border border-white/5 transition-all active:scale-95 flex items-center justify-center gap-2"
+              >
+                <i className="fas fa-boxes-stacked text-xs text-yellow-500" />
+                {lang === "es" ? "Inventario & Crafteo" : "Inventory & Crafting"}
+              </button>
+
+              {/* Editable Biome Configuration - Visible ONLY to STAFF / MOD / lionbastias18 */}
+              {(userRole === "staff" || userRole === "mod" || googleUser?.email?.toLowerCase() === "lionbastias18@gmail.com") && (
+                <div className="bg-zinc-950/50 p-4 rounded-xl border border-white/5 flex flex-col gap-3 mt-1">
+                  <h3 className="text-emerald-400 text-xs font-bold uppercase tracking-wider flex items-center gap-2 border-b border-white/5 pb-1">
+                    <i className="fas fa-tree text-emerald-500" />
+                    {lang === "es" ? "Configurar Bioma Editable" : "Configure Editable Biome"}
+                  </h3>
+                  
+                  {/* Selector fields for Surface, Underground, Flora */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    {/* Surface Selector */}
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[9px] text-zinc-400 uppercase tracking-widest">
+                        {lang === "es" ? "Superficie" : "Surface"}
+                      </label>
+                      <select
+                        value={biomeConfig?.surface ?? BlockType.MOSS}
+                        onChange={async (e) => {
+                          const val = Number(e.target.value);
+                          const nextConfig = {
+                            surface: val,
+                            underground: biomeConfig?.underground ?? BlockType.DIRT,
+                            flora: biomeConfig?.flora ?? BlockType.VINES
+                          };
+                          setBiomeConfig(nextConfig);
+                          if (googleUser?.email) {
+                            try {
+                              await setDoc(doc(db, "user_roles", googleUser.email.toLowerCase()), {
+                                biomeSurface: val
+                              }, { merge: true });
+                              logUserActivity(`Configuró bloque de superficie de su bioma editable a ${BLOCK_NAMES[val] || val}`);
+                            } catch (err) {
+                              handleFirestoreError(err, OperationType.WRITE, `user_roles/${googleUser.email.toLowerCase()}`);
+                            }
+                          }
+                        }}
+                        className="bg-zinc-900 border border-zinc-700 rounded-lg text-xs text-white p-1.5 focus:outline-none focus:border-emerald-500"
+                      >
+                        {Object.entries(BLOCK_NAMES).map(([id, name]) => (
+                          <option key={id} value={id}>{name}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Underground Selector */}
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[9px] text-zinc-400 uppercase tracking-widest">
+                        {lang === "es" ? "Subsuelo" : "Underground"}
+                      </label>
+                      <select
+                        value={biomeConfig?.underground ?? BlockType.DIRT}
+                        onChange={async (e) => {
+                          const val = Number(e.target.value);
+                          const nextConfig = {
+                            surface: biomeConfig?.surface ?? BlockType.MOSS,
+                            underground: val,
+                            flora: biomeConfig?.flora ?? BlockType.VINES
+                          };
+                          setBiomeConfig(nextConfig);
+                          if (googleUser?.email) {
+                            try {
+                              await setDoc(doc(db, "user_roles", googleUser.email.toLowerCase()), {
+                                biomeUnderground: val
+                              }, { merge: true });
+                              logUserActivity(`Configuró bloque de subsuelo de su bioma editable a ${BLOCK_NAMES[val] || val}`);
+                            } catch (err) {
+                              handleFirestoreError(err, OperationType.WRITE, `user_roles/${googleUser.email.toLowerCase()}`);
+                            }
+                          }
+                        }}
+                        className="bg-zinc-900 border border-zinc-700 rounded-lg text-xs text-white p-1.5 focus:outline-none focus:border-emerald-500"
+                      >
+                        {Object.entries(BLOCK_NAMES).map(([id, name]) => (
+                          <option key={id} value={id}>{name}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Flora Selector */}
+                    <div className="flex flex-col gap-1">
+                      <label className="text-[9px] text-zinc-400 uppercase tracking-widest">
+                        {lang === "es" ? "Vegetación" : "Vegetation"}
+                      </label>
+                      <select
+                        value={biomeConfig?.flora ?? BlockType.VINES}
+                        onChange={async (e) => {
+                          const val = Number(e.target.value);
+                          const nextConfig = {
+                            surface: biomeConfig?.surface ?? BlockType.MOSS,
+                            underground: biomeConfig?.underground ?? BlockType.DIRT,
+                            flora: val
+                          };
+                          setBiomeConfig(nextConfig);
+                          if (googleUser?.email) {
+                            try {
+                              await setDoc(doc(db, "user_roles", googleUser.email.toLowerCase()), {
+                                biomeFlora: val
+                              }, { merge: true });
+                              logUserActivity(`Configuró vegetación de su bioma editable a ${BLOCK_NAMES[val] || val}`);
+                            } catch (err) {
+                              handleFirestoreError(err, OperationType.WRITE, `user_roles/${googleUser.email.toLowerCase()}`);
+                            }
+                          }
+                        }}
+                        className="bg-zinc-900 border border-zinc-700 rounded-lg text-xs text-white p-1.5 focus:outline-none focus:border-emerald-500"
+                      >
+                        {Object.entries(BLOCK_NAMES).map(([id, name]) => (
+                          <option key={id} value={id}>{name}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* ADMIN ROLE & EMAIL LOG PANEL - Visible ONLY to lionbastias18@gmail.com */}
+              {googleUser?.email?.toLowerCase() === "lionbastias18@gmail.com" && (
+                <div className="bg-zinc-950/60 p-4 rounded-xl border border-red-500/20 flex flex-col gap-3 mt-1">
+                  <h3 className="text-red-400 text-xs font-bold uppercase tracking-wider flex items-center justify-between border-b border-white/5 pb-1">
+                    <span className="flex items-center gap-2">
+                      <i className="fas fa-shield-halved text-red-500" />
+                      ADMIN: {lang === "es" ? "Gestión y Alertas" : "RBAC & Monitoring"}
+                    </span>
+                    <span className="text-[8px] bg-red-500/20 text-red-300 px-1.5 py-0.5 rounded uppercase font-mono tracking-tighter">
+                      Staff Real-time
+                    </span>
+                  </h3>
+
+                  {/* Role Assignment Form */}
+                  <div className="flex flex-col gap-2 bg-zinc-900/40 p-2.5 rounded-lg border border-white/5">
+                    <span className="text-[8.5px] text-zinc-400 font-bold uppercase tracking-wider font-mono">
+                      {lang === "es" ? "Asignar Rol a Usuario:" : "Assign User Role:"}
+                    </span>
+                    <div className="flex gap-1.5">
+                      <input 
+                        id="role_assign_email"
+                        type="email"
+                        placeholder="usuario@gmail.com"
+                        className="flex-1 bg-zinc-950 border border-zinc-800 text-xs rounded px-2 py-1 focus:outline-none focus:border-red-500 text-white"
+                      />
+                      <select 
+                        id="role_assign_select"
+                        className="bg-zinc-950 border border-zinc-800 text-xs rounded text-white p-1 focus:outline-none focus:border-red-500"
+                      >
+                        <option value="user">Usuario</option>
+                        <option value="mod">Mod</option>
+                        <option value="staff">Staff</option>
+                      </select>
+                      <button 
+                        type="button"
+                        onClick={async () => {
+                          const emailInput = document.getElementById("role_assign_email") as HTMLInputElement;
+                          const roleSelect = document.getElementById("role_assign_select") as HTMLSelectElement;
+                          const targetEmail = (emailInput?.value || "").toLowerCase().trim();
+                          const targetRole = roleSelect?.value || "user";
+                          if (!targetEmail) return;
+
+                          try {
+                            await setDoc(doc(db, "user_roles", targetEmail), {
+                              email: targetEmail,
+                              role: targetRole
+                            }, { merge: true });
+                            alert(`¡Rol de ${targetEmail} actualizado a ${targetRole}!`);
+                            if (emailInput) emailInput.value = "";
+                            logUserActivity(`Actualizó rol del usuario ${targetEmail} a ${targetRole}`);
+                          } catch (err) {
+                            console.error("Error setting user role:", err);
+                            handleFirestoreError(err, OperationType.WRITE, `user_roles/${targetEmail}`);
+                          }
+                        }}
+                        className="bg-red-600 hover:bg-red-500 text-white font-bold text-[10px] px-2.5 py-1 rounded transition active:scale-95"
+                      >
+                        OK
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Real-time users activities list */}
+                  <div className="flex flex-col gap-1.5">
+                    <span className="text-[8.5px] text-red-400 font-bold uppercase tracking-wider font-mono flex items-center justify-between">
+                      <span>🔔 Registro de Actividad (Staff Gmail Feed):</span>
+                      <span className="text-zinc-500">({activityLogs.length} logs)</span>
+                    </span>
+
+                    <div className="bg-zinc-950 border border-zinc-800/80 rounded-lg p-2 max-h-[140px] overflow-y-auto flex flex-col gap-1 font-mono text-[9px] scrollbar-thin">
+                      {activityLogs.length === 0 ? (
+                        <p className="text-zinc-600 italic text-center py-4">
+                          No hay acciones registradas aún.
+                        </p>
+                      ) : (
+                        activityLogs.map((log) => {
+                          const dateText = new Date(log.timestamp).toLocaleTimeString();
+                          return (
+                            <div key={log.id} className="border-b border-white/5 pb-1 flex flex-col text-left">
+                              <div className="flex justify-between text-[8px] text-zinc-400 font-bold">
+                                <span className="text-red-400">{log.playerName} ({log.playerEmail})</span>
+                                <span>{dateText}</span>
+                              </div>
+                              <p className="text-zinc-200 mt-0.5">{log.action}</p>
+                              <div className="text-[7.5px] text-emerald-400/80 flex items-center gap-1 mt-0.5 font-semibold">
+                                <i className="fas fa-envelope text-[8px]" />
+                                Notificación Gmail enviada a lionbastias18@gmail.com ✓
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Exit Game Button */}
+              <button
+                onClick={() => {
+                  resumeAudio();
+                  setIsGameMenuOpen(false);
+                  handleSaveAndExit();
+                }}
+                className="w-full bg-red-600/80 hover:bg-red-500 text-white py-3 rounded-lg font-bold text-sm uppercase tracking-widest border border-red-500/30 transition-all active:scale-95 flex items-center justify-center gap-2 mt-2"
+              >
+                <i className="fas fa-sign-out-alt text-xs" />
+                {lang === "es" ? "Guardar y Salir" : "Save and Exit"}
+              </button>
+              
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Leaderboard Modal (Tabla de Clasificación) */}
+      {renderLeaderboardModal()}
+      {/* Friends Modal */}
+      {renderFriendsModal()}
     </div>
   );
 };

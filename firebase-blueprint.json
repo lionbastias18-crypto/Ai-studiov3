@@ -43,12 +43,112 @@
         }
       },
       "required": ["id", "name", "creator", "createdAt", "gameMode", "worldType"]
+    },
+    "UserRole": {
+      "title": "UserRole",
+      "description": "Stores user role permissions and custom biome configuration blocks",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "description": "Google email of the user"
+        },
+        "role": {
+          "type": "string",
+          "description": "Role: user, staff, mod, owner"
+        },
+        "biomeSurface": {
+          "type": "number",
+          "description": "Block type for custom biome surface"
+        },
+        "biomeUnderground": {
+          "type": "number",
+          "description": "Block type for custom biome underground"
+        },
+        "biomeFlora": {
+          "type": "number",
+          "description": "Block type for custom biome flora/vegetation"
+        }
+      },
+      "required": ["email", "role"]
+    },
+    "ActivityLog": {
+      "title": "ActivityLog",
+      "description": "Auditing activity log of users performing operations, synced to staff",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier"
+        },
+        "playerEmail": {
+          "type": "string",
+          "description": "Email of the player"
+        },
+        "playerName": {
+          "type": "string",
+          "description": "DisplayName of the player"
+        },
+        "action": {
+          "type": "string",
+          "description": "Text describing the edit or interaction"
+        },
+        "timestamp": {
+          "type": "number",
+          "description": "Activity timestamp"
+        }
+      },
+      "required": ["id", "playerEmail", "playerName", "action", "timestamp"]
+    },
+    "ActivePlayer": {
+      "title": "ActivePlayer",
+      "description": "A player currently in a real-time multiplayer world session",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "User UID"
+        },
+        "email": {
+          "type": "string",
+          "description": "Google email"
+        },
+        "name": {
+          "type": "string",
+          "description": "Display name"
+        },
+        "pos": {
+          "type": "object",
+          "description": "Position vector {x, y, z}"
+        },
+        "lastActive": {
+          "type": "number",
+          "description": "Heartbeat timestamp"
+        },
+        "dimension": {
+          "type": "string",
+          "description": "Dimension: overworld or nether"
+        }
+      },
+      "required": ["id", "email", "name", "pos", "lastActive"]
     }
   },
   "firestore": {
     "/worlds/{worldId}": {
       "schema": "World",
       "description": "Collection of user-created voxel worlds"
+    },
+    "/user_roles/{email}": {
+      "schema": "UserRole",
+      "description": "Stores role-based permissions and custom biome parameters"
+    },
+    "/activity_logs/{logId}": {
+      "schema": "ActivityLog",
+      "description": "History of block edits and commands for staff tracking"
+    },
+    "/worlds/{worldId}/players/{userId}": {
+      "schema": "ActivePlayer",
+      "description": "Subcollection tracking active multiplayer connections"
     }
   }
 }

@@ -47,7 +47,23 @@ export enum BlockType {
   MUSIC_DISC_CAT = 44,
   MUSIC_DISC_CHIRP = 45,
   MUSIC_DISC_BLOCKS = 46,
-  MUSIC_DISC_MELLOHI = 47
+  MUSIC_DISC_MELLOHI = 47,
+  SNOW = 48,
+  AUTUMN_GRASS = 49,
+  AUTUMN_LEAVES = 50,
+  GREY_LOG = 51,
+  GREY_WOOD = 52,
+  AUTUMN_FLOWER = 53,
+  NETHERRACK = 54,
+  SOUL_SAND = 55,
+  GLOWSTONE = 56,
+  NETHER_QUARTZ_ORE = 57,
+  NETHER_BRICKS = 58,
+  CRIMSON_NYLIUM = 59,
+  WARPED_NYLIUM = 60,
+  PORTAL = 61,
+  MOSS = 62,
+  VINES = 63
 }
 
 export enum EntityType {
@@ -57,7 +73,8 @@ export enum EntityType {
   CREEPER = 'CREEPER',
   SKELETON = 'SKELETON',
   ARROW = 'ARROW',
-  VILLAGER = 'VILLAGER'
+  VILLAGER = 'VILLAGER',
+  HOGLIN = 'HOGLIN'
 }
 
 export interface EntityData {

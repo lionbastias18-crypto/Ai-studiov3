@@ -84,7 +84,7 @@ googleProvider.setCustomParameters({
 });
 
 // Operations error handling wrapper
-enum OperationType {
+export enum OperationType {
   CREATE = "create",
   UPDATE = "update",
   DELETE = "delete",
@@ -93,7 +93,7 @@ enum OperationType {
   WRITE = "write",
 }
 
-interface FirestoreErrorInfo {
+export interface FirestoreErrorInfo {
   error: string;
   operationType: OperationType;
   path: string | null;
@@ -105,7 +105,7 @@ interface FirestoreErrorInfo {
   };
 }
 
-function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
     authInfo: {
@@ -158,6 +158,24 @@ export async function saveWorldToFirestore(world: World): Promise<void> {
       edits: world.edits || {},
       survivalInventory: world.survivalInventory || {}
     });
+
+    // Enforce 100-world limit per user
+    const q = query(collection(db, "worlds"), where("creator", "==", world.creator));
+    const snapshot = await getDocs(q);
+    const userWorlds: { id: string; createdAt: number }[] = [];
+    snapshot.forEach((doc) => {
+      const data = doc.data();
+      userWorlds.push({ id: doc.id, createdAt: data.createdAt || 0 });
+    });
+
+    if (userWorlds.length > 100) {
+      // Sort oldest first (ascending createdAt)
+      userWorlds.sort((a, b) => a.createdAt - b.createdAt);
+      const excessCount = userWorlds.length - 100;
+      for (let i = 0; i < excessCount; i++) {
+        await deleteDoc(doc(db, "worlds", userWorlds[i].id));
+      }
+    }
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, docPath);
   }

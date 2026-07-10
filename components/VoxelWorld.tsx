@@ -1,7 +1,7 @@
 
 import React, { useMemo, useRef, useState, useEffect, useCallback } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { Sky, Stars } from '@react-three/drei';
+import { Sky, Stars, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { CHUNK_SIZE, WORLD_HEIGHT, BLOCK_COLORS, VIEW_DISTANCE, BLOCK_NAMES } from '../constants';
 import { BlockType, EntityType, EntityData, Vector3D } from '../types';
@@ -92,6 +92,9 @@ const caveNoise = (x: number, y: number, z: number) => {
 
 let activeWorldId = 'temp';
 let activeWorldType = 'normal';
+let activeDimension = 'overworld';
+let activeUserRole = 'user';
+let activeBiomeConfig: { surface: number; underground: number; flora: number } | null = null;
 const worldSeeds = new Map<string, { 
     noise: (x: number, z: number) => number; 
     biomeNoiseFun: (x: number, z: number) => number; 
@@ -126,6 +129,17 @@ const getNoiseForWorld = (worldId: string) => {
 };
 
 const getWorldHeight = (x: number, z: number) => {
+    // Check for custom editable biome region (large region X: 400 to 800, Z: 400 to 800)
+    const isAuthorizedForEditableBiome = activeUserRole === 'owner' || activeUserRole === 'staff' || activeUserRole === 'mod';
+    if (isAuthorizedForEditableBiome && x >= 400 && x <= 800 && z >= 400 && z <= 800) {
+        const { noise } = getNoiseForWorld(activeWorldId);
+        let n = noise(x * 0.005, z * 0.005) * 8.0;
+        let h = Math.floor(62 + n);
+        if (h < 50) h = 50;
+        if (h >= WORLD_HEIGHT - 3) h = WORLD_HEIGHT - 4;
+        return { h, biome: 'editable' };
+    }
+
     const absX = Math.abs(x);
     const absZ = Math.abs(z);
     if (absX >= 1500 || absZ >= 1500 || activeWorldType === 'edge_farlands') {
@@ -144,11 +158,14 @@ const getWorldHeight = (x: number, z: number) => {
 
     const { noise, biomeNoiseFun } = getNoiseForWorld(activeWorldId);
     // bNoise helps distinguish biomes. It ranges from ~0 to 10.
-    const bNoise = biomeNoiseFun(x * 0.005, z * 0.005);
+    // Set coordinate multiplier to 0.75 so biomes change every ~80-100 blocks, ensuring rich, visible multi-biome worlds!
+    const bNoise = biomeNoiseFun(x * 0.75, z * 0.75);
     
     let biome = 'plains';
-    if (bNoise < 3.0) biome = 'desert';
-    else if (bNoise >= 6.5 && bNoise < 8.0) biome = 'mesa';
+    if (bNoise < 2.5) biome = 'desert';
+    else if (bNoise >= 2.5 && bNoise < 4.5) biome = 'mesa';
+    else if (bNoise >= 4.5 && bNoise < 6.5) biome = 'plains';
+    else if (bNoise >= 6.5 && bNoise < 8.0) biome = 'autumn';
     else if (bNoise >= 8.0) biome = 'mountains';
 
     // noise now returns approximately 0 to 10. We will scale this UP!
@@ -162,9 +179,12 @@ const getWorldHeight = (x: number, z: number) => {
         n = n * 1.5 + 8; // 8 to 45
     } else if (biome === 'desert') {
         n = n * 1.2 + 5; // 5 to 35
+    } else if (biome === 'autumn') {
+        n = n * 1.3 + 5; // 5 to 37.5
     } else if (biome === 'mountains') {
-        // Huge mountains
-        n = Math.pow(n * 0.15, 2.8) * 5.0 + 10;
+        // Majestic mountains up to Y 180+
+        const baseM = noise(x, z);
+        n = 25 + baseM * 8.0 + Math.pow(baseM, 1.8) * 0.35;
     } else {
         // plains: rolling hills
         n = n * 1.2 + 4; // 4 to 34
@@ -173,19 +193,25 @@ const getWorldHeight = (x: number, z: number) => {
     // Very soft transition blending at margins to avoid any step/cliff cuts
     if (bNoise >= 8.0) {
         const blend = Math.min(1.0, (bNoise - 8.0) / 1.0); // 8.0 to 9.0 blends
-        const mountainHeight = Math.pow(noise(x, z) * 2.5 * 0.15, 2.8) * 5.0 + 10;
+        const baseM = noise(x, z);
+        const mountainHeight = 25 + baseM * 8.0 + Math.pow(baseM, 1.8) * 0.35;
+        const autumnHeight = baseM * 2.5 * 1.3 + 5;
+        n = autumnHeight * (1 - blend) + mountainHeight * blend;
+    } else if (bNoise >= 6.0 && bNoise < 7.0) { // blend plains into autumn / autumn into plains
+        const blend = Math.min(1.0, (7.0 - bNoise) / 1.0);
+        const autumnHeight = noise(x, z) * 2.5 * 1.3 + 5;
         const plainsHeight = noise(x, z) * 2.5 * 1.2 + 4;
-        n = plainsHeight * (1 - blend) + mountainHeight * blend;
-    } else if (bNoise >= 5.5 && bNoise < 6.5) { // blend into mesa
-        const blend = Math.min(1.0, (6.5 - bNoise) / 1.0);
+        n = plainsHeight * blend + autumnHeight * (1 - blend);
+    } else if (bNoise >= 4.0 && bNoise < 5.0) { // blend mesa into plains / plains into mesa
+        const blend = Math.min(1.0, (5.0 - bNoise) / 1.0);
+        const plainsHeight = noise(x, z) * 2.5 * 1.2 + 4;
         const mesaHeight = noise(x, z) * 2.5 * 1.5 + 8;
-        const plainsHeight = noise(x, z) * 2.5 * 1.2 + 4;
-        n = plainsHeight * blend + mesaHeight * (1 - blend);
-    } else if (bNoise < 4.0 && bNoise >= 3.0) { // blend out of desert
-        const blend = Math.min(1.0, (4.0 - bNoise) / 1.0);
+        n = mesaHeight * blend + plainsHeight * (1 - blend);
+    } else if (bNoise >= 2.0 && bNoise < 3.0) { // blend desert into mesa / mesa into desert
+        const blend = Math.min(1.0, (3.0 - bNoise) / 1.0);
+        const mesaHeight = noise(x, z) * 2.5 * 1.5 + 8;
         const desertHeight = noise(x, z) * 2.5 * 1.2 + 5;
-        const plainsHeight = noise(x, z) * 2.5 * 1.2 + 4;
-        n = plainsHeight * (1 - blend) + desertHeight * blend;
+        n = desertHeight * blend + mesaHeight * (1 - blend);
     }
     
     let h = Math.floor(n + 50);
@@ -215,6 +241,13 @@ interface VoxelWorldProps {
   onOpenCraftingTable?: () => void;
   survivalInventory?: Record<number, number>;
   onUpdateSurvivalInventory?: React.Dispatch<React.SetStateAction<Record<number, number>>>;
+  weather?: 'clear' | 'rain' | 'snow' | 'thunderstorm' | 'snow_rain';
+  dimension?: 'overworld' | 'nether';
+  onPortalTeleport?: () => void;
+  activePlayers?: Array<{ id: string; name: string; pos: Vector3D; dimension: string }>;
+  autoJumpEnabled?: boolean;
+  userRole?: string;
+  biomeConfig?: { surface: number; underground: number; flora: number } | null;
 }
 
 // Animal: Componente controlador de todo tipo de entidades (Pasivas y Hostiles), optimizado al maximo
@@ -457,9 +490,9 @@ const Animal: React.FC<{
     }
     meshRef.current.visible = true;
 
-    const isHostile = data.type === EntityType.ZOMBIE || data.type === EntityType.SKELETON || data.type === EntityType.CREEPER;
+    const isHostile = data.type === EntityType.ZOMBIE || data.type === EntityType.SKELETON || data.type === EntityType.CREEPER || data.type === EntityType.HOGLIN;
     const isDay = Math.sin(gameTimeRef.current) > 0;
-    if (isHostile && isDay) {
+    if (isHostile && isDay && data.type !== EntityType.HOGLIN) {
       // Burn or vanish during the day (zombies and skeletons burn, we'll just vanish them to "solve" it quickly)
       removeEntity(data.id);
       return;
@@ -538,6 +571,14 @@ const Animal: React.FC<{
     let speed = data.type === EntityType.PIG || data.type === EntityType.SHEEP || data.type === EntityType.VILLAGER ? 0.8 : 1.1;
     let targetRot = data.rot;
     let isAggro = false;
+
+    if (data.type === EntityType.HOGLIN) {
+      if (dist < 18) {
+        isAggro = true;
+        targetRot = Math.atan2(pPos.x - data.pos.x, pPos.z - data.pos.z);
+        speed = 2.1;
+      }
+    }
 
     if (data.type === EntityType.ZOMBIE || data.type === EntityType.CREEPER || data.type === EntityType.SKELETON) {
       if (dist < 16) {
@@ -682,14 +723,14 @@ const Animal: React.FC<{
     const walkAnim = isGrounded && (dx !== 0 || dz !== 0) ? Math.abs(Math.sin(state.clock.elapsedTime * 9)) * 0.11 : 0;
     meshRef.current.position.y += walkAnim;
 
-    // Contact hits from Zombies
-    if (data.type === EntityType.ZOMBIE && dist < 1.1) {
+    // Contact hits from Zombies or Hoglins
+    if ((data.type === EntityType.ZOMBIE && dist < 1.1) || (data.type === EntityType.HOGLIN && dist < 1.4)) {
       attackCooldownRef.current -= minDelta;
       if (attackCooldownRef.current <= 0) {
-        attackCooldownRef.current = 1.0;
+        attackCooldownRef.current = data.type === EntityType.HOGLIN ? 1.2 : 1.0;
         const creative = (gameState as any).gameMode === 'creative' || (gameState as any).gameMode === 'creativo';
         if (!creative) {
-          gameState.setHealth(gameState.health - 3);
+          gameState.setHealth(Math.max(0, gameState.health - (data.type === EntityType.HOGLIN ? 4 : 3)));
           playHurtSound();
         }
       }
@@ -843,6 +884,68 @@ const Animal: React.FC<{
             <boxGeometry args={[0.2, 0.3, 0.25]} />
             <meshStandardMaterial color={flashRed ? '#ff2020' : '#553311'} />
           </mesh>
+        </>
+      )}
+
+      {/* 2.6 Hoglin Render Model */}
+      {data.type === EntityType.HOGLIN && (
+        <>
+          {/* Body (Burgundy/Crimson boar-beast) */}
+          <mesh position={[0, 0.65, 0]}>
+            <boxGeometry args={[0.9, 0.75, 1.3]} />
+            <meshStandardMaterial color={flashRed ? '#ff2020' : '#5c1d1d'} />
+          </mesh>
+          {/* Ridge / Mane */}
+          <mesh position={[0, 1.05, -0.1]}>
+            <boxGeometry args={[0.2, 0.15, 1.1]} />
+            <meshStandardMaterial color={flashRed ? '#ff2020' : '#330e0e'} />
+          </mesh>
+          {/* Head (Beefy & hanging forward slightly) */}
+          <mesh position={[0, 0.75, 0.65]}>
+            <boxGeometry args={[0.65, 0.65, 0.7]} />
+            <meshStandardMaterial color={flashRed ? '#ff2020' : '#4f1616'} />
+          </mesh>
+          {/* Pig-boar Snout */}
+          <mesh position={[0, 0.58, 1.05]}>
+            <boxGeometry args={[0.3, 0.22, 0.18]} />
+            <meshStandardMaterial color={flashRed ? '#ff2020' : '#732c2c'} />
+          </mesh>
+          {/* Floppy Ears (2) */}
+          <mesh position={[-0.38, 0.85, 0.65]} rotation={[0, 0, 0.25]}>
+            <boxGeometry args={[0.08, 0.32, 0.22]} />
+            <meshStandardMaterial color={flashRed ? '#ff2020' : '#471313'} />
+          </mesh>
+          <mesh position={[0.38, 0.85, 0.65]} rotation={[0, 0, -0.25]}>
+            <boxGeometry args={[0.08, 0.32, 0.22]} />
+            <meshStandardMaterial color={flashRed ? '#ff2020' : '#471313'} />
+          </mesh>
+          {/* Glowing Eyes (Yellow/Red) */}
+          <mesh position={[-0.22, 0.82, 0.982]}>
+            <boxGeometry args={[0.08, 0.08, 0.02]} />
+            <meshStandardMaterial color="#fcd34d" emissive="#b45309" emissiveIntensity={1.5} />
+          </mesh>
+          <mesh position={[0.22, 0.82, 0.982]}>
+            <boxGeometry args={[0.08, 0.08, 0.02]} />
+            <meshStandardMaterial color="#fcd34d" emissive="#b45309" emissiveIntensity={1.5} />
+          </mesh>
+          {/* Tusks (2, pointing upwards) */}
+          <mesh position={[-0.22, 0.52, 1.12]} rotation={[-0.2, 0, 0.1]}>
+            <boxGeometry args={[0.08, 0.28, 0.08]} />
+            <meshStandardMaterial color="#f3f4f6" />
+          </mesh>
+          <mesh position={[0.22, 0.52, 1.12]} rotation={[-0.2, 0, -0.1]}>
+            <boxGeometry args={[0.08, 0.28, 0.08]} />
+            <meshStandardMaterial color="#f3f4f6" />
+          </mesh>
+          {/* Thick sturdy legs (4) */}
+          {[-0.32, 0.32].map((lx) =>
+            [-0.42, 0.42].map((lz, idx) => (
+              <mesh key={`hogleg-${lx}-${lz}-${idx}`} position={[lx, 0.14, lz]}>
+                <boxGeometry args={[0.22, 0.45, 0.22]} />
+                <meshStandardMaterial color={flashRed ? '#ff2020' : '#3d1212'} />
+              </mesh>
+            ))
+          )}
         </>
       )}
 
@@ -1112,8 +1215,8 @@ const Chunk = React.memo<ChunkProps>(({ cx, cz, blocks, onInteraction, openDoors
   const blockData = useMemo(() => {
     const dataByType = new Map<BlockType, number[]>();
     
-    const y_mult = 16;       // CHUNK_SIZE
-    const x_mult = 1792;     // CHUNK_SIZE * WORLD_HEIGHT = 16 * 112
+    const y_mult = CHUNK_SIZE;       // CHUNK_SIZE
+    const x_mult = CHUNK_SIZE * WORLD_HEIGHT;     // CHUNK_SIZE * WORLD_HEIGHT
 
     // Helper to check if block is transparent / see-through / flora
     const isTransparent = (b: number) => 
@@ -1127,7 +1230,8 @@ const Chunk = React.memo<ChunkProps>(({ cx, cz, blocks, onInteraction, openDoors
       b === 21 || // LAVA
       b === 26 || // BED
       b === 27 || // TORCH
-      b === 28;  // DOOR
+      b === 28 || // DOOR
+      b === 61;   // PORTAL
 
     for (let x = 0; x < CHUNK_SIZE; x++) {
       const wx = cx * CHUNK_SIZE + x;
@@ -1143,13 +1247,13 @@ const Chunk = React.memo<ChunkProps>(({ cx, cz, blocks, onInteraction, openDoors
           if (type === BlockType.AIR) continue;
           
           let isExposed = false;
-          if (x === 0 || x === 15 || y === 0 || y === 111 || z === 0 || z === 15) {
+          if (x === 0 || x === 15 || y === 0 || y === WORLD_HEIGHT - 1 || z === 0 || z === 15) {
             isExposed = true;
           } else {
-            const topType = blocks[idx + 16];
-            const bottomType = blocks[idx - 16];
-            const westType = blocks[idx + 1792];
-            const eastType = blocks[idx - 1792];
+            const topType = blocks[idx + CHUNK_SIZE];
+            const bottomType = blocks[idx - CHUNK_SIZE];
+            const westType = blocks[idx + (CHUNK_SIZE * WORLD_HEIGHT)];
+            const eastType = blocks[idx - (CHUNK_SIZE * WORLD_HEIGHT)];
             const northType = blocks[idx + 1];
             const southType = blocks[idx - 1];
 
@@ -1196,6 +1300,85 @@ const Chunk = React.memo<ChunkProps>(({ cx, cz, blocks, onInteraction, openDoors
   );
 });
 
+interface OtherPlayerProps {
+  id: string;
+  name: string;
+  pos: Vector3D;
+  dimension: string;
+}
+
+const OtherPlayer: React.FC<OtherPlayerProps> = ({ id, name, pos, dimension }) => {
+  const groupRef = useRef<THREE.Group>(null);
+  
+  // Leg and arm swinging walking animation for other players
+  useFrame((state) => {
+    if (groupRef.current) {
+      groupRef.current.position.x += (pos.x - groupRef.current.position.x) * 0.15;
+      groupRef.current.position.y += ((pos.y - 1.5) - groupRef.current.position.y) * 0.15;
+      groupRef.current.position.z += (pos.z - groupRef.current.position.z) * 0.15;
+      
+      const timeVal = state.clock.getElapsedTime();
+      const leftLeg = groupRef.current.getObjectByName('leftLeg');
+      const rightLeg = groupRef.current.getObjectByName('rightLeg');
+      const leftArm = groupRef.current.getObjectByName('leftArm');
+      const rightArm = groupRef.current.getObjectByName('rightArm');
+      
+      const angle = Math.sin(timeVal * 10) * 0.4;
+      if (leftLeg) leftLeg.rotation.x = angle;
+      if (rightLeg) rightLeg.rotation.x = -angle;
+      if (leftArm) leftArm.rotation.x = -angle;
+      if (rightArm) rightArm.rotation.x = angle;
+    }
+  });
+
+  return (
+    <group ref={groupRef} position={[pos.x, pos.y - 1.5, pos.z]}>
+      {/* Floating name tag */}
+      <Html position={[0, 1.8, 0]} center distanceFactor={8} zIndexRange={[10, 50]}>
+        <div className="bg-black/75 px-2 py-0.5 rounded text-white font-mono text-[9px] font-semibold whitespace-nowrap border border-white/10 pointer-events-none select-none uppercase tracking-wide">
+          {name}
+        </div>
+      </Html>
+
+      {/* Head */}
+      <mesh position={[0, 1.3, 0]}>
+        <boxGeometry args={[0.38, 0.38, 0.38]} />
+        <meshLambertMaterial color="#e59866" />
+      </mesh>
+
+      {/* Body */}
+      <mesh position={[0, 0.75, 0]}>
+        <boxGeometry args={[0.42, 0.6, 0.22]} />
+        <meshLambertMaterial color="#3498db" />
+      </mesh>
+
+      {/* Left Arm */}
+      <mesh name="leftArm" position={[-0.3, 0.75, 0]}>
+        <boxGeometry args={[0.16, 0.6, 0.16]} />
+        <meshLambertMaterial color="#e59866" />
+      </mesh>
+
+      {/* Right Arm */}
+      <mesh name="rightArm" position={[0.3, 0.75, 0]}>
+        <boxGeometry args={[0.16, 0.6, 0.16]} />
+        <meshLambertMaterial color="#e59866" />
+      </mesh>
+
+      {/* Left Leg */}
+      <mesh name="leftLeg" position={[-0.11, 0.22, 0]}>
+        <boxGeometry args={[0.18, 0.44, 0.18]} />
+        <meshLambertMaterial color="#2c3e50" />
+      </mesh>
+
+      {/* Right Leg */}
+      <mesh name="rightLeg" position={[0.11, 0.22, 0]}>
+        <boxGeometry args={[0.18, 0.44, 0.18]} />
+        <meshLambertMaterial color="#2c3e50" />
+      </mesh>
+    </group>
+  );
+};
+
 const Player: React.FC<{ 
   moveVector: { x: number; y: number }; 
   lookOffsetRef: React.MutableRefObject<{ x: number, y: number }>;
@@ -1209,7 +1392,11 @@ const Player: React.FC<{
   chunks: Record<string, Uint8Array>;
   playerPosRef: React.MutableRefObject<Vector3D>;
   playerPos: Vector3D;
-}> = ({ moveVector, lookOffsetRef, onUpdatePos, isJumping, getCollisionHeight, checkSolid, perspective, gameMode = 'survival', worldType = 'normal', chunks, playerPosRef, playerPos }) => {
+  onPortalTeleport?: () => void;
+  autoJumpEnabled?: boolean;
+}> = ({ moveVector, lookOffsetRef, onUpdatePos, isJumping, getCollisionHeight, checkSolid, perspective, gameMode = 'survival', worldType = 'normal', chunks, playerPosRef, playerPos, onPortalTeleport, autoJumpEnabled = true }) => {
+  const onPortalTeleportRef = useRef(onPortalTeleport);
+  onPortalTeleportRef.current = onPortalTeleport;
   const { camera } = useThree();
   const yaw = useRef(0);
   const pitch = useRef(0);
@@ -1229,6 +1416,8 @@ const Player: React.FC<{
   const isFlying = useRef(false);
   const wasJumping = useRef(false);
   const lastJumpTime = useRef(0);
+  const portalTimerRef = useRef(0);
+  const lavaDamageTimerRef = useRef(0);
 
   const checkSolidRef = useRef(checkSolid);
   checkSolidRef.current = checkSolid;
@@ -1299,10 +1488,16 @@ const Player: React.FC<{
     // Slow down speed dynamically when approaching or entering Far Lands (X/Z boundaries)
     const currentAbsCoordForSpeed = Math.max(Math.abs(physPos.current.x), Math.abs(physPos.current.z));
     let moveSpeed = 6.0;
-    if (currentAbsCoordForSpeed >= 1500) {
-      moveSpeed = 1.6; // Caminata muy lenta (has llegado al límite)
+    if (currentAbsCoordForSpeed >= 2000) {
+      // Gradual slowness up to 85% reduction from base speed (6.0), so 6.0 * (1 - 0.85) = 0.9
+      const ratio = Math.min(1.0, (currentAbsCoordForSpeed - 2000) / 300);
+      const startSpeed = 6.0;
+      const endSpeed = 0.9;
+      moveSpeed = startSpeed - ratio * (startSpeed - endSpeed);
+    } else if (currentAbsCoordForSpeed >= 1500) {
+      moveSpeed = 3.0; // Moderate slowness
     } else if (currentAbsCoordForSpeed >= 1400) {
-      moveSpeed = 3.2; // Caminata un poco lenta
+      moveSpeed = 4.5; // Slight slowness
     }
 
     yaw.current -= lookOffsetRef.current.x * lookSpeed;
@@ -1518,6 +1713,18 @@ const Player: React.FC<{
 
     const isFlat = worldType === 'flat' || worldType === 'plano' || worldType === 'plano_infinito';
 
+    // Auto-Jump: if the player is moving, grounded, and their horizontal path is blocked, jump!
+    if (autoJumpEnabled && isGrounded && !isFlying.current && direction.length() > 0.1) {
+        const isBlockedX = origDx !== dx && Math.abs(dx) < Math.abs(origDx) - 0.001;
+        const isBlockedZ = origDz !== dz && Math.abs(dz) < Math.abs(origDz) - 0.001;
+        if (isBlockedX || isBlockedZ) {
+            velocityY.current = 8.5;
+            if (!isCreative) {
+                gameState.addExhaustion(0.1);
+            }
+        }
+    }
+
     if (isJumpingRef.current && isGrounded && !isFlying.current) {
         velocityY.current = 8.5;
         if (!isCreative) {
@@ -1559,6 +1766,42 @@ const Player: React.FC<{
         gameState.setFood(20);
         gameState.exhaustion = 0;
     }
+
+    // Lava and Portal fluid checks
+    try {
+      let isInsidePortal = false;
+      for (let dy = -1.6; dy <= 0.2; dy += 0.4) {
+        if (getBlockTypeAt(px, py + dy, pz) === BlockType.PORTAL) {
+          isInsidePortal = true;
+          break;
+        }
+      }
+      if (isInsidePortal) {
+        portalTimerRef.current += minDelta;
+        if (portalTimerRef.current >= 1.5) {
+          portalTimerRef.current = 0;
+          if (onPortalTeleportRef.current) {
+            onPortalTeleportRef.current();
+          }
+        }
+      } else {
+        portalTimerRef.current = 0;
+      }
+
+      const isInsideLava = getBlockTypeAt(px, py, pz) === BlockType.LAVA || 
+                           getBlockTypeAt(px, py - 0.8, pz) === BlockType.LAVA || 
+                           getBlockTypeAt(px, py - 1.5, pz) === BlockType.LAVA;
+      if (isInsideLava && !isCreative) {
+        lavaDamageTimerRef.current += minDelta;
+        if (lavaDamageTimerRef.current >= 0.5) {
+          lavaDamageTimerRef.current = 0;
+          gameState.setHealth(Math.max(0, gameState.health - 4));
+          playHurtSound();
+        }
+      } else {
+        lavaDamageTimerRef.current = 0;
+      }
+    } catch (e) {}
 
     // Small view bob effect visually attached to camera but doesn't affect physical Y
     physPos.current.set(px, py, pz);
@@ -1947,12 +2190,25 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
     onSelectBlock,
     onOpenCraftingTable,
     survivalInventory,
-    onUpdateSurvivalInventory
+    onUpdateSurvivalInventory,
+    weather = 'clear',
+    dimension = 'overworld',
+    onPortalTeleport,
+    activePlayers,
+    autoJumpEnabled = true,
+    userRole = 'user',
+    biomeConfig = null
 }) => {
   activeWorldId = worldId || 'temp';
   activeWorldType = worldType || 'normal';
+  activeDimension = dimension;
+  activeUserRole = userRole;
+  activeBiomeConfig = biomeConfig;
   const playerPosRef = useRef(playerPos);
   playerPosRef.current = playerPos;
+
+  const weatherRef = useRef(weather);
+  weatherRef.current = weather;
 
   const currentBlockRef = useRef(currentBlock);
   currentBlockRef.current = currentBlock;
@@ -2005,6 +2261,15 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
   const entitiesRef = useRef(entities);
   entitiesRef.current = entities;
   const lastGenerationCoords = useRef({ x: NaN, z: NaN });
+
+  useEffect(() => {
+    chunksRef.current = {};
+    entitiesRef.current = {};
+    setChunks({});
+    setEntities({});
+    lastGenerationCoords.current = { x: NaN, z: NaN };
+    pendingChunksRef.current = [];
+  }, [dimension]);
 
   const editsRef = useRef<Record<string, number>>(initialEdits || {});
 
@@ -2204,8 +2469,8 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
         if (!data) continue;
         const [cx, cz] = key.split(',').map(Number);
         
-        const y_mult = 16;
-        const x_mult = 1792;
+        const y_mult = CHUNK_SIZE;
+        const x_mult = CHUNK_SIZE * WORLD_HEIGHT;
         
         for (let x = 0; x < 16; x++) {
           const wx = cx * CHUNK_SIZE + x;
@@ -2255,6 +2520,11 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
   }, [worldId]);
 
   const getCollisionHeight = useCallback((posX: number, posZ: number, currentY: number) => {
+    // 3000 block boundary: collision no longer exists, causing the player to fall into the void!
+    if (Math.max(Math.abs(posX), Math.abs(posZ)) >= 3000) {
+      return 0;
+    }
+
     const wx = Math.round(posX);
     const wz = Math.round(posZ);
     const cx = Math.floor(wx / CHUNK_SIZE);
@@ -2278,7 +2548,11 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
 
     for (let y = startY; y >= 0; y--) {
         const idx = (lx * CHUNK_SIZE * WORLD_HEIGHT) + (y * CHUNK_SIZE) + lz;
-        if (chunk[idx] !== BlockType.AIR) {
+        const b = chunk[idx];
+        if (b !== BlockType.AIR && b !== BlockType.WATER && b !== BlockType.PORTAL &&
+            b !== BlockType.MUSHROOM_RED && b !== BlockType.MUSHROOM_BROWN &&
+            b !== BlockType.FLOWER_RED && b !== BlockType.FLOWER_YELLOW &&
+            b !== BlockType.TORCH) {
             return y + 1;
         }
     }
@@ -2287,6 +2561,12 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
 
   const checkSolid = useCallback((wx: number, wy: number, wz: number) => {
     if (wy < 0 || wy >= WORLD_HEIGHT) return false;
+
+    // 3000 block boundary: collision no longer exists, causing the player to fall into the void!
+    if (Math.max(Math.abs(wx), Math.abs(wz)) >= 3000) {
+      return false;
+    }
+
     const cx = Math.floor(wx / CHUNK_SIZE);
     const cz = Math.floor(wz / CHUNK_SIZE);
     const k = `${cx},${cz}`;
@@ -2309,7 +2589,7 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
     const isBaseSolid = b !== BlockType.AIR && b !== BlockType.WATER && 
            b !== BlockType.MUSHROOM_BROWN && b !== BlockType.MUSHROOM_RED &&
            b !== BlockType.FLOWER_RED && b !== BlockType.FLOWER_YELLOW &&
-           b !== BlockType.DOOR;
+           b !== BlockType.DOOR && b !== BlockType.PORTAL;
 
     if (isBaseSolid) return true;
 
@@ -2396,10 +2676,154 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
       const worldConf = getNoiseForWorld(worldId);
       const seed = worldConf.seed;
 
+      if (activeDimension === 'nether') {
+        for (let x = 0; x < CHUNK_SIZE; x++) {
+          for (let z = 0; z < CHUNK_SIZE; z++) {
+            const wx = cx * CHUNK_SIZE + x;
+            const wz = cz * CHUNK_SIZE + z;
+
+            for (let y = 0; y < WORLD_HEIGHT; y++) {
+              const idx = (x * CHUNK_SIZE * WORLD_HEIGHT) + (y * CHUNK_SIZE) + z;
+
+              // 1. Bedrock boundaries (ceil and floor)
+              if (y === 0 || y === WORLD_HEIGHT - 1) {
+                data[idx] = BlockType.BEDROCK;
+                continue;
+              }
+              if (y <= 2 || y >= WORLD_HEIGHT - 3) {
+                const rBed = getSeededRandom(seed, wx, wz, y * 7);
+                if (rBed < 0.5) {
+                  data[idx] = BlockType.BEDROCK;
+                  continue;
+                }
+              }
+
+              // 2. Cavern 3D Noise carving
+              const dNoise = worldConf.cave3D(wx * 0.025, y * 0.05, wz * 0.025);
+              const heightFactor = Math.abs(y - 64) / 64; 
+              const threshold = 0.38 + heightFactor * 0.22;
+              const isSolid = dNoise < threshold;
+
+              if (isSolid) {
+                data[idx] = BlockType.NETHERRACK;
+
+                // Seeded ore generation
+                const rOre = getSeededRandom(seed + 999, wx, wz, y);
+                if (rOre < 0.035) {
+                  data[idx] = BlockType.NETHER_QUARTZ_ORE;
+                } else if (rOre < 0.045) {
+                  data[idx] = BlockType.NETHER_BRICKS; 
+                }
+              } else {
+                if (y <= 32) {
+                  data[idx] = BlockType.LAVA;
+                } else {
+                  data[idx] = BlockType.AIR;
+                }
+              }
+            }
+          }
+        }
+
+        // 3. Second pass: decorate surfaces (Nylium, Soul sand, Glowstone)
+        for (let x = 0; x < CHUNK_SIZE; x++) {
+          for (let z = 0; z < CHUNK_SIZE; z++) {
+            const wx = cx * CHUNK_SIZE + x;
+            const wz = cz * CHUNK_SIZE + z;
+
+            for (let y = 3; y < WORLD_HEIGHT - 4; y++) {
+              const idx = (x * CHUNK_SIZE * WORLD_HEIGHT) + (y * CHUNK_SIZE) + z;
+              const b = data[idx];
+
+              if (b === BlockType.NETHERRACK) {
+                const idxAbove = (x * CHUNK_SIZE * WORLD_HEIGHT) + ((y + 1) * CHUNK_SIZE) + z;
+                if (data[idxAbove] === BlockType.AIR) {
+                  const bNoise = worldConf.biomeNoiseFun(wx * 0.022, wz * 0.022);
+                  if (bNoise < -0.32) {
+                    data[idx] = BlockType.CRIMSON_NYLIUM;
+                  } else if (bNoise > 0.32) {
+                    data[idx] = BlockType.WARPED_NYLIUM;
+                  } else if (bNoise > -0.08 && bNoise < 0.08) {
+                    data[idx] = BlockType.SOUL_SAND;
+                    if (y > 2) {
+                      const idxBelow1 = (x * CHUNK_SIZE * WORLD_HEIGHT) + ((y - 1) * CHUNK_SIZE) + z;
+                      if (data[idxBelow1] === BlockType.NETHERRACK) data[idxBelow1] = BlockType.SOUL_SAND;
+                    }
+                  }
+                }
+              } else if (b === BlockType.AIR) {
+                const idxAbove = (x * CHUNK_SIZE * WORLD_HEIGHT) + ((y + 1) * CHUNK_SIZE) + z;
+                if (data[idxAbove] === BlockType.NETHERRACK) {
+                  const rGlow = getSeededRandom(seed + 111, wx, wz, y);
+                  if (rGlow < 0.035) {
+                    data[idx] = BlockType.GLOWSTONE;
+                    if (y > 4) {
+                      const idxBelow1 = (x * CHUNK_SIZE * WORLD_HEIGHT) + ((y - 1) * CHUNK_SIZE) + z;
+                      if (data[idxBelow1] === BlockType.AIR) data[idxBelow1] = BlockType.GLOWSTONE;
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        return data;
+      }
+
       for (let x = 0; x < CHUNK_SIZE; x++) {
         for (let z = 0; z < CHUNK_SIZE; z++) {
           const wx = cx * CHUNK_SIZE + x;
           const wz = cz * CHUNK_SIZE + z;
+          
+          const absCoord = Math.max(Math.abs(wx), Math.abs(wz));
+          
+          if (absCoord >= 2300) {
+            // Pure water up to Y = 56, and air above
+            for (let y = 0; y < WORLD_HEIGHT; y++) {
+              const idx = (x * CHUNK_SIZE * WORLD_HEIGHT) + (y * CHUNK_SIZE) + z;
+              if (y === 0) {
+                data[idx] = BlockType.BEDROCK;
+              } else if (y <= 56) {
+                data[idx] = BlockType.WATER;
+              } else {
+                data[idx] = BlockType.AIR;
+              }
+            }
+            continue;
+          }
+          
+          if (absCoord >= 2000) {
+            // Gradual corruption: more air blocks, water below Y = 56
+            const { h } = getWorldHeight(wx, wz);
+            const ratio = Math.min(1.0, (absCoord - 2000) / 300);
+            
+            for (let y = 0; y < WORLD_HEIGHT; y++) {
+              const idx = (x * CHUNK_SIZE * WORLD_HEIGHT) + (y * CHUNK_SIZE) + z;
+              if (y === 0) {
+                data[idx] = BlockType.BEDROCK;
+                continue;
+              }
+              
+              const randVal = getSeededRandom(seed + 999, wx, wz, y);
+              if (y <= h) {
+                if (randVal < ratio) {
+                  data[idx] = y <= 56 ? BlockType.WATER : BlockType.AIR;
+                } else {
+                  if (y === h) {
+                    data[idx] = BlockType.GRASS;
+                  } else if (y > h - 3) {
+                    data[idx] = BlockType.DIRT;
+                  } else {
+                    data[idx] = BlockType.STONE;
+                  }
+                }
+              } else {
+                data[idx] = BlockType.AIR;
+              }
+            }
+            continue;
+          }
           
           const isFar = Math.abs(wx) >= 1500 || Math.abs(wz) >= 1500 || worldType === "edge_farlands";
           if (isFar) {
@@ -2482,19 +2906,29 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
             
             if (y <= h) {
               if (y === h) {
-                 if (biome === 'desert') data[idx] = BlockType.SAND;
+                 if (biome === 'editable') {
+                     data[idx] = activeBiomeConfig?.surface ?? BlockType.MOSS;
+                 }
+                 else if (biome === 'desert') data[idx] = BlockType.SAND;
                  else if (biome === 'mesa') {
                      const layer = Math.floor(y / 2) % 6;
                      const colors = [BlockType.TERRACOTTA_BROWN, BlockType.TERRACOTTA_ORANGE, BlockType.TERRACOTTA_RED, BlockType.TERRACOTTA_YELLOW, BlockType.TERRACOTTA_WHITE, BlockType.TERRACOTTA_LIGHT_GRAY];
                      data[idx] = colors[layer];
                  }
                  else if (biome === 'mountains') {
-                     if (h >= 75) {
-                         data[idx] = BlockType.TERRACOTTA_WHITE; // Snow cap
+                     if (h >= 80) {
+                         data[idx] = BlockType.SNOW; // Real snow blocks at higher peaks
                      } else if (h >= 68) {
                          data[idx] = BlockType.STONE; // Bare rock peaks
                      } else {
                          data[idx] = BlockType.GRASS; // Valleys
+                     }
+                 }
+                 else if (biome === 'autumn') {
+                     if (h < 57) {
+                         data[idx] = BlockType.SAND;
+                     } else {
+                         data[idx] = BlockType.AUTUMN_GRASS; // Autumn grass block on top!
                      }
                  }
                  else {
@@ -2506,7 +2940,10 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
                  }
               }
               else if (y < h && y > h - 3) {
-                 if (biome === 'desert' || h < 57) data[idx] = BlockType.SAND;
+                 if (biome === 'editable') {
+                     data[idx] = activeBiomeConfig?.underground ?? BlockType.DIRT;
+                 }
+                 else if (biome === 'desert' || h < 57) data[idx] = BlockType.SAND;
                  else if (biome === 'mesa') data[idx] = BlockType.TERRACOTTA_ORANGE;
                  else if (biome === 'mountains') {
                      data[idx] = BlockType.STONE;
@@ -2569,16 +3006,25 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
           const r1 = getSeededRandom(seed, wx, wz, 10);
           const r2 = getSeededRandom(seed, wx, wz, 20);
 
-           const isMushroom = r1 < 0.01;
+          if (biome === 'editable' && h >= 57 && r1 < 0.05 && h + 1 < WORLD_HEIGHT) {
+              const idx = (x * CHUNK_SIZE * WORLD_HEIGHT) + ((h + 1) * CHUNK_SIZE) + z;
+              data[idx] = activeBiomeConfig?.flora ?? BlockType.VINES;
+          }
+
+          const isMushroom = r1 < 0.01;
           const isFlower = !isMushroom && r1 >= 0.01 && r1 < 0.055;
-          const isVegBiome = biome === 'plains' || (biome === 'mountains' && h < 68);
+          const isVegBiome = biome === 'plains' || biome === 'autumn' || (biome === 'mountains' && h < 68);
 
           if (isVegBiome && h >= 57 && isMushroom && h + 1 < WORLD_HEIGHT) {
               const idx = (x * CHUNK_SIZE * WORLD_HEIGHT) + ((h + 1) * CHUNK_SIZE) + z;
               data[idx] = r2 > 0.5 ? BlockType.MUSHROOM_RED : BlockType.MUSHROOM_BROWN;
           } else if (isVegBiome && h >= 57 && isFlower && h + 1 < WORLD_HEIGHT) {
               const idx = (x * CHUNK_SIZE * WORLD_HEIGHT) + ((h + 1) * CHUNK_SIZE) + z;
-              data[idx] = r2 > 0.5 ? BlockType.FLOWER_RED : BlockType.FLOWER_YELLOW;
+              if (biome === 'autumn') {
+                  data[idx] = BlockType.AUTUMN_FLOWER;
+              } else {
+                  data[idx] = r2 > 0.5 ? BlockType.FLOWER_RED : BlockType.FLOWER_YELLOW;
+              }
           } else if (biome === 'desert' && h >= 57 && r1 < 0.005) {
               const th = 2 + Math.floor(r2 * 2);
               for (let ty = 1; ty <= th; ty++) {
@@ -2588,10 +3034,12 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
               }
           } else if (isVegBiome && h >= 57 && r1 >= 0.055 && r1 < 0.07 && !isMushroom && !isFlower) {
             const th = 4 + Math.floor(r2 * 2);
+            const trunkBlock = biome === 'autumn' ? BlockType.GREY_LOG : BlockType.LOG;
+            const leavesBlock = biome === 'autumn' ? BlockType.AUTUMN_LEAVES : BlockType.LEAVES;
             for (let ty = 1; ty <= th; ty++) {
               if (h + ty >= WORLD_HEIGHT) break;
               const lIdx = (x * CHUNK_SIZE * WORLD_HEIGHT) + ((h + ty) * CHUNK_SIZE) + z;
-              data[lIdx] = BlockType.LOG;
+              data[lIdx] = trunkBlock;
             }
             
             const leafStart = h + th - 2;
@@ -2611,7 +3059,7 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
                   if (wlx >= 0 && wlx < CHUNK_SIZE && wlz >= 0 && wlz < CHUNK_SIZE) {
                     const leafIdx = (wlx * CHUNK_SIZE * WORLD_HEIGHT) + (ly * CHUNK_SIZE) + wlz;
                     if (data[leafIdx] === BlockType.AIR) {
-                      data[leafIdx] = BlockType.LEAVES;
+                      data[leafIdx] = leavesBlock;
                     }
                   }
                 }
@@ -2811,6 +3259,48 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
       }
     }
 
+    // Apply Far Lands corruption post-processing for overworld
+    if (activeDimension !== 'nether') {
+      const chunkSeed = getNoiseForWorld(worldId).seed;
+      for (let lx = 0; lx < CHUNK_SIZE; lx++) {
+        const wx = cx * CHUNK_SIZE + lx;
+        for (let lz = 0; lz < CHUNK_SIZE; lz++) {
+          const wz = cz * CHUNK_SIZE + lz;
+          const maxCoord = Math.max(Math.abs(wx), Math.abs(wz));
+
+          if (maxCoord >= 2000) {
+            // Calculate corruption probability scaling from 0 at 2000 to 1 at 2300
+            const corrFactor = Math.min(1, Math.max(0, (maxCoord - 2000) / 300));
+            
+            for (let y = 0; y < WORLD_HEIGHT; y++) {
+              const idx = (lx * CHUNK_SIZE * WORLD_HEIGHT) + (y * CHUNK_SIZE) + lz;
+              const block = data[idx];
+              if (block === BlockType.BEDROCK) continue; // Keep bedrock intact
+
+              if (maxCoord >= 2300) {
+                // At >= 2300: pure water up to sea level (64), and air above
+                if (y <= 64) {
+                  data[idx] = BlockType.WATER;
+                } else {
+                  data[idx] = BlockType.AIR;
+                }
+              } else {
+                // Between 2000 and 2300: corrupt with corrFactor probability
+                const rand = getSeededRandom(1122 + chunkSeed, wx, wz, y);
+                if (rand < corrFactor) {
+                  if (y <= 64) {
+                    data[idx] = BlockType.WATER;
+                  } else {
+                    data[idx] = BlockType.AIR;
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
     // Overlay all client edits for this specific chunk (highly optimized)
     if (editsRef.current) {
       const minWx = cx * CHUNK_SIZE;
@@ -2845,6 +3335,32 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
 
     const worldConf = getNoiseForWorld(worldId);
     const chunkSeed = worldConf.seed;
+
+    if (activeDimension === 'nether') {
+      const rNether = getSeededRandom(chunkSeed, cx, cz, 777);
+      if (rNether < 0.40) {
+        const count = 1 + Math.floor(getSeededRandom(chunkSeed, cx, cz, 888) * 3);
+        for (let i = 0; i < count; i++) {
+          const rx = getSeededRandom(chunkSeed, cx, cz, 900 + i * 27);
+          const rz = getSeededRandom(chunkSeed, cx, cz, 1000 + i * 27);
+          const rRot = getSeededRandom(chunkSeed, cx, cz, 1200 + i * 27);
+
+          const wx = cx * CHUNK_SIZE + Math.floor(rx * (CHUNK_SIZE - 2) + 1);
+          const wz = cz * CHUNK_SIZE + Math.floor(rz * (CHUNK_SIZE - 2) + 1);
+          
+          const bNoise = worldConf.biomeNoiseFun(wx * 0.022, wz * 0.022);
+          const spawnH = 34 + Math.floor(Math.abs(bNoise) * 30);
+
+          chunkEntities.push({
+            id: `nether_hoglin_${cx},${cz},${i}`,
+            type: EntityType.HOGLIN,
+            pos: { x: wx, y: spawnH + 2, z: wz },
+            rot: rRot * Math.PI * 2
+          });
+        }
+      }
+      return chunkEntities;
+    }
 
     // 1. Passive Animals Spawning (30% probability, plus rare villagers)
     const r1 = getSeededRandom(chunkSeed, cx, cz, 100);
@@ -3674,6 +4190,13 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
           setIsSleeping={setIsSleeping} 
           ultraOptimization={ultraOptimization} 
           playerPosRef={playerPosRef}
+          weatherRef={weatherRef}
+        />
+
+        <WeatherSystem
+          playerPosRef={playerPosRef}
+          weatherRef={weatherRef}
+          ultraOptimization={ultraOptimization}
         />
 
         <NightMobSpawner 
@@ -3718,7 +4241,17 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
           />
         ))}
 
-        <Player moveVector={moveVector} lookOffsetRef={lookOffsetRef} onUpdatePos={onBlockChange} isJumping={isJumping} getCollisionHeight={getCollisionHeight} checkSolid={checkSolid} perspective={perspective} gameMode={gameMode} worldType={worldType} chunks={chunks} playerPosRef={playerPosRef} playerPos={playerPos} />
+        {activePlayers && activePlayers.filter(p => p.dimension === dimension).map((p) => (
+          <OtherPlayer
+            key={p.id}
+            id={p.id}
+            name={p.name}
+            pos={p.pos}
+            dimension={p.dimension}
+          />
+        ))}
+
+        <Player moveVector={moveVector} lookOffsetRef={lookOffsetRef} onUpdatePos={onBlockChange} isJumping={isJumping} getCollisionHeight={getCollisionHeight} checkSolid={checkSolid} perspective={perspective} gameMode={gameMode} worldType={worldType} chunks={chunks} playerPosRef={playerPosRef} playerPos={playerPos} onPortalTeleport={onPortalTeleport} autoJumpEnabled={autoJumpEnabled} />
         <ParticleSystem particlesRef={particlesRef} />
         <JukeboxEmitter playingJukeboxesRef={playingJukeboxesRef} particlesRef={particlesRef} />
         <fog attach="fog" args={['#87ceeb', ultraOptimization ? 8 : 15, ultraOptimization ? 28 : 45]} />
@@ -3801,12 +4334,187 @@ const JukeboxEmitter: React.FC<JukeboxEmitterProps> = ({ playingJukeboxesRef, pa
   return null;
 };
 
+interface WeatherSystemProps {
+  playerPosRef: React.MutableRefObject<Vector3D>;
+  weatherRef: React.MutableRefObject<'clear' | 'rain' | 'snow' | 'thunderstorm' | 'snow_rain'>;
+  ultraOptimization: boolean;
+}
+
+const WeatherSystem: React.FC<WeatherSystemProps> = ({ playerPosRef, weatherRef, ultraOptimization }) => {
+  const pointsRef = useRef<THREE.Points>(null);
+  const particleCount = ultraOptimization ? 200 : 800;
+  
+  // Create buffers for particle positions and metadata
+  const [positions, speeds, sways, types] = useMemo(() => {
+    const pos = new Float32Array(particleCount * 3);
+    const spd = new Float32Array(particleCount);
+    const swy = new Float32Array(particleCount);
+    const typ = new Float32Array(particleCount); // 0 = rain, 1 = snow
+    
+    for (let i = 0; i < particleCount; i++) {
+      // Box coordinates relative to player center: X [-25, 25], Y [-10, 25], Z [-25, 25]
+      pos[i * 3] = (Math.random() - 0.5) * 50;
+      pos[i * 3 + 1] = Math.random() * 35 - 10;
+      pos[i * 3 + 2] = (Math.random() - 0.5) * 50;
+      
+      spd[i] = 1.0 + Math.random() * 2.0; // speed multiplier
+      swy[i] = Math.random() * Math.PI * 2; // sway offset
+      typ[i] = Math.random() > 0.5 ? 1 : 0; // split for snow-rain mix
+    }
+    return [pos, spd, swy, typ];
+  }, [particleCount]);
+
+  // Texture helper or simple standard circle material
+  const particleTexture = useMemo(() => {
+    // Generate a simple round soft dot texture using HTML canvas
+    const canvas = document.createElement('canvas');
+    canvas.width = 16;
+    canvas.height = 16;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      const gradient = ctx.createRadialGradient(8, 8, 0, 8, 8, 8);
+      gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
+      gradient.addColorStop(0.3, 'rgba(255, 255, 255, 0.8)');
+      gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, 16, 16);
+    }
+    const texture = new THREE.CanvasTexture(canvas);
+    return texture;
+  }, []);
+
+  useFrame((state) => {
+    const activeWeather = weatherRef.current;
+    if (activeWeather === 'clear' || !pointsRef.current) {
+      if (pointsRef.current) pointsRef.current.visible = false;
+      return;
+    }
+    
+    pointsRef.current.visible = true;
+    const pPos = playerPosRef.current;
+    const geom = pointsRef.current.geometry;
+    const posAttr = geom.getAttribute('position') as THREE.BufferAttribute;
+    const t = state.clock.getElapsedTime();
+    
+    // Evaluate environmental modifier rules
+    // Rule 1: "las montañas en vez que llueva llueve con nieve" (mountains -> always snow)
+    // Rule 2: "añadir más altura sobre la Y 80 - 200 llueve nieve" (height Y >= 80 -> snow rain / snow)
+    const { biome } = getWorldHeight(pPos.x, pPos.z);
+    const currentY = pPos.y;
+    
+    let effectiveWeather = activeWeather;
+    if (biome === 'mountains') {
+      // Rain and Thunderstorm turn into SNOW in mountains
+      if (activeWeather === 'rain' || activeWeather === 'thunderstorm') {
+        effectiveWeather = 'snow';
+      } else if (activeWeather === 'snow_rain') {
+        effectiveWeather = 'snow';
+      }
+    } else if (currentY >= 80) {
+      // High altitude (above Y 80) is always snow or snow_rain
+      if (activeWeather === 'rain' || activeWeather === 'thunderstorm') {
+        effectiveWeather = 'snow_rain';
+      }
+    }
+
+    // Colors & Sizes:
+    // Rain is light bluish, fast, elongated.
+    // Snow is pure white, drifting, larger.
+    const material = pointsRef.current.material as THREE.PointsMaterial;
+    if (effectiveWeather === 'snow') {
+      material.color.set('#ffffff');
+      material.size = ultraOptimization ? 0.25 : 0.4;
+    } else if (effectiveWeather === 'rain' || effectiveWeather === 'thunderstorm') {
+      material.color.set('#78a4c0');
+      material.size = ultraOptimization ? 0.15 : 0.22;
+    } else { // snow_rain
+      material.color.set('#d0e3f0');
+      material.size = ultraOptimization ? 0.2 : 0.32;
+    }
+
+    const posArray = posAttr.array as Float32Array;
+    
+    for (let i = 0; i < particleCount; i++) {
+      const idx = i * 3;
+      
+      // Calculate absolute positions of particles
+      let wx = posArray[idx] + pPos.x;
+      let wy = posArray[idx + 1] + pPos.y;
+      let wz = posArray[idx + 2] + pPos.z;
+      
+      // Determine movement behavior based on effective weather type
+      let speedY = 0;
+      let swayX = 0;
+      let swayZ = 0;
+      
+      const isSnowParticle = effectiveWeather === 'snow' || (effectiveWeather === 'snow_rain' && types[i] === 1);
+      
+      if (isSnowParticle) {
+        // Snow drift physics: slow descent + sin/cos sway
+        speedY = -2.5 * speeds[i];
+        swayX = Math.sin(t * 1.5 + sways[i]) * 1.8;
+        swayZ = Math.cos(t * 1.1 + sways[i]) * 1.8;
+      } else {
+        // Rain falling fast
+        speedY = -18.0 * speeds[i];
+      }
+      
+      // Apply delta time movement
+      wy += speedY * 0.016; // approximate delta to ensure consistency
+      wx += swayX * 0.016;
+      wz += swayZ * 0.016;
+      
+      // Keep particles relative to player boundary box
+      // If particle falls below player height - 15 or goes out of boundary, recycle it to the top!
+      if (wy < pPos.y - 12) {
+        wy = pPos.y + 22 + Math.random() * 5;
+        wx = pPos.x + (Math.random() - 0.5) * 45;
+        wz = pPos.z + (Math.random() - 0.5) * 45;
+      }
+      
+      // Also recycle horizontal bounds if player is sprinting/moving fast
+      if (Math.abs(wx - pPos.x) > 25) {
+        wx = pPos.x + (wx < pPos.x ? 25 : -25);
+      }
+      if (Math.abs(wz - pPos.z) > 25) {
+        wz = pPos.z + (wz < pPos.z ? 25 : -25);
+      }
+      
+      // Store back as relative offsets to player
+      posArray[idx] = wx - pPos.x;
+      posArray[idx + 1] = wy - pPos.y;
+      posArray[idx + 2] = wz - pPos.z;
+    }
+    
+    posAttr.needsUpdate = true;
+  });
+
+  return (
+    <points ref={pointsRef}>
+      <bufferGeometry>
+        <bufferAttribute
+          attach="attributes-position"
+          args={[positions, 3]}
+        />
+      </bufferGeometry>
+      <pointsMaterial
+        map={particleTexture}
+        transparent={true}
+        depthWrite={false}
+        size={0.3}
+        sizeAttenuation={true}
+      />
+    </points>
+  );
+};
+
 interface MinecraftEnvironmentProps {
   gameTimeRef: React.MutableRefObject<number>;
   isSleepingRef: React.MutableRefObject<boolean>;
   setIsSleeping: (s: boolean) => void;
   ultraOptimization: boolean;
   playerPosRef: React.MutableRefObject<Vector3D>;
+  weatherRef: React.MutableRefObject<'clear' | 'rain' | 'snow' | 'thunderstorm' | 'snow_rain'>;
 }
 
 const MinecraftEnvironment: React.FC<MinecraftEnvironmentProps> = ({ 
@@ -3814,7 +4522,8 @@ const MinecraftEnvironment: React.FC<MinecraftEnvironmentProps> = ({
   isSleepingRef, 
   setIsSleeping,
   ultraOptimization,
-  playerPosRef
+  playerPosRef,
+  weatherRef
 }) => {
   const skyRef = useRef<any>(null);
   const ambientLightRef = useRef<THREE.AmbientLight>(null);
@@ -3823,6 +4532,8 @@ const MinecraftEnvironment: React.FC<MinecraftEnvironmentProps> = ({
   const sunPosRef = useRef<[number, number, number]>([100, 20, 100]);
   const lastBiomeCheckRef = useRef<number>(0);
   const currentBiomeRef = useRef<string>('plains');
+  const [lightningFlash, setLightningFlash] = useState(false);
+  const lastStrikeRef = useRef<number>(0);
 
   useFrame((state, delta) => {
     // 1. Advance time
@@ -3888,6 +4599,13 @@ const MinecraftEnvironment: React.FC<MinecraftEnvironmentProps> = ({
       fogColor = '#0b101c';
     }
     
+    if (activeDimension === 'nether') {
+      ambientIntensity = 0.55;
+      dirIntensity = 0.05;
+      dirColor = '#601111';
+      fogColor = '#240606';
+    }
+    
     // Depth and Biome based fog modifier
     const pPos = playerPosRef.current;
     if (pPos) {
@@ -3895,8 +4613,8 @@ const MinecraftEnvironment: React.FC<MinecraftEnvironmentProps> = ({
         // Deep underground
         const depthRatio = Math.max(0, pPos.y / 50);
         fogColor = '#000000'; // Dark fog at bottom
-            } else if (sunY > 0) {
-        // Evaluate biome colors (throttled to once every 500ms to increase frame rate from 5fps to 60fps!)
+      } else if (sunY > 0) {
+        // Evaluate biome colors (throttled once every 500ms to increase frame rate)
         const nowMs = performance.now();
         if (nowMs - lastBiomeCheckRef.current > 500) {
           lastBiomeCheckRef.current = nowMs;
@@ -3909,15 +4627,79 @@ const MinecraftEnvironment: React.FC<MinecraftEnvironmentProps> = ({
         if (biome === 'desert') targetFogColor = '#ebd6a7';
         else if (biome === 'mesa') targetFogColor = '#d19462';
         else if (biome === 'mountains') targetFogColor = '#a8c2d1';
+        else if (biome === 'autumn') targetFogColor = '#cfb59b'; // Soft warm autumnal sky
         
         // Blend fogColor with target based on sunY for sunrise/sunset
         if (sunY >= 40) {
             fogColor = targetFogColor;
-        } else {
-            // Keep the warm sunset transition but slightly tint it with the biome color
-            // This is a naive blend, we'll keep it simple for now
         }
       }
+    }
+
+    // Evaluate weather factors for lighting and fog
+    const activeWeather = weatherRef.current;
+    let effectiveWeather = activeWeather;
+    if (pPos) {
+      const { biome } = getWorldHeight(pPos.x, pPos.z);
+      const currentY = pPos.y;
+      
+      if (biome === 'mountains') {
+        if (activeWeather === 'rain' || activeWeather === 'thunderstorm') {
+          effectiveWeather = 'snow';
+        } else if (activeWeather === 'snow_rain') {
+          effectiveWeather = 'snow';
+        }
+      } else if (currentY >= 80) {
+        if (activeWeather === 'rain' || activeWeather === 'thunderstorm') {
+          effectiveWeather = 'snow_rain';
+        }
+      }
+    }
+
+    let weatherIntensityFactor = 1.0;
+    if (effectiveWeather === 'rain' || effectiveWeather === 'snow' || effectiveWeather === 'snow_rain') {
+      weatherIntensityFactor = 0.55;
+    } else if (effectiveWeather === 'thunderstorm') {
+      weatherIntensityFactor = 0.35;
+    }
+    
+    ambientIntensity *= weatherIntensityFactor;
+    dirIntensity *= weatherIntensityFactor;
+
+    // Apply gloomy sky colors when sun is out
+    if (effectiveWeather !== 'clear' && sunY > 0) {
+      let targetWeatherSky = '#4a5568'; // gloomy gray for rain
+      if (effectiveWeather === 'snow' || effectiveWeather === 'snow_rain') {
+        targetWeatherSky = '#b0bec5'; // softer snow white-gray
+      } else if (effectiveWeather === 'thunderstorm') {
+        targetWeatherSky = '#212121'; // dark storm clouds
+      }
+      
+      fogColor = targetWeatherSky;
+    }
+
+    // Thunderstorm lightning strikes
+    const nowMs = performance.now();
+    if (effectiveWeather === 'thunderstorm' && nowMs - lastStrikeRef.current > 4000) {
+      if (Math.random() < 0.003) {
+        lastStrikeRef.current = nowMs;
+        setLightningFlash(true);
+        setTimeout(() => setLightningFlash(false), 90 + Math.random() * 100);
+        
+        // Occasional double strike!
+        if (Math.random() > 0.4) {
+          setTimeout(() => {
+            setLightningFlash(true);
+            setTimeout(() => setLightningFlash(false), 45);
+          }, 200);
+        }
+      }
+    }
+
+    if (lightningFlash) {
+      fogColor = '#e1f5fe'; // brilliant neon blue-white lightning flash!
+      ambientIntensity = 1.6;
+      dirIntensity = 1.6;
     }
 
     // Optimized Real Lights: Dim ambient and direction lights when deep underground
@@ -3976,9 +4758,8 @@ const MinecraftEnvironment: React.FC<MinecraftEnvironmentProps> = ({
 
   return (
     <>
-      <Sky ref={skyRef} sunPosition={sunPosRef.current} />
-      {/* Stars only render fully when it's dark */}
-      <Stars count={ultraOptimization ? 120 : 350} radius={100} depth={50} factor={4} saturation={0.5} fade />
+      {activeDimension === 'overworld' && <Sky ref={skyRef} sunPosition={sunPosRef.current} />}
+      {activeDimension === 'overworld' && <Stars count={ultraOptimization ? 120 : 350} radius={100} depth={50} factor={4} saturation={0.5} fade />}
       <ambientLight ref={ambientLightRef} intensity={0.9} />
       <directionalLight ref={dirLightRef} position={[10, 20, 10]} intensity={0.8} />
       <pointLight ref={pointLightRef} color="#ffb03a" distance={20} decay={1.2} intensity={0} />

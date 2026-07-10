@@ -2,7 +2,7 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Global Safety Net
+    // 1. Global Safety Net
     match /{document=**} {
       allow read, write: if false;
     }
@@ -12,42 +12,122 @@ service cloud.firestore {
       allow read: if true;
     }
 
-    // Common Helpers
+    // --- Core Security Helpers ---
     function isSignedIn() {
       return request.auth != null;
     }
 
-    function isOwner(creatorId) {
-      return isSignedIn() && request.auth.uid == creatorId;
+    function isLion() {
+      return isSignedIn() && 
+             'email' in request.auth.token && 
+             request.auth.token.email == "lionbastias18@gmail.com";
     }
 
-    function isValidId(id) {
-      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_-]+$');
+    function isStaffOrMod() {
+      return isSignedIn() && 
+             'email' in request.auth.token && (
+               isLion() || 
+               exists(/databases/$(database)/documents/user_roles/$(request.auth.token.email))
+             );
     }
 
+    // --- Entity Validation Helpers ---
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Validates a UserRole document
+    function isValidUserRole(data) {
+      return data.email is string &&
+             data.email.size() <= 128 &&
+             data.role is string &&
+             (data.role == "user" || data.role == "mod" || data.role == "staff" || data.role == "owner") &&
+             (!('biomeSurface' in data) || data.biomeSurface is number) &&
+             (!('biomeUnderground' in data) || data.biomeUnderground is number) &&
+             (!('biomeFlora' in data) || data.biomeFlora is number) &&
+             (!('blocksPlaced' in data) || data.blocksPlaced is number) &&
+             (!('blocksBroken' in data) || data.blocksBroken is number) &&
+             (!('worldsCreated' in data) || data.worldsCreated is number) &&
+             (!('score' in data) || data.score is number) &&
+             (!('displayName' in data) || data.displayName is string) &&
+             (!('lastActive' in data) || data.lastActive is number);
+    }
+
+    // Validates an ActivityLog document
+    function isValidActivityLog(data) {
+      return data.id is string &&
+             data.id.size() <= 128 &&
+             data.playerEmail is string &&
+             data.playerEmail.size() <= 128 &&
+             data.playerName is string &&
+             data.playerName.size() <= 128 &&
+             data.action is string &&
+             data.action.size() <= 500 &&
+             data.timestamp is number;
+    }
+
+    // Validates an ActivePlayer presence document
+    function isValidActivePlayer(data) {
+      return data.id is string &&
+             data.id.size() <= 128 &&
+             data.email is string &&
+             data.email.size() <= 128 &&
+             data.name is string &&
+             data.name.size() <= 128 &&
+             data.pos is map &&
+             data.lastActive is number &&
+             (!('dimension' in data) || data.dimension is string);
+    }
+
+    // Validates a World document
     function isValidWorld(data) {
-      return data.id is string
-        && data.name is string
-        && data.name.size() <= 128
-        && data.creator is string
-        && data.createdAt is int
-        && (!('gameMode' in data) || (data.gameMode is string && (data.gameMode == 'creative' || data.gameMode == 'survival' || data.gameMode == 'adventure' || data.gameMode == 'creativo' || data.gameMode == 'supervivencia' || data.gameMode == 'aventura')))
-        && (!('worldType' in data) || (data.worldType is string && (data.worldType == 'flat' || data.worldType == 'normal' || data.worldType == 'edge_farlands' || data.worldType == 'plano' || data.worldType == 'plano_infinito')));
+      return data.id is string &&
+             data.id.size() <= 128 &&
+             data.name is string &&
+             data.name.size() <= 128 &&
+             data.creator is string &&
+             data.creator.size() <= 128 &&
+             data.createdAt is number &&
+             data.gameMode is string &&
+             (data.gameMode == "creative" || data.gameMode == "survival" || data.gameMode == "adventure") &&
+             data.worldType is string &&
+             (data.worldType == "flat" || data.worldType == "normal" || data.worldType == "edge_farlands") &&
+             (!('playerPos' in data) || data.playerPos is map) &&
+             (!('edits' in data) || data.edits is map);
+    }
+
+    // --- Collections ---
+
+    match /user_roles/{email} {
+      allow read: if isSignedIn();
+      allow create, update: if isLion() || (isSignedIn() && 'email' in request.auth.token && request.auth.token.email == email && isValidUserRole(incoming()));
+      allow delete: if isLion();
+    }
+
+    match /activity_logs/{logId} {
+      allow create: if isSignedIn() && isValidActivityLog(incoming());
+      allow read: if isStaffOrMod();
+      allow update, delete: if isLion();
     }
 
     match /worlds/{worldId} {
-      allow read: if isSignedIn() && (resource == null || !('creator' in resource.data) || resource.data.creator == request.auth.uid);
-      allow create: if isSignedIn() 
-        && isValidId(worldId)
-        && isValidWorld(request.resource.data)
-        && request.resource.data.creator == request.auth.uid;
-      allow update: if isSignedIn()
-        && isValidId(worldId)
-        && isValidWorld(request.resource.data)
-        && (resource == null || !('creator' in resource.data) || resource.data.creator == request.auth.uid)
-        && request.resource.data.creator == request.auth.uid;
-      allow delete: if isSignedIn()
-        && (resource == null || !('creator' in resource.data) || resource.data.creator == request.auth.uid);
+      allow read, create, update, delete: if true;
+
+      match /players/{userId} {
+        allow read, create, update, delete: if true;
+      }
+    }
+
+    match /friendships/{friendshipId} {
+      allow read, create, update, delete: if true;
+    }
+
+    match /online_players/{userId} {
+      allow read, create, update, delete: if true;
     }
   }
 }

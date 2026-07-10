@@ -446,6 +446,224 @@ const createProceduralTexture = (
     // Hole
     ctx.fillStyle = '#000000';
     ctx.fillRect(7, 7, 2, 2);
+  } else if (blockType === BlockType.SNOW) {
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, 16, 16);
+    drawNoise(15);
+    ctx.fillStyle = '#f0f4f8';
+    for (let i = 0; i < 6; i++) {
+      ctx.fillRect(Math.floor(Math.random() * 16), Math.floor(Math.random() * 16), 1, 1);
+    }
+  } else if (blockType === BlockType.AUTUMN_GRASS) {
+    if (face === 'top') {
+      ctx.fillStyle = '#b05f20';
+      ctx.fillRect(0, 0, 16, 16);
+      drawNoise(30);
+    } else if (face === 'bottom') {
+      ctx.fillStyle = '#866043';
+      ctx.fillRect(0, 0, 16, 16);
+      drawNoise(40);
+    } else {
+      ctx.fillStyle = '#866043';
+      ctx.fillRect(0, 0, 16, 16);
+      drawNoise(40);
+      ctx.fillStyle = '#b05f20';
+      for(let x=0; x<16; x++) {
+        let depth = 3 + Math.floor(Math.random() * 3);
+        if (Math.random() > 0.8) depth += 1;
+        ctx.fillRect(x, 0, 1, depth);
+      }
+    }
+  } else if (blockType === BlockType.AUTUMN_LEAVES) {
+    ctx.clearRect(0, 0, 16, 16);
+    ctx.fillStyle = '#d35400';
+    ctx.fillRect(0, 0, 16, 16);
+    for(let i=0; i<40; i++) {
+        ctx.fillStyle = Math.random() > 0.5 ? '#e67e22' : '#ba4a00';
+        ctx.fillRect(Math.floor(Math.random()*16), Math.floor(Math.random()*16), 2, 2);
+    }
+  } else if (blockType === BlockType.GREY_LOG) {
+    if (face === 'top' || face === 'bottom') {
+      ctx.fillStyle = '#bfbfbf';
+      ctx.fillRect(0, 0, 16, 16);
+      ctx.fillStyle = '#737373';
+      ctx.lineWidth = 1;
+      for(let r=2; r<8; r+=2) {
+          ctx.beginPath();
+          ctx.arc(8, 8, r, 0, Math.PI * 2);
+          ctx.stroke();
+      }
+    } else {
+      ctx.fillStyle = '#828282';
+      ctx.fillRect(0, 0, 16, 16);
+      drawNoise(15);
+      ctx.fillStyle = '#595959';
+      for (let x = 0; x < 16; x += 2) {
+        if (Math.random() > 0.3) ctx.fillRect(x, 0, 1, 16);
+      }
+    }
+  } else if (blockType === BlockType.GREY_WOOD) {
+    ctx.fillStyle = '#a6a6a6';
+    ctx.fillRect(0, 0, 16, 16);
+    drawNoise(15);
+    ctx.fillStyle = '#737373';
+    for(let y=0; y<16; y+=4) {
+      ctx.fillRect(0, y, 16, 1);
+    }
+    ctx.fillStyle = '#545454';
+    for(let y=0; y<16; y+=4) {
+      if (Math.random() > 0.5) ctx.fillRect(2, y + 1, 1, 1);
+      if (Math.random() > 0.5) ctx.fillRect(14, y + 2, 1, 1);
+    }
+  } else if (blockType === BlockType.AUTUMN_FLOWER) {
+    ctx.clearRect(0, 0, 16, 16);
+    const petalColor = '#e67e22';
+    const centerColor = '#f1c40f';
+    const stemColor = '#7e5109';
+    if (face === 'top') {
+      ctx.fillStyle = petalColor;
+      ctx.fillRect(5, 5, 6, 6);
+      ctx.fillStyle = centerColor;
+      ctx.fillRect(7, 7, 2, 2);
+    } else if (face === 'bottom') {
+      ctx.fillStyle = '#512e08';
+      ctx.fillRect(6, 6, 4, 4);
+    } else {
+      ctx.fillStyle = stemColor;
+      ctx.fillRect(7, 8, 2, 8);
+      ctx.fillStyle = petalColor;
+      ctx.fillRect(5, 5, 6, 3);
+      ctx.fillStyle = centerColor;
+      ctx.fillRect(7, 6, 2, 1);
+    }
+  } else if (blockType === BlockType.NETHERRACK) {
+    ctx.fillStyle = '#5c1d1d';
+    ctx.fillRect(0, 0, 16, 16);
+    drawNoise(65);
+    ctx.fillStyle = '#421414';
+    for (let i = 0; i < 15; i++) {
+      ctx.fillRect(Math.floor(Math.random()*16), Math.floor(Math.random()*16), 2, 1);
+    }
+  } else if (blockType === BlockType.SOUL_SAND) {
+    ctx.fillStyle = '#4c392f';
+    ctx.fillRect(0, 0, 16, 16);
+    drawNoise(30);
+    ctx.fillStyle = '#2d221c';
+    for (let s = 0; s < 2; s++) {
+      const sx = s * 7 + 3;
+      const sy = 4 + Math.floor(Math.random() * 4);
+      ctx.fillRect(sx, sy, 3, 3);
+      ctx.fillRect(sx + 1, sy - 1, 1, 1);
+    }
+  } else if (blockType === BlockType.GLOWSTONE) {
+    ctx.fillStyle = '#e8a834';
+    ctx.fillRect(0, 0, 16, 16);
+    drawNoise(45);
+    ctx.fillStyle = '#fce49d';
+    for (let i = 0; i < 8; i++) {
+      ctx.fillRect(Math.floor(Math.random()*16), Math.floor(Math.random()*16), 1, 1);
+    }
+    ctx.fillStyle = '#b5791c';
+    for(let i=0; i<16; i+=4) {
+      ctx.fillRect(i, 0, 1, 16);
+      ctx.fillRect(0, i, 16, 1);
+    }
+  } else if (blockType === BlockType.NETHER_QUARTZ_ORE) {
+    ctx.fillStyle = '#5c1d1d';
+    ctx.fillRect(0, 0, 16, 16);
+    drawNoise(55);
+    ctx.fillStyle = '#eae3db';
+    for (let i = 0; i < 10; i++) {
+      ctx.fillRect(Math.floor(Math.random()*14) + 1, Math.floor(Math.random()*14) + 1, 2, 1);
+    }
+  } else if (blockType === BlockType.NETHER_BRICKS) {
+    ctx.fillStyle = '#2c1115';
+    ctx.fillRect(0, 0, 16, 16);
+    drawNoise(20);
+    ctx.fillStyle = '#140608';
+    for (let y = 0; y < 16; y += 4) {
+      ctx.fillRect(0, y, 16, 1);
+      for (let x = (y % 8 === 0 ? 0 : 4); x < 16; x += 8) {
+        ctx.fillRect(x, y, 1, 4);
+      }
+    }
+  } else if (blockType === BlockType.CRIMSON_NYLIUM) {
+    if (face === 'top') {
+      ctx.fillStyle = '#a01c2c';
+      ctx.fillRect(0, 0, 16, 16);
+      drawNoise(35);
+      ctx.fillStyle = '#5c0f1b';
+      for (let i = 0; i < 12; i++) {
+        ctx.fillRect(Math.floor(Math.random()*16), Math.floor(Math.random()*16), 2, 2);
+      }
+    } else if (face === 'bottom') {
+      ctx.fillStyle = '#5c1d1d';
+      ctx.fillRect(0, 0, 16, 16);
+      drawNoise(55);
+    } else {
+      ctx.fillStyle = '#5c1d1d';
+      ctx.fillRect(0, 0, 16, 16);
+      drawNoise(55);
+      ctx.fillStyle = '#a01c2c';
+      for(let x=0; x<16; x++) {
+        let depth = 2 + Math.floor(Math.random() * 3);
+        ctx.fillRect(x, 0, 1, depth);
+      }
+    }
+  } else if (blockType === BlockType.WARPED_NYLIUM) {
+    if (face === 'top') {
+      ctx.fillStyle = '#158585';
+      ctx.fillRect(0, 0, 16, 16);
+      drawNoise(35);
+      ctx.fillStyle = '#0a4242';
+      for (let i = 0; i < 12; i++) {
+        ctx.fillRect(Math.floor(Math.random()*16), Math.floor(Math.random()*16), 2, 2);
+      }
+    } else if (face === 'bottom') {
+      ctx.fillStyle = '#5c1d1d';
+      ctx.fillRect(0, 0, 16, 16);
+      drawNoise(55);
+    } else {
+      ctx.fillStyle = '#5c1d1d';
+      ctx.fillRect(0, 0, 16, 16);
+      drawNoise(55);
+      ctx.fillStyle = '#158585';
+      for(let x=0; x<16; x++) {
+        let depth = 2 + Math.floor(Math.random() * 3);
+        ctx.fillRect(x, 0, 1, depth);
+      }
+    }
+  } else if (blockType === BlockType.PORTAL) {
+    ctx.fillStyle = '#4c1766';
+    ctx.fillRect(0, 0, 16, 16);
+    drawNoise(50);
+    ctx.fillStyle = '#aa33ff';
+    for (let i = 0; i < 15; i++) {
+      ctx.fillRect(Math.floor(Math.random()*16), Math.floor(Math.random()*16), 1, 1);
+    }
+  } else if (blockType === BlockType.MOSS) {
+    ctx.fillStyle = '#456a21';
+    ctx.fillRect(0, 0, 16, 16);
+    drawNoise(25);
+    ctx.fillStyle = '#2d4c12';
+    for (let i = 0; i < 10; i++) {
+      ctx.fillRect(Math.floor(Math.random() * 14), Math.floor(Math.random() * 14), 2, 2);
+    }
+  } else if (blockType === BlockType.VINES) {
+    ctx.clearRect(0, 0, 16, 16);
+    ctx.fillStyle = '#2e5a1c';
+    for (let i = 0; i < 4; i++) {
+      const startX = 3 + i * 4 + Math.floor(Math.random() * 2);
+      ctx.fillRect(startX, 0, 1, 16);
+      for (let y = 0; y < 16; y += 3) {
+        if (Math.random() > 0.3) {
+          ctx.fillRect(startX - 1, y, 1, 1);
+        }
+        if (Math.random() > 0.3) {
+          ctx.fillRect(startX + 1, y + 1, 1, 1);
+        }
+      }
+    }
   } else if (String(BlockType[blockType]).startsWith('TERRACOTTA')) {
     drawNoise(15);
   } else {
@@ -499,6 +717,14 @@ export const TextureCache = {
         material = new THREE.MeshLambertMaterial({
             map: side, emissive: '#ff2200', emissiveIntensity: 0.3
         });
+    } else if (blockType === BlockType.GLOWSTONE) {
+        material = new THREE.MeshLambertMaterial({
+            map: side, emissive: '#b58428', emissiveIntensity: 0.6
+        });
+    } else if (blockType === BlockType.PORTAL) {
+        material = new THREE.MeshLambertMaterial({
+            map: side, emissive: '#aa33ff', emissiveIntensity: 0.8, transparent: true, opacity: 0.8
+        });
     } else if (blockType === BlockType.DIAMOND_ORE) {
         material = new THREE.MeshLambertMaterial({
             map: side, emissive: '#4cebeb', emissiveIntensity: 0.1
@@ -513,13 +739,18 @@ export const TextureCache = {
                blockType === BlockType.BED || blockType === BlockType.DOOR || blockType === BlockType.CRAFTING_TABLE ||
                blockType === BlockType.SWORD || blockType === BlockType.PICKAXE || blockType === BlockType.AXE || blockType === BlockType.SHOVEL ||
                blockType === BlockType.JUKEBOX || blockType === BlockType.MUSIC_DISC_CAT || blockType === BlockType.MUSIC_DISC_CHIRP ||
-               blockType === BlockType.MUSIC_DISC_BLOCKS || blockType === BlockType.MUSIC_DISC_MELLOHI) {
+               blockType === BlockType.MUSIC_DISC_BLOCKS || blockType === BlockType.MUSIC_DISC_MELLOHI ||
+               blockType === BlockType.AUTUMN_GRASS || blockType === BlockType.GREY_LOG || blockType === BlockType.AUTUMN_FLOWER ||
+               blockType === BlockType.CRIMSON_NYLIUM || blockType === BlockType.WARPED_NYLIUM ||
+               blockType === BlockType.VINES) {
         const isTransparentFlora = blockType === BlockType.MUSHROOM_RED || blockType === BlockType.MUSHROOM_BROWN || 
                                    blockType === BlockType.FLOWER_RED || blockType === BlockType.FLOWER_YELLOW || 
+                                   blockType === BlockType.AUTUMN_FLOWER ||
                                    blockType === BlockType.DOOR ||
                                    blockType === BlockType.SWORD || blockType === BlockType.PICKAXE || blockType === BlockType.AXE || blockType === BlockType.SHOVEL ||
                                    blockType === BlockType.MUSIC_DISC_CAT || blockType === BlockType.MUSIC_DISC_CHIRP ||
-                                   blockType === BlockType.MUSIC_DISC_BLOCKS || blockType === BlockType.MUSIC_DISC_MELLOHI;
+                                   blockType === BlockType.MUSIC_DISC_BLOCKS || blockType === BlockType.MUSIC_DISC_MELLOHI ||
+                                   blockType === BlockType.VINES;
         material = [
             new THREE.MeshLambertMaterial({ map: side, transparent: false, alphaTest: isTransparentFlora ? 0.5 : 0 }),
             new THREE.MeshLambertMaterial({ map: side, transparent: false, alphaTest: isTransparentFlora ? 0.5 : 0 }),

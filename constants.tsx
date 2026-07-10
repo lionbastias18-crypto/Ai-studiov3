@@ -2,7 +2,7 @@
 import { BlockType } from './types';
 
 export const CHUNK_SIZE = 16;
-export const WORLD_HEIGHT = 112;
+export const WORLD_HEIGHT = 220;
 export const VIEW_DISTANCE = 2; // Reducido ligeramente para mayor fluidez en 4GB
 
 export const BLOCK_COLORS: Record<BlockType, string> = {
@@ -54,6 +54,22 @@ export const BLOCK_COLORS: Record<BlockType, string> = {
   [BlockType.MUSIC_DISC_CHIRP]: '#ff3366',
   [BlockType.MUSIC_DISC_BLOCKS]: '#ffcc00',
   [BlockType.MUSIC_DISC_MELLOHI]: '#aa33ff',
+  [BlockType.SNOW]: '#ffffff',
+  [BlockType.AUTUMN_GRASS]: '#b05f20',
+  [BlockType.AUTUMN_LEAVES]: '#d35400',
+  [BlockType.GREY_LOG]: '#828282',
+  [BlockType.GREY_WOOD]: '#a6a6a6',
+  [BlockType.AUTUMN_FLOWER]: '#e67e22',
+  [BlockType.NETHERRACK]: '#722525',
+  [BlockType.SOUL_SAND]: '#4d392f',
+  [BlockType.GLOWSTONE]: '#f3bf5f',
+  [BlockType.NETHER_QUARTZ_ORE]: '#8b4b4b',
+  [BlockType.NETHER_BRICKS]: '#2d1419',
+  [BlockType.CRIMSON_NYLIUM]: '#91212c',
+  [BlockType.WARPED_NYLIUM]: '#157c7c',
+  [BlockType.PORTAL]: '#a33bf2',
+  [BlockType.MOSS]: '#456a21',
+  [BlockType.VINES]: '#2e5a1c',
 };
 
 export const BLOCK_NAMES: Record<BlockType, string> = {
@@ -105,4 +121,20 @@ export const BLOCK_NAMES: Record<BlockType, string> = {
   [BlockType.MUSIC_DISC_CHIRP]: 'Disco de Música (Chirp)',
   [BlockType.MUSIC_DISC_BLOCKS]: 'Disco de Música (Blocks)',
   [BlockType.MUSIC_DISC_MELLOHI]: 'Disco de Música (Mellohi)',
+  [BlockType.SNOW]: 'Bloque de Nieve',
+  [BlockType.AUTUMN_GRASS]: 'Césped Otoñal',
+  [BlockType.AUTUMN_LEAVES]: 'Hojas Otoñales',
+  [BlockType.GREY_LOG]: 'Tronco Gris',
+  [BlockType.GREY_WOOD]: 'Madera Gris',
+  [BlockType.AUTUMN_FLOWER]: 'Planta Otoñal',
+  [BlockType.NETHERRACK]: 'Infrapiedra (Netherrack)',
+  [BlockType.SOUL_SAND]: 'Arena de Almas (Soul Sand)',
+  [BlockType.GLOWSTONE]: 'Piedra Luminosa (Glowstone)',
+  [BlockType.NETHER_QUARTZ_ORE]: 'Mineral de Cuarzo del Nether',
+  [BlockType.NETHER_BRICKS]: 'Ladrillos del Nether',
+  [BlockType.CRIMSON_NYLIUM]: 'Nílice Carmesí',
+  [BlockType.WARPED_NYLIUM]: 'Nílice Distorsionado',
+  [BlockType.PORTAL]: 'Portal del Inframundo',
+  [BlockType.MOSS]: 'Bloque de Musgo',
+  [BlockType.VINES]: 'Enredaderas',
 };
