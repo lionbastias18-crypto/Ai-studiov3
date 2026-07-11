@@ -316,6 +316,9 @@ const App: React.FC = () => {
     "first",
   );
   const [fov, setFov] = useState<number>(65);
+  const [isZooming, setIsZooming] = useState<boolean>(false);
+  const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState<boolean>(false);
+  const [isDeletingBulk, setIsDeletingBulk] = useState<boolean>(false);
   const [ultraOptimization, setUltraOptimization] = useState<boolean>(() => {
     if (typeof window !== "undefined") {
       return 'ontouchstart' in window || navigator.maxTouchPoints > 0 || window.innerWidth <= 1024;
@@ -353,15 +356,44 @@ const App: React.FC = () => {
     return true;
   });
   const [userRole, setUserRole] = useState<string>("user");
+  const [vipActive, setVipActive] = useState<boolean>(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("minecraft_vip_active") === "true";
+    }
+    return false;
+  });
+  const [unlockedWorldsPass, setUnlockedWorldsPass] = useState<boolean>(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("minecraft_unlocked_worlds") === "true";
+    }
+    return false;
+  });
+  const [goldCoins, setGoldCoins] = useState<number>(() => {
+    if (typeof window !== "undefined") {
+      const val = localStorage.getItem("minecraft_gold_coins");
+      return val ? parseInt(val, 10) : 0;
+    }
+    return 0;
+  });
   const [biomeConfig, setBiomeConfig] = useState<{ surface: number; underground: number; flora: number } | null>(null);
   const [activePlayers, setActivePlayers] = useState<Array<{ id: string; name: string; pos: Vector3D; dimension: string }>>([]);
   const [activityLogs, setActivityLogs] = useState<Array<{ id: string; playerEmail: string; playerName: string; action: string; timestamp: number }>>([]);
   const [allUserRolesList, setAllUserRolesList] = useState<Array<{ email: string; role: string; biomeSurface?: number; biomeUnderground?: number; biomeFlora?: number; blocksPlaced?: number; blocksBroken?: number; worldsCreated?: number; score?: number; displayName?: string; lastActive?: number }>>([]);
   const [isLeaderboardOpen, setIsLeaderboardOpen] = useState(false);
+  const [isShopOpen, setIsShopOpen] = useState(false);
+  const [selectedProduct, setSelectedProduct] = useState<"vip_pass" | "unlocked_worlds" | "gold_coins_500" | null>(null);
+  const [paymentMethod, setPaymentMethod] = useState<"card" | "paypal" | null>(null);
+  const [paymentStep, setPaymentStep] = useState<"idle" | "form" | "processing" | "success">("idle");
+  const [cardForm, setCardForm] = useState({ number: "", name: "", expiry: "", cvv: "" });
+  const [paypalEmail, setPaypalEmail] = useState("");
+  const [paypalPassword, setPaypalPassword] = useState("");
+  const [transactionId, setTransactionId] = useState("");
   const [leaderboardToast, setLeaderboardToast] = useState<string | null>(null);
   const [leaderboardSearch, setLeaderboardSearch] = useState("");
   const blocksPlacedRef = useRef(0);
   const blocksBrokenRef = useRef(0);
+
+  const isBypassingWorldLimit = userRole === "owner" || userRole === "mod" || userRole === "staff" || userRole === "admin" || vipActive || unlockedWorldsPass;
 
   const [survivalInventory, setSurvivalInventory] = useState<Record<number, number>>({
     [BlockType.DIRT]: 16,
@@ -448,8 +480,18 @@ const App: React.FC = () => {
             setChatMessages((prev) => [...prev, "🪓 [Sistema] Modo cambiado a: SUPERVIVENCIA."]);
             setWorlds((prev) => prev.map((w) => w.id === currentWorld.id ? { ...w, gameMode: "survival" as const } : w));
           }
+        } else if (mode === "spectator" || mode === "sp" || mode === "espectador") {
+          if (currentWorld) {
+            const updated = { ...currentWorld, gameMode: "spectator" as const };
+            setCurrentWorld(updated);
+            gameState.gameMode = "spectator";
+            gameState.setHealth(20);
+            gameState.setFood(20);
+            setChatMessages((prev) => [...prev, "👻 [Sistema] Modo cambiado a: ESPECTADOR."]);
+            setWorlds((prev) => prev.map((w) => w.id === currentWorld.id ? { ...w, gameMode: "spectator" as const } : w));
+          }
         } else {
-          setChatMessages((prev) => [...prev, "❌ Comandos válidos: /gamemode [creative | survival]"]);
+          setChatMessages((prev) => [...prev, "❌ Comandos válidos: /gamemode [creative | survival | spectator]"]);
         }
       } else if (cmd === "tp" || cmd === "teleport") {
         const dest = parts[1];
@@ -658,7 +700,7 @@ const App: React.FC = () => {
 
   // World Creator inputs
   const [worldNameInput, setWorldNameInput] = useState("");
-  const [newWorldGameMode, setNewWorldGameMode] = useState<"creative" | "survival" | "adventure">("survival");
+  const [newWorldGameMode, setNewWorldGameMode] = useState<"creative" | "survival" | "adventure" | "spectator">("survival");
   const [newWorldType, setNewWorldType] = useState<"flat" | "normal" | "edge_farlands">("normal");
 
   const [googleUser, setGoogleUser] = useState<any | null>(null);
@@ -751,6 +793,22 @@ const App: React.FC = () => {
         } else if (data && data.role) {
           setUserRole(data.role);
         }
+        
+        // Sync VIP and Purchase States
+        if (data) {
+          const isVip = data.vipActive === true;
+          const hasPass = data.unlockedWorldsPass === true;
+          const coins = typeof data.goldCoins === "number" ? data.goldCoins : 0;
+          
+          setVipActive(isVip);
+          setUnlockedWorldsPass(hasPass);
+          setGoldCoins(coins);
+
+          localStorage.setItem("minecraft_vip_active", String(isVip));
+          localStorage.setItem("minecraft_unlocked_worlds", String(hasPass));
+          localStorage.setItem("minecraft_gold_coins", String(coins));
+        }
+
         if (data && data.biomeSurface !== undefined) {
           setBiomeConfig({
             surface: data.biomeSurface ?? BlockType.MOSS,
@@ -764,6 +822,13 @@ const App: React.FC = () => {
         if (emailKey !== "lionbastias18@gmail.com") {
           setUserRole("user");
           setBiomeConfig(null);
+          setVipActive(false);
+          setUnlockedWorldsPass(false);
+          setGoldCoins(0);
+          localStorage.setItem("minecraft_vip_active", "false");
+          localStorage.setItem("minecraft_unlocked_worlds", "false");
+          localStorage.setItem("minecraft_gold_coins", "0");
+
           // Register user in the database so they show up on the leaderboard
           setDoc(roleRef, {
             email: emailKey,
@@ -773,7 +838,10 @@ const App: React.FC = () => {
             blocksBroken: 0,
             worldsCreated: 0,
             score: 0,
-            lastActive: Date.now()
+            lastActive: Date.now(),
+            vipActive: false,
+            unlockedWorldsPass: false,
+            goldCoins: 0
           }, { merge: true }).catch(err => {
             console.error("Error auto-registering user role:", err);
           });
@@ -816,7 +884,8 @@ const App: React.FC = () => {
           name: userName,
           pos: activePlayerPosRef.current,
           dimension: dimension,
-          lastActive: now
+          lastActive: now,
+          spectator: currentWorld?.gameMode === "spectator"
         });
 
         // 2. Also write/refresh global /online_players presence
@@ -828,7 +897,8 @@ const App: React.FC = () => {
           worldId: worldId,
           worldName: currentWorld.name,
           dimension: dimension,
-          lastActive: now
+          lastActive: now,
+          spectator: currentWorld?.gameMode === "spectator"
         }, { merge: true });
 
       } catch (err) {
@@ -847,8 +917,8 @@ const App: React.FC = () => {
       const now = Date.now();
       snapshot.forEach((docSnap) => {
         const data = docSnap.data();
-        // Ignore self and ignore dead/inactive heartbeats (> 15 seconds)
-        if (data.id !== userId && (now - (data.lastActive || 0) < 15000)) {
+        // Ignore self, dead/inactive heartbeats (> 15 seconds), and invisible spectators
+        if (data.id !== userId && (now - (data.lastActive || 0) < 15000) && !data.spectator) {
           list.push({
             id: data.id,
             name: data.name || data.email || "Jugador",
@@ -1298,6 +1368,12 @@ const App: React.FC = () => {
   const handleCreateWorld = async (e: React.FormEvent) => {
     e.preventDefault();
     resumeAudio();
+
+    if (worlds.length >= 70 && !isBypassingWorldLimit) {
+      setChatMessages((p) => [...p, "❌ Límite de 70 mundos alcanzado. Por favor elimina algún mundo antes de continuar."]);
+      return;
+    }
+
     const creator = googleUser ? googleUser.uid : (currentUser || "Invitado");
     const creatorName = googleUser ? (googleUser.displayName || googleUser.email) : (currentUser || "Invitado");
     const name = worldNameInput.trim() || dict[lang].new_world_default;
@@ -1361,6 +1437,53 @@ const App: React.FC = () => {
     }
     if (currentWorld?.id === id) {
       setCurrentWorld(null);
+    }
+  };
+
+  const handleBulkDeleteOldest = async (countToDelete: number) => {
+    resumeAudio();
+    setIsDeletingBulk(true);
+    try {
+      const sortedWorlds = [...worlds].sort((a, b) => a.createdAt - b.createdAt);
+      const toDelete = sortedWorlds.slice(0, countToDelete);
+
+      if (toDelete.length === 0) {
+        setIsDeletingBulk(false);
+        setShowBulkDeleteConfirm(false);
+        return;
+      }
+
+      if (googleUser) {
+        for (const w of toDelete) {
+          try {
+            await deleteWorldFromFirestore(w.id);
+          } catch (err) {
+            console.error(`Error deleting world ${w.id} from firestore:`, err);
+          }
+        }
+        const dbWorlds = await loadWorldsFromFirestore(googleUser.uid);
+        setWorlds(dbWorlds);
+      } else {
+        const idsToDelete = new Set(toDelete.map((w) => w.id));
+        const nextWorlds = worlds.filter((w) => !idsToDelete.has(w.id));
+        setWorlds(nextWorlds);
+        saveWorlds(nextWorlds);
+      }
+
+      const deletedIds = new Set(toDelete.map((w) => w.id));
+      if (currentWorld && deletedIds.has(currentWorld.id)) {
+        setCurrentWorld(null);
+      }
+
+      setChatMessages((prev) => [
+        ...prev,
+        `🧹 [Limpieza] Se han eliminado automáticamente los ${toDelete.length} mundos más antiguos para liberar espacio.`,
+      ]);
+    } catch (err) {
+      console.error("Error doing bulk delete:", err);
+    } finally {
+      setIsDeletingBulk(false);
+      setShowBulkDeleteConfirm(false);
     }
   };
 
@@ -1819,6 +1942,9 @@ const App: React.FC = () => {
       if (e.key === " ") {
         activeKeys.current[" "] = true;
       }
+      if (key === "c" || key === "z") {
+        setIsZooming(true);
+      }
 
       updateControls();
     };
@@ -1833,6 +1959,9 @@ const App: React.FC = () => {
       if (e.key === " ") {
         activeKeys.current[" "] = false;
       }
+      if (key === "c" || key === "z") {
+        setIsZooming(false);
+      }
 
       updateControls();
     };
@@ -1844,6 +1973,7 @@ const App: React.FC = () => {
       activeKeys.current = {};
       setMoveVector(prev => (prev.x !== 0 || prev.y !== 0) ? { x: 0, y: 0 } : prev);
       setIsJumping(prev => prev ? false : prev);
+      setIsZooming(false);
     };
     window.addEventListener("blur", handleBlur);
 
@@ -2203,7 +2333,18 @@ const App: React.FC = () => {
               <h2 className="text-white text-3xl font-extrabold minecraft-font tracking-tighter uppercase flex items-center gap-2">
                 <span className="text-emerald-400">⚡ MUNDOS</span> DE EXPLORACIÓN
               </h2>
-              <p className="text-zinc-400 text-xs mt-0.5 font-medium">Gestiona y crea tus tierras infinitas personalizadas</p>
+              <div className="text-zinc-400 text-xs mt-0.5 font-medium flex items-center gap-2 flex-wrap">
+                <span>Gestiona y crea tus tierras infinitas personalizadas</span>
+                <span className={`text-[9px] font-bold px-2 py-0.5 rounded-md font-mono uppercase ${
+                  isBypassingWorldLimit
+                    ? "bg-gradient-to-r from-yellow-500/20 to-amber-500/20 border border-yellow-500/30 text-yellow-300 animate-pulse"
+                    : worlds.length >= 70 
+                      ? "bg-red-500/10 border border-red-500/20 text-red-400"
+                      : "bg-zinc-900 border border-white/5 text-zinc-500"
+                }`}>
+                  {worlds.length} / {isBypassingWorldLimit ? "ILIMITADOS" : "70"} MUNDOS
+                </span>
+              </div>
             </div>
             <div className="flex items-center gap-2 bg-zinc-900 border border-white/10 px-3 py-1.5 rounded-full shadow-inner">
               <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
@@ -2287,7 +2428,7 @@ const App: React.FC = () => {
                           </p>
                           <div className="flex gap-1 mt-1 flex-wrap items-center">
                             <span className="text-[8px] font-bold uppercase tracking-wider bg-zinc-900 text-emerald-400 px-2 py-0.5 rounded-md border border-white/5">
-                              {world.gameMode === "creative" ? t.creative_mode : world.gameMode === "adventure" ? t.adventure_mode : t.survival_mode}
+                              {world.gameMode === "creative" ? t.creative_mode : world.gameMode === "adventure" ? t.adventure_mode : world.gameMode === "spectator" ? t.spectator_mode : t.survival_mode}
                             </span>
                             <span className="text-[8px] font-bold uppercase tracking-wider bg-zinc-900 text-sky-400 px-2 py-0.5 rounded-md border border-white/5">
                               {world.worldType === "flat" ? t.world_type_flat : world.worldType === "edge_farlands" ? t.world_type_edge_farlands : t.world_type_normal}
@@ -2358,10 +2499,10 @@ const App: React.FC = () => {
                   <label className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider">
                     {t.game_mode}
                   </label>
-                  <div className="grid grid-cols-3 gap-1 bg-zinc-950 p-1.5 rounded-xl border border-white/5">
-                    {(["survival", "creative", "adventure"] as const).map((mode) => {
+                  <div className="grid grid-cols-4 gap-1 bg-zinc-950 p-1.5 rounded-xl border border-white/5">
+                    {(["survival", "creative", "adventure", "spectator"] as const).map((mode) => {
                       const isActive = newWorldGameMode === mode;
-                      const modeText = mode === "survival" ? t.survival_mode : mode === "creative" ? t.creative_mode : t.adventure_mode;
+                      const modeText = mode === "survival" ? t.survival_mode : mode === "creative" ? t.creative_mode : mode === "adventure" ? t.adventure_mode : t.spectator_mode;
                       return (
                         <button
                           key={mode}
@@ -2416,9 +2557,75 @@ const App: React.FC = () => {
                   </div>
                 </div>
 
+                {worlds.length >= 70 && !isBypassingWorldLimit && (
+                  <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-3 flex flex-col gap-2.5 text-red-400 font-semibold text-[9px] leading-relaxed uppercase tracking-wider">
+                    <div className="flex gap-2 items-center">
+                      <i className="fas fa-exclamation-triangle text-[11px] animate-pulse" />
+                      <span>Límite de 70 mundos alcanzado. Por favor, elimina algún mundo existente antes de poder crear uno nuevo.</span>
+                    </div>
+                    
+                    {!showBulkDeleteConfirm ? (
+                      <div className="border-t border-red-500/20 pt-2 flex justify-between items-center gap-2">
+                        <span className="text-zinc-400">¿Quieres liberar espacio rápidamente?</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            resumeAudio();
+                            setShowBulkDeleteConfirm(true);
+                          }}
+                          className="bg-red-500 hover:bg-red-400 text-white font-extrabold px-2.5 py-1.5 rounded-lg text-[8px] transition-all hover:scale-105 active:scale-95 flex items-center gap-1 shadow-md shadow-red-500/20 shrink-0"
+                        >
+                          <i className="fas fa-broom" /> Liberar espacio
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="border-t border-red-500/20 pt-2 flex flex-col gap-2">
+                        <span className="text-red-300 font-bold">⚠️ ¿Confirmas eliminar automáticamente los 5 mundos más antiguos?</span>
+                        <div className="flex gap-1.5 justify-end">
+                          <button
+                            type="button"
+                            disabled={isDeletingBulk}
+                            onClick={() => {
+                              resumeAudio();
+                              setShowBulkDeleteConfirm(false);
+                            }}
+                            className="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-bold px-2 py-1 rounded-lg text-[8px] transition-all active:scale-95 border border-white/5"
+                          >
+                            Cancelar
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isDeletingBulk}
+                            onClick={() => {
+                              resumeAudio();
+                              handleBulkDeleteOldest(5);
+                            }}
+                            className="bg-red-600 hover:bg-red-500 text-white font-bold px-2.5 py-1 rounded-lg text-[8px] transition-all hover:scale-105 active:scale-95 flex items-center gap-1 shadow-md"
+                          >
+                            {isDeletingBulk ? (
+                              <>
+                                <i className="fas fa-spinner fa-spin" /> Borrando...
+                              </>
+                            ) : (
+                              <>
+                                <i className="fas fa-trash-alt" /> Sí, borrar 5
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 <button
                   type="submit"
-                  className="bg-emerald-500 hover:bg-emerald-400 text-white font-bold py-3.5 rounded-xl text-xs uppercase tracking-wide shadow-md shadow-emerald-500/10 hover:shadow-emerald-500/20 transition-all active:scale-95 flex items-center justify-center gap-2 mt-2"
+                  disabled={worlds.length >= 70 && !isBypassingWorldLimit}
+                  className={`font-bold py-3.5 rounded-xl text-xs uppercase tracking-wide transition-all flex items-center justify-center gap-2 mt-2 ${
+                    worlds.length >= 70 && !isBypassingWorldLimit
+                      ? "bg-zinc-800 text-zinc-500 cursor-not-allowed border border-white/5"
+                      : "bg-emerald-500 hover:bg-emerald-400 text-white shadow-md shadow-emerald-500/10 hover:shadow-emerald-500/20 active:scale-95"
+                  }`}
                 >
                   <i className="fas fa-plus text-[10px]" /> {t.create_btn}
                 </button>
@@ -2762,6 +2969,667 @@ const App: React.FC = () => {
 
             </div>
           </div>
+
+        </div>
+      </div>
+    );
+  };
+
+  const playPurchaseChime = () => {
+    try {
+      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const now = ctx.currentTime;
+      const notes = [523.25, 659.25, 783.99, 1046.50]; // C5 -> E5 -> G5 -> C6 arpeggio
+      notes.forEach((freq, idx) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(freq, now + idx * 0.12);
+        
+        gain.gain.setValueAtTime(0, now + idx * 0.12);
+        gain.gain.linearRampToValueAtTime(0.08, now + idx * 0.12 + 0.04);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + idx * 0.12 + 0.45);
+        
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        
+        osc.start(now + idx * 0.12);
+        osc.stop(now + idx * 0.12 + 0.5);
+      });
+    } catch (e) {
+      console.error("Error playing purchase chime:", e);
+    }
+  };
+
+  const handlePurchaseComplete = async () => {
+    setPaymentStep("processing");
+    // Simulate multi-step secure processing logs
+    await new Promise((resolve) => setTimeout(resolve, 1600));
+
+    const txId = "TX-" + Date.now().toString().substring(4) + "-" + Math.floor(Math.random() * 1000);
+    setTransactionId(txId);
+
+    const emailKey = googleUser ? (googleUser.email?.toLowerCase() || "") : "invitado@example.com";
+    const prodId = selectedProduct;
+    let prodName = "";
+    let price = 0;
+
+    if (prodId === "vip_pass") {
+      prodName = lang === "es" ? "Rango VIP Premium" : "VIP Premium Rank";
+      price = 4.99;
+    } else if (prodId === "unlocked_worlds") {
+      prodName = lang === "es" ? "Desbloqueador de Mundos" : "World Expander Pass";
+      price = 2.99;
+    } else if (prodId === "gold_coins_500") {
+      prodName = lang === "es" ? "Saco de 500 Monedas de Oro" : "Sack of 500 Gold Coins";
+      price = 1.99;
+    }
+
+    const isFree = userRole === "owner" || userRole === "mod" || userRole === "staff" || userRole === "admin";
+    const finalPrice = isFree ? 0 : price;
+
+    try {
+      if (googleUser && emailKey) {
+        // Authenticated user: store in Firestore
+        const purchaseRef = doc(db, "user_purchases", txId);
+        await setDoc(purchaseRef, {
+          id: txId,
+          email: emailKey,
+          productId: prodId,
+          productName: prodName,
+          price: finalPrice,
+          timestamp: Date.now(),
+          status: "completed"
+        });
+
+        const roleRef = doc(db, "user_roles", emailKey);
+        if (prodId === "vip_pass") {
+          await setDoc(roleRef, { vipActive: true }, { merge: true });
+          setVipActive(true);
+          localStorage.setItem("minecraft_vip_active", "true");
+        } else if (prodId === "unlocked_worlds") {
+          await setDoc(roleRef, { unlockedWorldsPass: true }, { merge: true });
+          setUnlockedWorldsPass(true);
+          localStorage.setItem("minecraft_unlocked_worlds", "true");
+        } else if (prodId === "gold_coins_500") {
+          const newCoins = goldCoins + 500;
+          await setDoc(roleRef, { goldCoins: newCoins }, { merge: true });
+          setGoldCoins(newCoins);
+          localStorage.setItem("minecraft_gold_coins", String(newCoins));
+        }
+      } else {
+        // Guest user local storage fallback
+        if (prodId === "vip_pass") {
+          setVipActive(true);
+          localStorage.setItem("minecraft_vip_active", "true");
+        } else if (prodId === "unlocked_worlds") {
+          setUnlockedWorldsPass(true);
+          localStorage.setItem("minecraft_unlocked_worlds", "true");
+        } else if (prodId === "gold_coins_500") {
+          const newCoins = goldCoins + 500;
+          setGoldCoins(newCoins);
+          localStorage.setItem("minecraft_gold_coins", String(newCoins));
+        }
+      }
+
+      // Play level-up audio arpeggio
+      playPurchaseChime();
+
+      // Send to chat
+      const claimText = isFree 
+        ? (lang === "es" ? `gratis gracias a tu rango de ${userRole.toUpperCase()}` : `for free thanks to your ${userRole.toUpperCase()} rank`)
+        : (lang === "es" ? `con éxito` : `successfully`);
+      setChatMessages((p) => [
+        ...p,
+        `🛍️ [Tienda] ¡Adquisición de ${prodName} completada ${claimText}! Transacción: ${txId}. ¡Gracias por tu confianza!`
+      ]);
+
+      setPaymentStep("success");
+    } catch (err: any) {
+      console.error("Firestore purchase error (falling back to local cache):", err);
+      // Fallback
+      if (prodId === "vip_pass") {
+        setVipActive(true);
+        localStorage.setItem("minecraft_vip_active", "true");
+      } else if (prodId === "unlocked_worlds") {
+        setUnlockedWorldsPass(true);
+        localStorage.setItem("minecraft_unlocked_worlds", "true");
+      } else if (prodId === "gold_coins_500") {
+        const newCoins = goldCoins + 500;
+        setGoldCoins(newCoins);
+        localStorage.setItem("minecraft_gold_coins", String(newCoins));
+      }
+      playPurchaseChime();
+      setPaymentStep("success");
+    }
+  };
+
+  const renderShopModal = () => {
+    if (!isShopOpen) return null;
+
+    const isFreeForMe = userRole === "owner" || userRole === "mod" || userRole === "staff" || userRole === "admin";
+
+    // Products definition
+    const products = [
+      {
+        id: "vip_pass" as const,
+        name: lang === "es" ? "Pase VIP Premium" : "VIP Premium Rank",
+        price: "$4.99 USD",
+        priceVal: 4.99,
+        desc: lang === "es" 
+          ? "Obtén un rango VIP. Desbloquea un tag ✨ VIP dorado en el chat, tu nombre en color oro, y la capacidad de crear mundos ilimitados para siempre."
+          : "Unlock VIP Rank. Grants a sparkling gold ✨ VIP chat prefix, gold-colored name, and infinite worlds creation forever.",
+        icon: "fa-crown text-yellow-400",
+        bg: "from-amber-500/10 to-yellow-500/5 border-yellow-500/30",
+        active: vipActive
+      },
+      {
+        id: "unlocked_worlds" as const,
+        name: lang === "es" ? "Mundoramas Ilimitados" : "Unlimited Worlds Pass",
+        price: "$2.99 USD",
+        priceVal: 2.99,
+        desc: lang === "es"
+          ? "Elimina permanentemente el límite restrictivo de 70 mundos. Crea tantas tierras infinitas como quieras sin tener que borrar tus obras antiguas."
+          : "Permanently removes the 70 worlds creation limit. Construct unlimited lands without deleting any of your older memories.",
+        icon: "fa-infinity text-emerald-400",
+        bg: "from-emerald-500/10 to-teal-500/5 border-emerald-500/30",
+        active: unlockedWorldsPass || vipActive
+      },
+      {
+        id: "gold_coins_500" as const,
+        name: lang === "es" ? "Saco de 500 Monedas de Oro" : "Sack of 500 Gold Coins",
+        price: "$1.99 USD",
+        priceVal: 1.99,
+        desc: lang === "es"
+          ? "Adquiere un saco rebosante con 500 Monedas de Oro utilizables para futuros desbloqueos visuales y para presumir tu riqueza."
+          : "Receive a sack containing 500 gleaming Gold Coins. Perfect for showing off in chat or future cosmetic expansion updates.",
+        icon: "fa-coins text-amber-500",
+        bg: "from-amber-600/10 to-yellow-600/5 border-amber-600/30",
+        active: false // Can buy multiple times
+      }
+    ];
+
+    const currentSelected = products.find(p => p.id === selectedProduct);
+
+    return (
+      <div 
+        onPointerDown={(e) => e.stopPropagation()}
+        onPointerUp={(e) => e.stopPropagation()}
+        onPointerMove={(e) => e.stopPropagation()}
+        onTouchStart={(e) => e.stopPropagation()}
+        onTouchEnd={(e) => e.stopPropagation()}
+        onTouchMove={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+        onMouseUp={(e) => e.stopPropagation()}
+        onMouseMove={(e) => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()}
+        className="fixed inset-0 bg-black/90 backdrop-blur-md z-[100010] flex items-center justify-center p-3 sm:p-4 overflow-y-auto pointer-events-auto text-left"
+      >
+        <div className="bg-zinc-900 border-4 border-amber-500 p-5 sm:p-7 rounded-2xl w-full max-w-4xl shadow-2xl flex flex-col gap-4 relative animate-in fade-in zoom-in-95 duration-200 text-white font-sans max-h-[92vh] overflow-y-auto">
+          
+          {/* Header */}
+          <div className="flex justify-between items-center border-b border-zinc-700/60 pb-3">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-amber-500/20 rounded-xl flex items-center justify-center border border-amber-500/40 animate-pulse">
+                <i className="fas fa-shopping-cart text-amber-400 text-xl" />
+              </div>
+              <div>
+                <h2 className="text-2xl font-black minecraft-font uppercase tracking-wide text-amber-400 flex items-center gap-2">
+                  {lang === "es" ? "TIENDA VIP PREMIUM" : "PREMIUM VIP SHOP"}
+                </h2>
+                <p className="text-xs text-zinc-400 font-mono uppercase tracking-wider font-bold">
+                  {lang === "es" ? "Expansiones de Cuenta e Infinite World Pass" : "Account Expansions and Passes"}
+                </p>
+              </div>
+            </div>
+            
+            <div className="flex items-center gap-3">
+              {/* Coin Counter */}
+              <div className="bg-zinc-950 border border-yellow-500/30 px-3 py-1.5 rounded-full flex items-center gap-1.5 shadow-inner">
+                <span className="text-[13px] animate-bounce">🪙</span>
+                <span className="text-xs font-mono font-black text-yellow-400">{goldCoins}</span>
+                <span className="text-[9px] uppercase font-bold text-zinc-500 tracking-wider font-mono">{lang === "es" ? "MONEDAS" : "COINS"}</span>
+              </div>
+
+              <button
+                onClick={() => {
+                  setIsShopOpen(false);
+                  setSelectedProduct(null);
+                  setPaymentMethod(null);
+                  setPaymentStep("idle");
+                }}
+                className="bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white w-8 h-8 rounded-lg flex items-center justify-center border border-zinc-700 transition"
+              >
+                <i className="fas fa-times" />
+              </button>
+            </div>
+          </div>
+
+          {/* Special Staff Role Notice */}
+          {isFreeForMe && (
+            <div className="bg-gradient-to-r from-yellow-500/20 via-amber-500/10 to-yellow-600/20 border-2 border-yellow-500/40 rounded-xl p-3 flex items-center gap-3.5 shadow-lg">
+              <span className="text-2xl animate-spin" style={{ animationDuration: "3s" }}>🛡️</span>
+              <div className="text-left">
+                <p className="text-yellow-400 text-[10px] font-black uppercase tracking-widest font-mono">
+                  {lang === "es" ? "Privilegio de Rango Activo" : "Active Rank Privilege"}
+                </p>
+                <p className="text-xs text-zinc-200 leading-normal">
+                  {lang === "es" 
+                    ? `Tienes el rango de "${userRole.toUpperCase()}". En este modo todas las compras se consideran de prueba y son 100% GRATUITAS para ti.`
+                    : `You have the "${userRole.toUpperCase()}" staff role. All shop packages are 100% FREE of charge for your account.`
+                  }
+                </p>
+              </div>
+            </div>
+          )}
+
+          {paymentStep === "idle" ? (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 py-2">
+              {products.map((p) => {
+                const canClaimForFree = isFreeForMe;
+                return (
+                  <div 
+                    key={p.id} 
+                    className={`bg-zinc-950/40 border-2 ${p.bg} rounded-2xl p-5 flex flex-col justify-between hover:scale-[1.02] active:scale-[0.98] transition-all duration-200 shadow-xl`}
+                  >
+                    <div className="text-left flex flex-col gap-3">
+                      <div className="flex justify-between items-start">
+                        <div className="w-11 h-11 bg-zinc-900 border border-white/5 rounded-xl flex items-center justify-center shadow-md">
+                          <i className={`fas ${p.icon} text-lg`} />
+                        </div>
+                        {p.active ? (
+                          <span className="bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 text-[8px] font-black px-2 py-0.5 rounded-full tracking-wider uppercase font-mono">
+                            {lang === "es" ? "Adquirido" : "Owned"}
+                          </span>
+                        ) : canClaimForFree ? (
+                          <span className="bg-yellow-500 text-zinc-950 text-[8px] font-black px-2 py-0.5 rounded-full tracking-wider uppercase font-mono animate-bounce">
+                            {lang === "es" ? "¡GRATIS!" : "FREE!"}
+                          </span>
+                        ) : (
+                          <span className="bg-zinc-900 border border-white/10 text-white font-mono text-[10px] font-bold px-2.5 py-0.5 rounded-full">
+                            {p.price}
+                          </span>
+                        )}
+                      </div>
+                      
+                      <div>
+                        <h3 className="text-base font-black tracking-tight text-white uppercase">{p.name}</h3>
+                        <p className="text-[10.5px] text-zinc-400 mt-1.5 leading-relaxed">{p.desc}</p>
+                      </div>
+                    </div>
+
+                    <div className="mt-5 pt-3 border-t border-white/5">
+                      {p.active ? (
+                        <button 
+                          disabled 
+                          className="w-full bg-zinc-800 text-zinc-500 font-bold py-2 px-4 rounded-xl text-xs uppercase tracking-wider cursor-not-allowed border border-white/5"
+                        >
+                          {lang === "es" ? "Ya Adquirido" : "Already Owned"}
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => {
+                            setSelectedProduct(p.id);
+                            if (canClaimForFree) {
+                              setPaymentStep("form");
+                            } else {
+                              setPaymentStep("form");
+                              setPaymentMethod("card"); // Default to Credit Card
+                            }
+                          }}
+                          className={`w-full font-black py-2.5 px-4 rounded-xl text-xs uppercase tracking-widest transition-all ${
+                            canClaimForFree
+                              ? "bg-yellow-500 hover:bg-yellow-400 text-zinc-950 shadow-md shadow-yellow-500/10 animate-pulse"
+                              : "bg-amber-500 hover:bg-amber-400 text-zinc-950 shadow-md shadow-amber-500/10"
+                          }`}
+                        >
+                          {canClaimForFree 
+                            ? (lang === "es" ? "Reclamar Gratis" : "Claim for Free")
+                            : (lang === "es" ? "Comprar Ahora" : "Buy Now")
+                          }
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            /* PAYMENT PROCESSOR STAGE */
+            <div className="bg-zinc-950 p-4 sm:p-6 rounded-2xl border border-zinc-800 flex flex-col gap-5 relative overflow-hidden min-h-[360px] justify-center">
+              
+              {paymentStep === "form" && (
+                <div className="flex flex-col gap-4 text-left">
+                  {/* Step Header */}
+                  <div className="flex justify-between items-center border-b border-zinc-800 pb-2.5">
+                    <button 
+                      onClick={() => {
+                        setPaymentStep("idle");
+                        setPaymentMethod(null);
+                      }}
+                      className="text-zinc-400 hover:text-white text-xs flex items-center gap-1 uppercase font-bold"
+                    >
+                      <i className="fas fa-arrow-left" /> {lang === "es" ? "Atrás" : "Back"}
+                    </button>
+                    <div className="text-right">
+                      <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-mono font-bold block">{lang === "es" ? "PAQUETE SELECCIONADO" : "SELECTED PACKAGE"}</span>
+                      <span className="text-sm font-black text-amber-400 uppercase font-mono">{currentSelected?.name}</span>
+                    </div>
+                  </div>
+
+                  {isFreeForMe ? (
+                    /* Claim Free confirmation panel */
+                    <div className="flex flex-col gap-4 py-4 items-center justify-center text-center max-w-md mx-auto">
+                      <div className="w-16 h-16 bg-yellow-500/10 border-2 border-yellow-400 rounded-full flex items-center justify-center text-2xl text-yellow-400 animate-bounce">
+                        👑
+                      </div>
+                      <div>
+                        <h3 className="text-lg font-black text-white uppercase">{lang === "es" ? "Confirmar Reclamo Gratis" : "Confirm Free Claim"}</h3>
+                        <p className="text-xs text-zinc-400 mt-1 leading-relaxed">
+                          {lang === "es"
+                            ? `Como eres "${userRole.toUpperCase()}", puedes activar este pase sin costo. No se requerirá tarjeta de crédito o método de pago.`
+                            : `As a "${userRole.toUpperCase()}", you can unlock this pass completely free of charge. No billing details are required.`
+                          }
+                        </p>
+                      </div>
+
+                      <button
+                        onClick={handlePurchaseComplete}
+                        className="w-full max-w-xs mt-3 bg-gradient-to-r from-yellow-500 to-amber-600 text-zinc-950 font-black py-3 rounded-xl text-xs uppercase tracking-widest hover:scale-105 active:scale-95 transition-all shadow-lg shadow-yellow-500/10"
+                      >
+                        {lang === "es" ? "¡Confirmar Reclamo!" : "Confirm Claim!"}
+                      </button>
+                    </div>
+                  ) : (
+                    /* Regular billing form */
+                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                      
+                      {/* Left: Payment Method + Forms */}
+                      <div className="lg:col-span-7 flex flex-col gap-4">
+                        
+                        {/* Selector tabs */}
+                        <div className="grid grid-cols-2 gap-2 bg-zinc-900 p-1 rounded-xl border border-white/5">
+                          <button
+                            onClick={() => setPaymentMethod("card")}
+                            className={`py-2 px-3 rounded-lg text-xs uppercase font-extrabold tracking-wider text-center transition-all flex items-center justify-center gap-1.5 ${
+                              paymentMethod === "card"
+                                ? "bg-amber-500 text-zinc-950 font-black"
+                                : "text-zinc-400 hover:text-white"
+                            }`}
+                          >
+                            <i className="fas fa-credit-card text-xs" />
+                            {lang === "es" ? "Tarjeta" : "Card"}
+                          </button>
+                          <button
+                            onClick={() => setPaymentMethod("paypal")}
+                            className={`py-2 px-3 rounded-lg text-xs uppercase font-extrabold tracking-wider text-center transition-all flex items-center justify-center gap-1.5 ${
+                              paymentMethod === "paypal"
+                                ? "bg-blue-600 text-white font-black"
+                                : "text-zinc-400 hover:text-white"
+                            }`}
+                          >
+                            <i className="fab fa-paypal text-xs" />
+                            PayPal
+                          </button>
+                        </div>
+
+                        {paymentMethod === "card" ? (
+                          /* Credit Card input form */
+                          <div className="flex flex-col gap-3 mt-1 text-left">
+                            <div className="flex flex-col gap-1">
+                              <label className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider">{lang === "es" ? "Número de Tarjeta" : "Card Number"}</label>
+                              <div className="relative">
+                                <input
+                                  type="text"
+                                  placeholder="4111 2222 3333 4444"
+                                  maxLength={19}
+                                  value={cardForm.number}
+                                  onChange={(e) => {
+                                    const formatted = e.target.value
+                                      .replace(/\s+/g, "")
+                                      .replace(/[^0-9]/gi, "")
+                                      .replace(/(\d{4})/g, "$1 ")
+                                      .trim();
+                                    setCardForm({ ...cardForm, number: formatted });
+                                  }}
+                                  className="w-full bg-zinc-900 border border-zinc-800 focus:border-amber-500/50 py-2.5 pl-3 pr-10 rounded-xl text-sm font-mono tracking-wider focus:outline-none focus:ring-1 focus:ring-amber-500/20"
+                                />
+                                <i className="fas fa-credit-card absolute right-3.5 top-3.5 text-zinc-600" />
+                              </div>
+                            </div>
+
+                            <div className="flex flex-col gap-1">
+                              <label className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider">{lang === "es" ? "Nombre del Titular" : "Cardholder Name"}</label>
+                              <input
+                                type="text"
+                                placeholder="LIONEL BASTIAS"
+                                value={cardForm.name}
+                                onChange={(e) => setCardForm({ ...cardForm, name: e.target.value.toUpperCase() })}
+                                className="w-full bg-zinc-900 border border-zinc-800 focus:border-amber-500/50 py-2.5 px-3 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-amber-500/20 uppercase"
+                              />
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-3">
+                              <div className="flex flex-col gap-1">
+                                <label className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider">{lang === "es" ? "Vencimiento" : "Expiration"}</label>
+                                <input
+                                  type="text"
+                                  placeholder="MM/YY"
+                                  maxLength={5}
+                                  value={cardForm.expiry}
+                                  onChange={(e) => {
+                                    let v = e.target.value.replace(/\s+/g, "").replace(/[^0-9]/gi, "");
+                                    if (v.length >= 2) {
+                                      v = v.substring(0, 2) + "/" + v.substring(2, 4);
+                                    }
+                                    setCardForm({ ...cardForm, expiry: v });
+                                  }}
+                                  className="w-full bg-zinc-900 border border-zinc-800 focus:border-amber-500/50 py-2.5 px-3 rounded-xl text-sm font-mono text-center focus:outline-none focus:ring-1 focus:ring-amber-500/20"
+                                />
+                              </div>
+                              <div className="flex flex-col gap-1">
+                                <label className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider">CVV</label>
+                                <input
+                                  type="password"
+                                  placeholder="123"
+                                  maxLength={4}
+                                  value={cardForm.cvv}
+                                  onChange={(e) => {
+                                    const val = e.target.value.replace(/[^0-9]/gi, "");
+                                    setCardForm({ ...cardForm, cvv: val });
+                                  }}
+                                  className="w-full bg-zinc-900 border border-zinc-800 focus:border-amber-500/50 py-2.5 px-3 rounded-xl text-sm font-mono text-center focus:outline-none focus:ring-1 focus:ring-amber-500/20"
+                                />
+                              </div>
+                            </div>
+
+                            <button
+                              onClick={() => {
+                                if (cardForm.number.length < 15 || cardForm.name.length < 3 || cardForm.expiry.length < 5 || cardForm.cvv.length < 3) {
+                                  alert(lang === "es" ? "Por favor rellene los datos de tarjeta correctamente." : "Please fill out all card fields properly.");
+                                  return;
+                                }
+                                handlePurchaseComplete();
+                              }}
+                              className="w-full mt-3 bg-amber-500 hover:bg-amber-400 text-zinc-950 font-black py-3 rounded-xl text-xs uppercase tracking-widest transition-all shadow-lg"
+                            >
+                              {lang === "es" ? `Completar Pago Seguro de ${currentSelected?.price}` : `Pay Securely ${currentSelected?.price}`}
+                            </button>
+                          </div>
+                        ) : (
+                          /* PayPal portal form */
+                          <div className="flex flex-col gap-4 mt-2 p-4 rounded-xl border border-blue-500/20 bg-blue-500/5 text-left">
+                            <div className="flex items-center gap-1.5 border-b border-blue-500/20 pb-2">
+                              <i className="fab fa-paypal text-blue-500 text-lg animate-pulse" />
+                              <span className="text-[11px] uppercase font-mono font-black text-blue-400">PayPal Sandbox Portal</span>
+                            </div>
+
+                            <p className="text-[10px] text-zinc-400 leading-normal">
+                              {lang === "es" 
+                                ? "Inicia sesión de forma segura para completar tu sandbox checkout."
+                                : "Securely authenticate your sandbox buyer credentials to execute the checkout."
+                              }
+                            </p>
+
+                            <div className="flex flex-col gap-3">
+                              <div className="flex flex-col gap-1">
+                                <label className="text-[10px] uppercase font-bold text-blue-400 tracking-wider">PayPal Email</label>
+                                <input
+                                  type="email"
+                                  placeholder="comprador-test@sandbox.paypal.com"
+                                  value={paypalEmail}
+                                  onChange={(e) => setPaypalEmail(e.target.value)}
+                                  className="w-full bg-zinc-900 border border-zinc-800 focus:border-blue-500/50 py-2 px-3 rounded-xl text-xs focus:outline-none focus:ring-1 focus:ring-blue-500/20"
+                                />
+                              </div>
+                              <div className="flex flex-col gap-1">
+                                <label className="text-[10px] uppercase font-bold text-blue-400 tracking-wider">{lang === "es" ? "Contraseña" : "Password"}</label>
+                                <input
+                                  type="password"
+                                  placeholder="••••••••"
+                                  value={paypalPassword}
+                                  onChange={(e) => setPaypalPassword(e.target.value)}
+                                  className="w-full bg-zinc-900 border border-zinc-800 focus:border-blue-500/50 py-2 px-3 rounded-xl text-xs focus:outline-none focus:ring-1 focus:ring-blue-500/20"
+                                />
+                              </div>
+                            </div>
+
+                            <button
+                              onClick={() => {
+                                if (paypalEmail.length < 5 || paypalPassword.length < 4) {
+                                  alert(lang === "es" ? "Por favor introduzca credenciales válidas." : "Please input valid credentials.");
+                                  return;
+                                }
+                                handlePurchaseComplete();
+                              }}
+                              className="w-full bg-blue-600 hover:bg-blue-500 text-white font-black py-2.5 rounded-xl text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-1"
+                            >
+                              <i className="fab fa-paypal" />
+                              {lang === "es" ? `Pagar con PayPal ${currentSelected?.price}` : `Pay with PayPal ${currentSelected?.price}`}
+                            </button>
+                          </div>
+                        )}
+                        
+                        <div className="flex items-center gap-2 justify-center text-zinc-500 text-[10px] uppercase tracking-wider font-mono">
+                          <i className="fas fa-lock text-[8px] text-emerald-500 animate-pulse" />
+                          <span>{lang === "es" ? "Procesamiento SSL seguro de 256 bits" : "Secure 256-bit SSL connection"}</span>
+                        </div>
+                      </div>
+
+                      {/* Right: Visual Card Preview */}
+                      <div className="lg:col-span-5 flex flex-col items-center justify-center border-l border-zinc-800/80 pl-0 lg:pl-6">
+                        <div className="w-full max-w-[280px] h-[170px] bg-gradient-to-tr from-slate-800 via-indigo-950 to-emerald-950 rounded-2xl p-4 shadow-2xl relative flex flex-col justify-between border border-white/10 overflow-hidden">
+                          {/* Card Grid overlays */}
+                          <div className="absolute inset-0 bg-radial-gradient opacity-10 pointer-events-none" />
+                          <div className="absolute top-2 right-3 w-10 h-10 bg-white/5 rounded-full filter blur-md pointer-events-none" />
+
+                          <div className="flex justify-between items-start z-10">
+                            <div>
+                              <p className="text-[7px] text-zinc-400 font-mono tracking-widest uppercase">Infinite Card</p>
+                              {/* Gold foil chip */}
+                              <div className="w-9 h-7 bg-gradient-to-br from-yellow-400 via-yellow-500 to-amber-600 rounded-md border border-yellow-300/40 mt-1 flex items-center justify-center">
+                                <div className="w-7 h-5 border border-zinc-950/20 rounded opacity-60" />
+                              </div>
+                            </div>
+                            <span className="text-[11px] font-black italic text-zinc-300 tracking-tighter">VISA</span>
+                          </div>
+
+                          <div className="z-10 text-left">
+                            {/* Card Number display */}
+                            <p className="font-mono text-white text-sm tracking-widest font-black leading-none mb-3">
+                              {cardForm.number || "•••• •••• •••• ••••"}
+                            </p>
+                            
+                            <div className="flex justify-between items-end">
+                              <div>
+                                <p className="text-[6px] text-zinc-500 uppercase tracking-widest font-mono font-bold">{lang === "es" ? "TITULAR" : "CARDHOLDER"}</p>
+                                <p className="text-[10px] font-mono text-zinc-300 uppercase truncate max-w-[150px] font-bold">
+                                  {cardForm.name || "NUEVO MIEMBRO"}
+                                </p>
+                              </div>
+                              <div className="text-right">
+                                <p className="text-[6px] text-zinc-500 uppercase tracking-widest font-mono font-bold">EXP</p>
+                                <p className="text-[10px] font-mono text-zinc-300 font-bold">{cardForm.expiry || "MM/YY"}</p>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="mt-4 bg-zinc-900 border border-white/5 rounded-xl p-3 text-center max-w-[280px]">
+                          <p className="text-[9px] text-zinc-400 leading-normal font-mono uppercase tracking-wide">
+                            {lang === "es" ? "🔐 PASARELA SANDBOX SEGURA" : "🔐 SECURE SANDBOX TUNNEL"}
+                          </p>
+                          <p className="text-[8px] text-zinc-500 mt-0.5 leading-normal">
+                            {lang === "es"
+                              ? "Utiliza números ficticios para completar la simulación. Ningún cargo real se efectuará."
+                              : "Input test numbers to trigger successful checkout logs. No real charges are made."
+                            }
+                          </p>
+                        </div>
+                      </div>
+
+                    </div>
+                  )}
+
+                </div>
+              )}
+
+              {paymentStep === "processing" && (
+                <div className="flex flex-col items-center justify-center gap-4 py-8 text-center max-w-md mx-auto">
+                  <div className="relative flex items-center justify-center">
+                    <div className="w-16 h-16 border-4 border-amber-500/20 border-t-amber-500 rounded-full animate-spin" />
+                    <i className="fas fa-shield-halved absolute text-amber-500 text-lg animate-pulse" />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-black text-white uppercase tracking-wider font-mono">{lang === "es" ? "Procesando Transacción Segura" : "Processing Secure Transaction"}</h4>
+                    <p className="text-[10.5px] text-zinc-400 leading-relaxed max-w-sm mt-1.5 font-mono uppercase tracking-wide">
+                      {lang === "es" 
+                        ? "Verificando firmas de cifrado SSL y sincronizando pases premium con Firestore..."
+                        : "Verifying SSL signatures and synchronizing premium passes with Firestore..."
+                      }
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {paymentStep === "success" && (
+                <div className="flex flex-col items-center justify-center gap-4 py-6 text-center max-w-md mx-auto">
+                  {/* Huge Animated Success Badge */}
+                  <div className="w-16 h-16 bg-emerald-500/10 border-2 border-emerald-400 rounded-full flex items-center justify-center text-emerald-400 text-2xl shadow-xl shadow-emerald-500/10 animate-bounce">
+                    <i className="fas fa-check" />
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-black text-emerald-400 uppercase tracking-tight">{lang === "es" ? "¡PAGO COMPLETADO CON ÉXITO!" : "PAYMENT COMPLETED SUCCESSFULLY!"}</h3>
+                    <p className="text-[11px] text-zinc-400 mt-1 leading-relaxed">
+                      {lang === "es"
+                        ? `Tu pase premium se ha activado instantáneamente en tu cuenta. ¡Muchísimas gracias por tu compra!`
+                        : `Your premium pass benefits have been immediately mapped onto your account. Thanks so much!`
+                      }
+                    </p>
+                  </div>
+
+                  <div className="bg-zinc-900 border border-white/5 rounded-xl p-3 w-full text-left flex flex-col gap-1 font-mono text-[10px] uppercase tracking-wide">
+                    <p className="text-zinc-500">{lang === "es" ? "Nro. Transacción:" : "Transaction ID:"} <span className="text-zinc-300 font-bold">{transactionId}</span></p>
+                    <p className="text-zinc-500">{lang === "es" ? "Paquete adquirido:" : "Package acquired:"} <span className="text-amber-400 font-bold">{currentSelected?.name}</span></p>
+                    <p className="text-zinc-500">{lang === "es" ? "Monto final:" : "Final amount:"} <span className="text-emerald-400 font-bold">{isFreeForMe ? "FREE ($0.00)" : currentSelected?.price}</span></p>
+                  </div>
+
+                  <button
+                    onClick={() => {
+                      setSelectedProduct(null);
+                      setPaymentMethod(null);
+                      setPaymentStep("idle");
+                      setIsShopOpen(false); // Close modal on completion
+                    }}
+                    className="w-full bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-black py-2.5 rounded-xl text-xs uppercase tracking-widest hover:scale-105 active:scale-95 transition-all shadow-lg"
+                  >
+                    {lang === "es" ? "Cerrar y Volver al Juego" : "Close and return to Game"}
+                  </button>
+                </div>
+              )}
+
+            </div>
+          )}
 
         </div>
       </div>
@@ -3144,6 +4012,22 @@ const App: React.FC = () => {
             <button
               onClick={() => {
                 resumeAudio();
+                setIsShopOpen(true);
+              }}
+              className="bg-gradient-to-r from-yellow-500 via-amber-500 to-yellow-600 hover:from-yellow-400 hover:via-amber-400 hover:to-yellow-500 text-zinc-950 font-black py-3.5 rounded-xl text-xs uppercase tracking-widest shadow-lg shadow-yellow-500/20 border-2 border-yellow-300 transition-all active:scale-95 flex items-center justify-center gap-2 relative overflow-hidden group"
+            >
+              <i className="fas fa-shopping-cart text-zinc-950 text-xs animate-bounce" />
+              <span>{lang === "es" ? "🛒 TIENDA VIP" : "🛒 VIP SHOP"}</span>
+              {vipActive && (
+                <span className="bg-zinc-950 text-yellow-400 text-[8px] px-1.5 py-0.5 rounded border border-yellow-400/30 font-extrabold animate-pulse ml-1">
+                  VIP ACTIVO
+                </span>
+              )}
+            </button>
+
+            <button
+              onClick={() => {
+                resumeAudio();
                 setAppState("settings");
               }}
               className="bg-zinc-800 hover:bg-zinc-700 text-white/90 font-bold py-3 rounded-xl text-xs uppercase tracking-widest shadow-lg border border-white/10 transition-all active:scale-95 flex items-center justify-center gap-2"
@@ -3160,6 +4044,7 @@ const App: React.FC = () => {
         </div>
         {renderLeaderboardModal()}
         {renderFriendsModal()}
+        {renderShopModal()}
       </div>
     );
   }
@@ -3633,6 +4518,7 @@ const App: React.FC = () => {
         isJumping={isJumping}
         perspective={perspective}
         fov={fov}
+        isZooming={isZooming}
         ultraOptimization={ultraOptimization}
         worldId={currentWorld?.id || "temp"}
         initialEdits={getDimensionEdits()}
@@ -3754,6 +4640,20 @@ const App: React.FC = () => {
               <i className={`fas fa-camera ${uiScaleConfig.btnIcon}`} />
             </button>
             <button
+              onPointerDown={(e) => { e.stopPropagation(); setIsZooming(true); }}
+              onPointerUp={(e) => { e.stopPropagation(); setIsZooming(false); }}
+              onPointerCancel={(e) => { e.stopPropagation(); setIsZooming(false); }}
+              onTouchStart={(e) => { e.preventDefault(); e.stopPropagation(); setIsZooming(true); }}
+              onTouchEnd={(e) => { e.preventDefault(); e.stopPropagation(); setIsZooming(false); }}
+              onTouchCancel={(e) => { e.preventDefault(); e.stopPropagation(); setIsZooming(false); }}
+              className={`bg-blue-600/90 rounded-2xl shadow-xl text-white flex items-center justify-center transition-all hover:bg-blue-500 active:bg-blue-400 select-none pointer-events-auto touch-none ${uiScaleConfig.btnSize} ${isZooming ? 'ring-2 ring-yellow-400 bg-blue-500 scale-95' : ''}`}
+              title="Zoom"
+              id="zoom-btn"
+              style={{ touchAction: "none" }}
+            >
+              <i className={`fas fa-search-plus ${uiScaleConfig.btnIcon} ${isZooming ? 'text-yellow-300' : 'text-sky-300'}`} />
+            </button>
+            <button
               onClick={() => {
                 resumeAudio();
                 setIsChatOpen(true);
@@ -3833,13 +4733,17 @@ const App: React.FC = () => {
                   <span className="bg-black/50 border border-white/10 px-1.5 py-0.5 rounded text-white font-extrabold shadow-sm">Clic Der</span>
                   <span>Poner/Abrir</span>
                 </div>
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-1.5 font-mono">
                   <span className="bg-black/50 border border-white/10 px-1.5 py-0.5 rounded text-white font-extrabold shadow-sm">E / I</span>
                   <span>Inventario</span>
                 </div>
-                <div className="flex items-center gap-1.5">
+                <div className="flex items-center gap-1.5 font-mono">
                   <span className="bg-black/50 border border-white/10 px-1.5 py-0.5 rounded text-white font-extrabold shadow-sm">Esc</span>
                   <span>Ajustes</span>
+                </div>
+                <div className="flex items-center gap-1.5 font-mono col-span-2 border-t border-white/5 pt-1.5">
+                  <span className="bg-black/50 border border-white/10 px-1.5 py-0.5 rounded text-white font-extrabold shadow-sm">C / Z</span>
+                  <span>Zoom (Mantener)</span>
                 </div>
               </div>
             </div>
@@ -4775,6 +5679,8 @@ const App: React.FC = () => {
       {renderLeaderboardModal()}
       {/* Friends Modal */}
       {renderFriendsModal()}
+      {/* VIP Shop Modal */}
+      {renderShopModal()}
     </div>
   );
 };

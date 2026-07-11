@@ -74,7 +74,8 @@ export enum EntityType {
   SKELETON = 'SKELETON',
   ARROW = 'ARROW',
   VILLAGER = 'VILLAGER',
-  HOGLIN = 'HOGLIN'
+  HOGLIN = 'HOGLIN',
+  CAT = 'CAT'
 }
 
 export interface EntityData {

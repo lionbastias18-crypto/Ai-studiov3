@@ -12,7 +12,7 @@ export interface World {
   creatorName?: string; // Display name
   createdAt: number;
   playerPos: Vector3D;
-  gameMode: "creative" | "survival" | "adventure";
+  gameMode: "creative" | "survival" | "adventure" | "spectator";
   worldType: "flat" | "normal" | "edge_farlands";
   edits: Record<string, number>; // Key: "x,y,z", Value: BlockType (0 for air)
   survivalInventory?: Record<number, number>;
@@ -52,9 +52,9 @@ export function loadWorlds(): World[] {
 
 export function saveWorlds(worlds: World[]): void {
   try {
-    // Sort descending by createdAt (most recent first) and keep at most 100
+    // Sort descending by createdAt (most recent first) and keep at most 70
     const sorted = [...worlds].sort((a, b) => b.createdAt - a.createdAt);
-    const limited = sorted.slice(0, 100);
+    const limited = sorted.slice(0, 70);
     localStorage.setItem(WORLDS_KEY, JSON.stringify(limited));
   } catch (e) {
     console.error("Error saving worlds", e);

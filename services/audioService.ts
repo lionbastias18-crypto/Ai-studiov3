@@ -827,6 +827,47 @@ export const playZombieSound = () => {
   } catch (e) {}
 };
 
+export const playCatSound = () => {
+  try {
+    const ctx = initAudio();
+    const currentTime = ctx.currentTime;
+
+    const osc = ctx.createOscillator();
+    const osc2 = ctx.createOscillator();
+    const gain = ctx.createGain();
+    const filter = ctx.createBiquadFilter();
+
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(450, currentTime);
+    osc.frequency.exponentialRampToValueAtTime(750, currentTime + 0.12);
+    osc.frequency.exponentialRampToValueAtTime(380, currentTime + 0.35);
+
+    osc2.type = 'sine';
+    osc2.frequency.setValueAtTime(900, currentTime);
+    osc2.frequency.exponentialRampToValueAtTime(1500, currentTime + 0.12);
+    osc2.frequency.exponentialRampToValueAtTime(760, currentTime + 0.35);
+
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(1400, currentTime);
+    filter.frequency.exponentialRampToValueAtTime(900, currentTime + 0.35);
+
+    gain.gain.setValueAtTime(0, currentTime);
+    gain.gain.linearRampToValueAtTime(0.06, currentTime + 0.08);
+    gain.gain.linearRampToValueAtTime(0.04, currentTime + 0.22);
+    gain.gain.exponentialRampToValueAtTime(0.001, currentTime + 0.35);
+
+    osc.connect(filter);
+    osc2.connect(filter);
+    filter.connect(gain);
+    gain.connect(ctx.destination);
+
+    osc.start();
+    osc2.start();
+    osc.stop(currentTime + 0.35);
+    osc2.stop(currentTime + 0.35);
+  } catch (e) {}
+};
+
 export const playCreeperSizzle = () => {
   try {
     const ctx = initAudio();

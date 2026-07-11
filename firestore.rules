@@ -54,7 +54,10 @@ service cloud.firestore {
              (!('worldsCreated' in data) || data.worldsCreated is number) &&
              (!('score' in data) || data.score is number) &&
              (!('displayName' in data) || data.displayName is string) &&
-             (!('lastActive' in data) || data.lastActive is number);
+             (!('lastActive' in data) || data.lastActive is number) &&
+             (!('vipActive' in data) || data.vipActive is bool) &&
+             (!('unlockedWorldsPass' in data) || data.unlockedWorldsPass is bool) &&
+             (!('goldCoins' in data) || data.goldCoins is number);
     }
 
     // Validates an ActivityLog document
@@ -128,6 +131,12 @@ service cloud.firestore {
 
     match /online_players/{userId} {
       allow read, create, update, delete: if true;
+    }
+
+    match /user_purchases/{purchaseId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update, delete: if isLion();
     }
   }
 }

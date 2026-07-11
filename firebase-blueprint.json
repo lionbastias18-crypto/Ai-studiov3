@@ -68,9 +68,53 @@
         "biomeFlora": {
           "type": "number",
           "description": "Block type for custom biome flora/vegetation"
+        },
+        "vipActive": {
+          "type": "boolean",
+          "description": "Is VIP active"
+        },
+        "unlockedWorldsPass": {
+          "type": "boolean",
+          "description": "Bypasses normal limits"
+        },
+        "goldCoins": {
+          "type": "number",
+          "description": "Amount of purchased gold coins"
         }
       },
       "required": ["email", "role"]
+    },
+    "UserPurchase": {
+      "title": "UserPurchase",
+      "description": "Information about a successful real purchase of Premium or Coin items",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "email": {
+          "type": "string"
+        },
+        "productId": {
+          "type": "string"
+        },
+        "productName": {
+          "type": "string"
+        },
+        "price": {
+          "type": "number"
+        },
+        "currency": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "number"
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": ["id", "email", "productId", "price", "timestamp"]
     },
     "ActivityLog": {
       "title": "ActivityLog",
@@ -149,6 +193,10 @@
     "/worlds/{worldId}/players/{userId}": {
       "schema": "ActivePlayer",
       "description": "Subcollection tracking active multiplayer connections"
+    },
+    "/user_purchases/{purchaseId}": {
+      "schema": "UserPurchase",
+      "description": "Collection storing successful premium or coin purchases"
     }
   }
 }

@@ -5,7 +5,7 @@ import { Sky, Stars, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { CHUNK_SIZE, WORLD_HEIGHT, BLOCK_COLORS, VIEW_DISTANCE, BLOCK_NAMES } from '../constants';
 import { BlockType, EntityType, EntityData, Vector3D } from '../types';
-import { playPlaceSound, playBreakSound, playStepSound, resumeAudio, playSleepSound, playHurtSound, playZombieSound, playCreeperSizzle, playExplosionSound, playBowShootSound, updateAmbientEnvironment, playJukeboxMusic, stopJukeboxMusic, stopAllJukeboxMusic } from '../services/audioService';
+import { playPlaceSound, playBreakSound, playStepSound, resumeAudio, playSleepSound, playHurtSound, playZombieSound, playCreeperSizzle, playExplosionSound, playBowShootSound, updateAmbientEnvironment, playJukeboxMusic, stopJukeboxMusic, stopAllJukeboxMusic, playCatSound } from '../services/audioService';
 import { gameState } from '../store';
 import { createNoise2D, createNoise3D } from 'simplex-noise';
 
@@ -231,11 +231,12 @@ interface VoxelWorldProps {
   isJumping: boolean;
   perspective?: 'first' | 'second' | 'third';
   fov?: number;
+  isZooming?: boolean;
   ultraOptimization?: boolean;
   worldId?: string;
   initialEdits?: Record<string, number>;
   onBlockEdit?: (x: number, y: number, z: number, blockType: BlockType, oldBlockType?: BlockType) => void;
-  gameMode?: 'creative' | 'survival' | 'adventure' | 'creativo' | 'supervivencia' | 'aventura';
+  gameMode?: 'creative' | 'survival' | 'adventure' | 'spectator' | 'creativo' | 'supervivencia' | 'aventura' | 'espectador';
   worldType?: 'flat' | 'normal' | 'edge_farlands' | 'plano' | 'plano_infinito';
   onSelectBlock?: (block: BlockType) => void;
   onOpenCraftingTable?: () => void;
@@ -270,7 +271,7 @@ const Animal: React.FC<{
   
   // Game limits & configurations
   const [flashRed, setFlashRed] = useState(false);
-  const entityHealth = useRef(data.type === EntityType.PIG || data.type === EntityType.SHEEP || data.type === EntityType.VILLAGER ? 10 : 20);
+  const entityHealth = useRef(data.type === EntityType.PIG || data.type === EntityType.SHEEP || data.type === EntityType.VILLAGER || data.type === EntityType.CAT ? 10 : 20);
 
   // Timers and state refs
   const lastSoundPlayRef = useRef(0);
@@ -568,9 +569,16 @@ const Animal: React.FC<{
     }
 
     // AI Chasing vs Wandering
-    let speed = data.type === EntityType.PIG || data.type === EntityType.SHEEP || data.type === EntityType.VILLAGER ? 0.8 : 1.1;
+    let speed = data.type === EntityType.PIG || data.type === EntityType.SHEEP || data.type === EntityType.VILLAGER ? 0.8 : data.type === EntityType.CAT ? 1.2 : 1.1;
     let targetRot = data.rot;
     let isAggro = false;
+
+    if (data.type === EntityType.CAT) {
+      if (state.clock.elapsedTime - lastSoundPlayRef.current > 12 && Math.random() < 0.04) {
+        playCatSound();
+        lastSoundPlayRef.current = state.clock.elapsedTime;
+      }
+    }
 
     if (data.type === EntityType.HOGLIN) {
       if (dist < 18) {
@@ -883,6 +891,69 @@ const Animal: React.FC<{
           <mesh position={[0.15, 0.15, 0]}>
             <boxGeometry args={[0.2, 0.3, 0.25]} />
             <meshStandardMaterial color={flashRed ? '#ff2020' : '#553311'} />
+          </mesh>
+        </>
+      )}
+
+      {/* 2.5b Cat Render Model */}
+      {data.type === EntityType.CAT && (
+        <>
+          {/* Body */}
+          <mesh position={[0, 0.25, 0]}>
+            <boxGeometry args={[0.2, 0.2, 0.5]} />
+            <meshStandardMaterial color={flashRed ? '#ff2020' : '#d97706'} />
+          </mesh>
+          {/* White Chest/Stomach Accent */}
+          <mesh position={[0, 0.25, 0.18]}>
+            <boxGeometry args={[0.16, 0.18, 0.16]} />
+            <meshStandardMaterial color="#ffffff" />
+          </mesh>
+          {/* Head */}
+          <mesh position={[0, 0.4, 0.22]}>
+            <boxGeometry args={[0.2, 0.18, 0.18]} />
+            <meshStandardMaterial color={flashRed ? '#ff2020' : '#d97706'} />
+          </mesh>
+          {/* Ears */}
+          <mesh position={[-0.06, 0.51, 0.22]}>
+            <boxGeometry args={[0.05, 0.06, 0.05]} />
+            <meshStandardMaterial color={flashRed ? '#ff2020' : '#d97706'} />
+          </mesh>
+          <mesh position={[0.06, 0.51, 0.22]}>
+            <boxGeometry args={[0.05, 0.06, 0.05]} />
+            <meshStandardMaterial color={flashRed ? '#ff2020' : '#d97706'} />
+          </mesh>
+          {/* Snout */}
+          <mesh position={[0, 0.37, 0.315]}>
+            <boxGeometry args={[0.08, 0.06, 0.03]} />
+            <meshStandardMaterial color="#ffffff" />
+          </mesh>
+          {/* Nose (Pink) */}
+          <mesh position={[0, 0.385, 0.332]}>
+            <boxGeometry args={[0.04, 0.03, 0.02]} />
+            <meshStandardMaterial color="#f472b6" />
+          </mesh>
+          {/* Eyes (Green) */}
+          <mesh position={[-0.05, 0.42, 0.311]}>
+            <boxGeometry args={[0.04, 0.04, 0.01]} />
+            <meshStandardMaterial color="#10b981" />
+          </mesh>
+          <mesh position={[0.05, 0.42, 0.311]}>
+            <boxGeometry args={[0.04, 0.04, 0.01]} />
+            <meshStandardMaterial color="#10b981" />
+          </mesh>
+          {/* Legs */}
+          {[-0.07, 0.07].map((x) =>
+            [-0.18, 0.18].map((z, idx) => (
+              <mesh key={`${x}-${z}-${idx}`} position={[x, 0.1, z]}>
+                <boxGeometry args={[0.05, 0.2, 0.05]} />
+                <meshStandardMaterial color={flashRed ? '#ff2020' : (z > 0 ? '#ffffff' : '#d97706')} />
+              </mesh>
+            ))
+          )}
+          {/* Tail */}
+          <mesh position={[0, 0.3, -0.32]} rotation={[0.4, 0, 0]}>
+            <boxGeometry args={[0.04, 0.04, 0.24]} />
+            <meshStandardMaterial color={flashRed ? '#ff2020' : '#b45309'} />
           </mesh>
         </>
       )}
@@ -1387,14 +1458,16 @@ const Player: React.FC<{
   getCollisionHeight: (x: number, z: number, currentY: number) => number;
   checkSolid: (x: number, y: number, z: number) => boolean;
   perspective: 'first' | 'second' | 'third';
-  gameMode?: 'creative' | 'survival' | 'adventure' | 'creativo' | 'supervivencia' | 'aventura';
+  gameMode?: 'creative' | 'survival' | 'adventure' | 'spectator' | 'creativo' | 'supervivencia' | 'aventura' | 'espectador';
   worldType?: string;
   chunks: Record<string, Uint8Array>;
   playerPosRef: React.MutableRefObject<Vector3D>;
   playerPos: Vector3D;
   onPortalTeleport?: () => void;
   autoJumpEnabled?: boolean;
-}> = ({ moveVector, lookOffsetRef, onUpdatePos, isJumping, getCollisionHeight, checkSolid, perspective, gameMode = 'survival', worldType = 'normal', chunks, playerPosRef, playerPos, onPortalTeleport, autoJumpEnabled = true }) => {
+  isZooming?: boolean;
+  fov?: number;
+}> = ({ moveVector, lookOffsetRef, onUpdatePos, isJumping, getCollisionHeight, checkSolid, perspective, gameMode = 'survival', worldType = 'normal', chunks, playerPosRef, playerPos, onPortalTeleport, autoJumpEnabled = true, isZooming = false, fov = 65 }) => {
   const onPortalTeleportRef = useRef(onPortalTeleport);
   onPortalTeleportRef.current = onPortalTeleport;
   const { camera } = useThree();
@@ -1433,6 +1506,7 @@ const Player: React.FC<{
   gameModeRef.current = gameMode;
   const perspectiveRef = useRef(perspective);
   perspectiveRef.current = perspective;
+  const isSpectator = gameMode === 'spectator' || gameMode === 'espectador';
   const onUpdatePosRef = useRef(onUpdatePos);
   onUpdatePosRef.current = onUpdatePos;
 
@@ -1547,6 +1621,7 @@ const Player: React.FC<{
     }
     
     const isCreative = gameModeRef.current === 'creative' || gameModeRef.current === 'creativo';
+    const isSpectator = gameModeRef.current === 'spectator' || gameModeRef.current === 'espectador';
 
     if (isCreative) {
       if (isJumpingRef.current && !wasJumping.current) {
@@ -1558,6 +1633,8 @@ const Player: React.FC<{
         }
         lastJumpTime.current = state.clock.elapsedTime;
       }
+    } else if (isSpectator) {
+      isFlying.current = true;
     } else {
       isFlying.current = false;
     }
@@ -1567,6 +1644,13 @@ const Player: React.FC<{
     if (isFlying.current) {
       if (isJumpingRef.current) {
         velocityY.current = 8.0;
+      } else if (isSpectator) {
+        // Smooth vertical control based on view angle for spectator
+        if (direction.length() > 0) {
+          velocityY.current = Math.sin(pitch.current) * moveSpeed;
+        } else {
+          velocityY.current = 0;
+        }
       } else {
         // stay still or sink very slowly
         velocityY.current = 0.0;
@@ -1616,14 +1700,21 @@ const Player: React.FC<{
     let origDz = dz;
     let origDy = dy;
 
-    // Colision Y
-    for (const b of blocks) {
-        if (pMaxX > b.minX && pMinX < b.maxX && pMaxZ > b.minZ && pMinZ < b.maxZ) {
-            if (dy > 0 && pMaxY <= b.minY + 0.3) dy = Math.min(dy, b.minY - pMaxY - eps);
-            else if (dy < 0 && pMinY >= b.maxY - 0.3) dy = Math.max(dy, b.maxY - pMinY + eps);
-        }
-    }
-    pMinY += dy; pMaxY += dy;
+    let isGrounded = false;
+
+    if (isSpectator) {
+      pMinY += dy; pMaxY += dy;
+      pMinX += dx; pMaxX += dx;
+      pMinZ += dz; pMaxZ += dz;
+    } else {
+      // Colision Y
+      for (const b of blocks) {
+          if (pMaxX > b.minX && pMinX < b.maxX && pMaxZ > b.minZ && pMinZ < b.maxZ) {
+              if (dy > 0 && pMaxY <= b.minY + 0.3) dy = Math.min(dy, b.minY - pMaxY - eps);
+              else if (dy < 0 && pMinY >= b.maxY - 0.3) dy = Math.max(dy, b.maxY - pMinY + eps);
+          }
+      }
+      pMinY += dy; pMaxY += dy;
 
     // Colision X
     for (const b of blocks) {
@@ -1643,7 +1734,6 @@ const Player: React.FC<{
     }
     pMinZ += dz; pMaxZ += dz;
 
-    let isGrounded = false;
     if (dy !== origDy) {
         if (origDy < 0 && dy > origDy) isGrounded = true; // hit floor
         velocityY.current = 0;
@@ -1706,6 +1796,7 @@ const Player: React.FC<{
             pMaxZ = pStepMaxZ;
         }
     }
+    }
 
     px = pMinX + r;
     py = pMinY + hBottom;
@@ -1740,10 +1831,10 @@ const Player: React.FC<{
         }
     }
 
-    if (isCreative) {
+    if (isCreative || isSpectator) {
         if (gameState.health < 20) gameState.setHealth(20);
         if (gameState.food < 20) gameState.setFood(20);
-        if (py < 0) {
+        if (py < 0 && isCreative) {
             // Teleport back safely without dying in creative
             py = (isFlat ? 55 : getWorldHeight(0, 0).h) + 2;
             px = 0;
@@ -1791,7 +1882,7 @@ const Player: React.FC<{
       const isInsideLava = getBlockTypeAt(px, py, pz) === BlockType.LAVA || 
                            getBlockTypeAt(px, py - 0.8, pz) === BlockType.LAVA || 
                            getBlockTypeAt(px, py - 1.5, pz) === BlockType.LAVA;
-      if (isInsideLava && !isCreative) {
+      if (isInsideLava && !isCreative && !isSpectator) {
         lavaDamageTimerRef.current += minDelta;
         if (lavaDamageTimerRef.current >= 0.5) {
           lavaDamageTimerRef.current = 0;
@@ -1832,6 +1923,14 @@ const Player: React.FC<{
       camera.rotation.y = yaw.current;
       camera.rotation.x = pitch.current;
       camera.rotation.z = 0;
+    }
+
+    // Zoom/FOV update
+    const targetFov = isZooming ? 15 : fov;
+    const pCamera = camera as any;
+    if (pCamera && pCamera.fov !== undefined && pCamera.fov !== targetFov) {
+      pCamera.fov = targetFov;
+      pCamera.updateProjectionMatrix();
     }
 
     // Directly keep the player model perfectly snapped and rotated with the tick loop
@@ -1917,7 +2016,7 @@ const Player: React.FC<{
     }
   });
 
-  if (perspective === 'first') return null;
+  if (perspective === 'first' || isSpectator) return null;
 
   return (
     <group ref={playerGroupRef} position={[physPos.current.x, physPos.current.y - 1.5, physPos.current.z]} rotation={[0, yaw.current, 0]}>
@@ -2184,7 +2283,7 @@ const NightMobSpawner: React.FC<NightMobSpawnerProps> = ({
 
 const VoxelWorld: React.FC<VoxelWorldProps> = ({ 
     currentBlock, playerPos, onBlockChange, moveVector, lookOffsetRef, interactionMode, isJumping,
-    perspective = 'first', fov = 65, ultraOptimization = false,
+    perspective = 'first', fov = 65, isZooming = false, ultraOptimization = false,
     worldId, initialEdits, onBlockEdit,
     gameMode = 'survival', worldType = 'normal',
     onSelectBlock,
@@ -3136,16 +3235,17 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
 
           // C. Multi-block House Construction
           const buildHouse = (sx: number, sz: number, floorY: number, size: number) => {
-            for (let hx = 0; hx <= size; hx++) {
-              for (let hz = 0; hz <= size; hz++) {
+            // First clear a slightly larger air envelope to avoid block overlaps
+            for (let hx = -1; hx <= size + 1; hx++) {
+              for (let hz = -1; hz <= size + 2; hz++) {
                 const lx = sx + hx;
                 const lz = sz + hz;
                 if (lx >= 0 && lx < CHUNK_SIZE && lz >= 0 && lz < CHUNK_SIZE) {
-                  for (let dy = 1; dy <= 5; dy++) {
+                  for (let dy = 1; dy <= 6; dy++) {
                     const idx = (lx * CHUNK_SIZE * WORLD_HEIGHT) + ((floorY + dy) * CHUNK_SIZE) + lz;
                     data[idx] = BlockType.AIR;
                   }
-                  for (let dy = 0; dy >= -5; dy--) {
+                  for (let dy = 0; dy >= -4; dy--) {
                     const idx = (lx * CHUNK_SIZE * WORLD_HEIGHT) + ((floorY + dy) * CHUNK_SIZE) + lz;
                     if (data[idx] === BlockType.AIR || data[idx] === BlockType.WATER || data[idx] === BlockType.GRASS || data[idx] === BlockType.DIRT || data[idx] === BlockType.LEAVES) {
                       data[idx] = BlockType.STONE;
@@ -3187,7 +3287,11 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
                         (hz === 0 && hx === Math.floor(size/2))
                       );
                       
-                      if (isDoor) {
+                      const isChimney = (hx === 0 && hz === 2);
+
+                      if (isChimney) {
+                        data[idx] = BlockType.STONE; // Cobblestone Chimney stack
+                      } else if (isDoor) {
                         data[idx] = BlockType.AIR;
                         if (hy === 1 || hy === 2) {
                           data[idx] = BlockType.DOOR;
@@ -3210,6 +3314,8 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
                           data[idx] = BlockType.BED;
                         } else if (hx === size - 1 && hz === 1) {
                           data[idx] = BlockType.CRAFTING_TABLE;
+                        } else if (hx === 1 && hz === 3) {
+                          data[idx] = BlockType.JUKEBOX; // Sidebar music player
                         }
                       } else if (hy === 2) {
                         if (hx === 1 && hz === size - 1) {
@@ -3224,19 +3330,93 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
                   const idxRoof5 = (lx * CHUNK_SIZE * WORLD_HEIGHT) + ((floorY + 5) * CHUNK_SIZE) + lz;
                   const idxRoof6 = (lx * CHUNK_SIZE * WORLD_HEIGHT) + ((floorY + 6) * CHUNK_SIZE) + lz;
                   
-                  // Roof Row 5: slope side layers
                   if (hx >= 0 && hx <= size && hz >= 0 && hz <= size) {
-                    if (hx === pPeak) {
-                      data[idxRoof5] = BlockType.WOOD;
-                      data[idxRoof6] = BlockType.LOG; // Ridge center bar
-                    } else if (hx === 0 || hx === size) {
-                      data[idxRoof5] = BlockType.STONE; // Cobblestone border
+                    const isChimney = (hx === 0 && hz === 2);
+                    if (isChimney) {
+                      data[idxRoof5] = BlockType.STONE;
+                      data[idxRoof6] = BlockType.STONE; // Chimney stack continues up
                     } else {
-                      data[idxRoof5] = BlockType.WOOD; // Planks slope
+                      if (hx === pPeak) {
+                        data[idxRoof5] = BlockType.WOOD;
+                        data[idxRoof6] = BlockType.LOG; // Ridge center bar
+                      } else if (hx === 0 || hx === size) {
+                        data[idxRoof5] = BlockType.STONE; // Cobblestone border
+                      } else {
+                        data[idxRoof5] = BlockType.WOOD; // Planks slope
+                      }
                     }
                   }
                 }
               }
+            }
+
+            // --- DECORATIVE CHIMNEY TOP ---
+            const chimneyLx = sx + 0;
+            const chimneyLz = sz + 2;
+            if (chimneyLx >= 0 && chimneyLx < CHUNK_SIZE && chimneyLz >= 0 && chimneyLz < CHUNK_SIZE) {
+              const idxRoof7 = (chimneyLx * CHUNK_SIZE * WORLD_HEIGHT) + ((floorY + 7) * CHUNK_SIZE) + chimneyLz;
+              const idxRoof8 = (chimneyLx * CHUNK_SIZE * WORLD_HEIGHT) + ((floorY + 8) * CHUNK_SIZE) + chimneyLz;
+              data[idxRoof7] = BlockType.STONE;
+              data[idxRoof8] = BlockType.TORCH; // Chimney stack smoke torch
+            }
+
+            // --- PORCH PILLARS AND AWNING ---
+            const doorHx = Math.floor(size / 2);
+            // Left column support
+            const pLeftLx = sx + doorHx - 1;
+            const pLeftLz = sz + size + 1;
+            if (pLeftLx >= 0 && pLeftLx < CHUNK_SIZE && pLeftLz >= 0 && pLeftLz < CHUNK_SIZE) {
+              for (let hy = 1; hy <= 3; hy++) {
+                const idx = (pLeftLx * CHUNK_SIZE * WORLD_HEIGHT) + ((floorY + hy) * CHUNK_SIZE) + pLeftLz;
+                data[idx] = BlockType.LOG;
+              }
+            }
+            // Right column support
+            const pRightLx = sx + doorHx + 1;
+            const pRightLz = sz + size + 1;
+            if (pRightLx >= 0 && pRightLx < CHUNK_SIZE && pRightLz >= 0 && pRightLz < CHUNK_SIZE) {
+              for (let hy = 1; hy <= 3; hy++) {
+                const idx = (pRightLx * CHUNK_SIZE * WORLD_HEIGHT) + ((floorY + hy) * CHUNK_SIZE) + pRightLz;
+                data[idx] = BlockType.LOG;
+              }
+            }
+            // Overhanging porch awning roof
+            for (let px = doorHx - 1; px <= doorHx + 1; px++) {
+              const awningLx = sx + px;
+              const awningLz = sz + size + 1;
+              if (awningLx >= 0 && awningLx < CHUNK_SIZE && awningLz >= 0 && awningLz < CHUNK_SIZE) {
+                const idx = (awningLx * CHUNK_SIZE * WORLD_HEIGHT) + ((floorY + 4) * CHUNK_SIZE) + awningLz;
+                data[idx] = BlockType.WOOD;
+              }
+            }
+
+            // --- WINDOW FLOWERBOXES ---
+            // Window 1 Flowerbox on the left wall
+            const fl1Lx = sx - 1;
+            const fl1Lz = sz + Math.floor(size / 2);
+            if (fl1Lx >= 0 && fl1Lx < CHUNK_SIZE && fl1Lz >= 0 && fl1Lz < CHUNK_SIZE) {
+              const grassIdx = (fl1Lx * CHUNK_SIZE * WORLD_HEIGHT) + ((floorY + 1) * CHUNK_SIZE) + fl1Lz;
+              const flowerIdx = (fl1Lx * CHUNK_SIZE * WORLD_HEIGHT) + ((floorY + 2) * CHUNK_SIZE) + fl1Lz;
+              data[grassIdx] = BlockType.GRASS;
+              data[flowerIdx] = BlockType.FLOWER_RED;
+            }
+
+            // Window 2 Flowerbox on the right wall
+            const fl2Lx = sx + size + 1;
+            const fl2Lz = sz + Math.floor(size / 2);
+            if (fl2Lx >= 0 && fl2Lx < CHUNK_SIZE && fl2Lz >= 0 && fl2Lz < CHUNK_SIZE) {
+              const grassIdx = (fl2Lx * CHUNK_SIZE * WORLD_HEIGHT) + ((floorY + 1) * CHUNK_SIZE) + fl2Lz;
+              const flowerIdx = (fl2Lx * CHUNK_SIZE * WORLD_HEIGHT) + ((floorY + 2) * CHUNK_SIZE) + fl2Lz;
+              data[grassIdx] = BlockType.GRASS;
+              data[flowerIdx] = BlockType.FLOWER_YELLOW;
+            }
+
+            // --- SECRET HIDDEN DIAMOND UNDER FLOOR ---
+            const treasureLx = sx + 1;
+            const treasureLz = sz + 1;
+            if (treasureLx >= 0 && treasureLx < CHUNK_SIZE && treasureLz >= 0 && treasureLz < CHUNK_SIZE) {
+              const treasureIdx = (treasureLx * CHUNK_SIZE * WORLD_HEIGHT) + ((floorY - 1) * CHUNK_SIZE) + treasureLz;
+              data[treasureIdx] = BlockType.DIAMOND_ORE;
             }
           };
 
@@ -3384,21 +3564,30 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
             let h = getWorldHeight(wx, wz).h + 1;
             
             let eType = rType > 0.5 ? EntityType.PIG : EntityType.SHEEP;
-            if (isVillageChunk && rType < 0.8) {
-              eType = EntityType.VILLAGER;
-              // Spawn exactly inside/next to House 1 or House 2!
-              if (i === 0) {
-                wx = cx * CHUNK_SIZE + 3;
-                wz = cz * CHUNK_SIZE + 2;
-                h = getWorldHeight(wx, wz).h + 1.5;
-              } else if (i === 1) {
-                wx = cx * CHUNK_SIZE + 12;
-                wz = cz * CHUNK_SIZE + 11;
-                h = getWorldHeight(wx, wz).h + 1.5;
-              } else {
-                wx = cx * CHUNK_SIZE + 7;
-                wz = cz * CHUNK_SIZE + 7;
-                h = getWorldHeight(wx, wz).h + 1.5;
+            if (isVillageChunk) {
+              if (rType < 0.6) {
+                eType = EntityType.VILLAGER;
+                // Spawn exactly inside/next to House 1 or House 2!
+                if (i === 0) {
+                  wx = cx * CHUNK_SIZE + 3;
+                  wz = cz * CHUNK_SIZE + 2;
+                  h = getWorldHeight(wx, wz).h + 1.5;
+                } else if (i === 1) {
+                  wx = cx * CHUNK_SIZE + 12;
+                  wz = cz * CHUNK_SIZE + 11;
+                  h = getWorldHeight(wx, wz).h + 1.5;
+                } else {
+                  wx = cx * CHUNK_SIZE + 7;
+                  wz = cz * CHUNK_SIZE + 7;
+                  h = getWorldHeight(wx, wz).h + 1.5;
+                }
+              } else if (rType < 0.85) {
+                // Spawn a cat!
+                eType = EntityType.CAT;
+                // Cats spawn near houses too!
+                wx = cx * CHUNK_SIZE + (i === 0 ? 5 : i === 1 ? 10 : 8);
+                wz = cz * CHUNK_SIZE + (i === 0 ? 4 : i === 1 ? 9 : 6);
+                h = getWorldHeight(wx, wz).h + 1;
               }
             }
             
@@ -3617,7 +3806,7 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
   }, []);
 
   const executeBreak = useCallback((point: THREE.Vector3, normal: THREE.Vector3) => {
-    if (gameModeRef.current === 'adventure' || gameModeRef.current === 'aventura') {
+    if (gameModeRef.current === 'adventure' || gameModeRef.current === 'aventura' || gameModeRef.current === 'spectator' || gameModeRef.current === 'espectador') {
       return;
     }
 
@@ -3725,7 +3914,7 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
   }, []);
 
   const executePlace = useCallback((point: THREE.Vector3, normal: THREE.Vector3) => {
-    if (gameModeRef.current === 'adventure' || gameModeRef.current === 'aventura') {
+    if (gameModeRef.current === 'adventure' || gameModeRef.current === 'aventura' || gameModeRef.current === 'spectator' || gameModeRef.current === 'espectador') {
       return;
     }
 
@@ -4251,7 +4440,7 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
           />
         ))}
 
-        <Player moveVector={moveVector} lookOffsetRef={lookOffsetRef} onUpdatePos={onBlockChange} isJumping={isJumping} getCollisionHeight={getCollisionHeight} checkSolid={checkSolid} perspective={perspective} gameMode={gameMode} worldType={worldType} chunks={chunks} playerPosRef={playerPosRef} playerPos={playerPos} onPortalTeleport={onPortalTeleport} autoJumpEnabled={autoJumpEnabled} />
+        <Player moveVector={moveVector} lookOffsetRef={lookOffsetRef} onUpdatePos={onBlockChange} isJumping={isJumping} getCollisionHeight={getCollisionHeight} checkSolid={checkSolid} perspective={perspective} gameMode={gameMode} worldType={worldType} chunks={chunks} playerPosRef={playerPosRef} playerPos={playerPos} onPortalTeleport={onPortalTeleport} autoJumpEnabled={autoJumpEnabled} isZooming={isZooming} fov={fov} />
         <ParticleSystem particlesRef={particlesRef} />
         <JukeboxEmitter playingJukeboxesRef={playingJukeboxesRef} particlesRef={particlesRef} />
         <fog attach="fog" args={['#87ceeb', ultraOptimization ? 8 : 15, ultraOptimization ? 28 : 45]} />
