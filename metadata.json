@@ -1,9 +1,7 @@
 {
   "name": "Alpha Mobile Voxel Engine",
   "description": "A high-performance Minecraft Infdev-inspired voxel game optimized for tablets, featuring procedural world generation, touch controls, and a Gemini-powered building assistant.",
-  "requestFramePermissions": [
-    "camera"
-  ],
+  "requestFramePermissions": [],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
   ]

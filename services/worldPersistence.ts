@@ -89,5 +89,12 @@ export function createDefaultWorldForUser(creator: string): World {
     gameMode: "survival",
     worldType: "normal",
     edits: {},
+    survivalInventory: {
+      1: 32, // DIRT
+      3: 16, // WOOD
+      13: 8, // LOG
+      25: 1, // CRAFTING_TABLE
+      14: 8, // TORCH
+    },
   };
 }

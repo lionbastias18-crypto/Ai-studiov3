@@ -716,46 +716,776 @@ export const resumeAudio = () => {
   initAudio();
   playBackgroundMusic();
   startAmbientSounds();
+  if (currentMusicMode === 'soundtrack') {
+    ensureSoundtrackPlaying();
+  }
+  if (isCustomMusicPlayingState && customBgMusic) {
+    customBgMusic.play().catch(e => console.log("Resuming custom music failed:", e));
+  }
 };
 
 let bgMusicStarted = false;
-export const playBackgroundMusic = () => {
-    const ctx = initAudio();
-    if (bgMusicStarted) return;
-    bgMusicStarted = true;
+export type MusicMode = 'soundtrack' | 'c418' | 'chiptune' | 'custom';
+export type MusicContextScene = 'menu' | 'world';
 
-    const playChord = () => {
-        if (ctx.state === 'suspended') return;
-        const scale = [261.63, 293.66, 329.63, 392.00, 440.00]; // C D E G A
-        const root = scale[Math.floor(Math.random() * scale.length)];
-        const freqMultiplier = Math.random() > 0.5 ? 0.5 : 1; 
-        const frequencies = [root * freqMultiplier, root * 1.25 * freqMultiplier, root * 1.5 * freqMultiplier]; 
-        
-        frequencies.forEach((freq, idx) => {
-            const osc = ctx.createOscillator();
-            const gain = ctx.createGain();
-            osc.type = 'triangle';
-            osc.frequency.setValueAtTime(freq, ctx.currentTime);
+const MENU_SOUNDTRACK = {
+  url: '/assets/aistudio/Winter_Menu_Waltz_5b9b04b1.mp3',
+  title: 'Winter Menu Waltz (Menú)'
+};
 
-            gain.gain.setValueAtTime(0, ctx.currentTime);
-            gain.gain.linearRampToValueAtTime(0.015, ctx.currentTime + 4);
-            gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 10);
+const WORLD_SOUNDTRACKS = [
+  {
+    url: '/assets/aistudio/Adventure_Overworld_7730af55.mp3',
+    title: 'Adventure Overworld'
+  },
+  {
+    url: '/assets/aistudio/Christmas_Overworld_ed19576f.mp3',
+    title: 'Christmas Overworld'
+  }
+];
 
-            let filter = ctx.createBiquadFilter();
-            filter.type = 'lowpass';
-            filter.frequency.value = 800;
+let currentMusicMode: MusicMode = 'soundtrack';
+let currentMusicScene: MusicContextScene = 'menu';
+let worldTrackIdx = 0;
+let soundtrackAudio: HTMLAudioElement | null = null;
+let soundtrackCurrentUrl: string | null = null;
+let soundtrackNeedsGestureUnlock = false;
 
-            osc.connect(filter);
-            filter.connect(gain);
-            gain.connect(ctx.destination);
+let customBgMusic: HTMLAudioElement | null = null;
+let customBgMusicVolume = 0.5;
+let customMusicName: string | null = null;
+let isCustomMusicPlayingState = false;
 
-            osc.start(ctx.currentTime);
-            osc.stop(ctx.currentTime + 10.5);
-        });
+// Web Audio API Music Master & Sequencer State
+let musicMasterGain: GainNode | null = null;
+let musicSchedulerTimer: any = null;
+let currentTrackIndex = 0;
+let currentTrackName = MENU_SOUNDTRACK.title;
+let chiptuneTimeoutId: any = null;
+let chiptuneStep = 0;
+let chiptuneNextTime = 0.0;
+const CHIPTUNE_STEP_DURATION = 0.24;
+
+const stopSoundtrackAudio = () => {
+  if (soundtrackAudio) {
+    soundtrackAudio.onended = null;
+    soundtrackAudio.pause();
+  }
+};
+
+const getActiveSoundtrackEntry = () => {
+  if (currentMusicScene === 'menu') {
+    return { ...MENU_SOUNDTRACK, loop: true };
+  }
+  const track = WORLD_SOUNDTRACKS[worldTrackIdx % WORLD_SOUNDTRACKS.length];
+  return { ...track, loop: false };
+};
+
+const syncSoundtrackPlayback = (forceSwitch = false) => {
+  if (typeof window === 'undefined' || currentMusicMode !== 'soundtrack') return;
+  const entry = getActiveSoundtrackEntry();
+  currentTrackName = entry.title;
+
+  if (!soundtrackAudio) {
+    soundtrackAudio = new Audio();
+  }
+
+  soundtrackAudio.volume = customBgMusicVolume;
+  soundtrackAudio.loop = entry.loop;
+
+  if (forceSwitch || soundtrackCurrentUrl !== entry.url) {
+    soundtrackCurrentUrl = entry.url;
+    soundtrackAudio.src = entry.url;
+    soundtrackAudio.currentTime = 0;
+  }
+
+  if (currentMusicScene === 'world') {
+    soundtrackAudio.onended = () => {
+      if (currentMusicMode === 'soundtrack' && currentMusicScene === 'world') {
+        worldTrackIdx = (worldTrackIdx + 1) % WORLD_SOUNDTRACKS.length;
+        syncSoundtrackPlayback(true);
+      }
     };
+  } else {
+    soundtrackAudio.onended = null;
+  }
 
-    setInterval(playChord, 12000);
-    playChord();
+  if (soundtrackAudio.paused || forceSwitch) {
+    const playPromise = soundtrackAudio.play();
+    if (playPromise !== undefined) {
+      playPromise
+        .then(() => {
+          soundtrackNeedsGestureUnlock = false;
+        })
+        .catch(() => {
+          soundtrackNeedsGestureUnlock = true;
+        });
+    }
+  }
+};
+
+const ensureSoundtrackPlaying = () => {
+  if (currentMusicMode !== 'soundtrack') return;
+  if (!soundtrackAudio || soundtrackAudio.paused || soundtrackNeedsGestureUnlock) {
+    syncSoundtrackPlayback(false);
+  }
+};
+
+if (typeof window !== 'undefined') {
+  const unlockMusicOnGesture = () => {
+    if (currentMusicMode === 'soundtrack' && (!soundtrackAudio || soundtrackAudio.paused || soundtrackNeedsGestureUnlock)) {
+      ensureSoundtrackPlaying();
+    }
+  };
+  window.addEventListener('pointerdown', unlockMusicOnGesture, { passive: true });
+  window.addEventListener('keydown', unlockMusicOnGesture, { passive: true });
+}
+
+export const setMusicContext = (scene: MusicContextScene) => {
+  const changed = currentMusicScene !== scene;
+  currentMusicScene = scene;
+  if (currentMusicMode === 'soundtrack') {
+    if (changed) {
+      syncSoundtrackPlayback(true);
+    } else {
+      ensureSoundtrackPlaying();
+    }
+  }
+};
+
+interface AmbientChord {
+  timeOffset: number; // in seconds
+  pianoNotes: number[]; // MIDI notes
+  padNotes?: number[];
+  bassNote?: number;
+  bellNotes?: { time: number; note: number }[];
+}
+
+interface AmbientTrack {
+  name: string;
+  duration: number; // total duration of music in seconds
+  pauseDuration: number; // calm silence before next theme
+  chords: AmbientChord[];
+}
+
+const AMBIENT_TRACKS: AmbientTrack[] = [
+  {
+    name: "C418 - Sweden Calm (Piano & Ambiente)",
+    duration: 38,
+    pauseDuration: 12,
+    chords: [
+      {
+        timeOffset: 0.5,
+        pianoNotes: [60, 64, 67, 72],
+        padNotes: [48, 55, 60],
+        bassNote: 36,
+        bellNotes: [{ time: 2.2, note: 79 }, { time: 3.5, note: 76 }]
+      },
+      {
+        timeOffset: 5.0,
+        pianoNotes: [57, 60, 65, 69],
+        padNotes: [41, 53, 57],
+        bassNote: 41,
+        bellNotes: [{ time: 6.8, note: 77 }, { time: 8.2, note: 72 }]
+      },
+      {
+        timeOffset: 10.0,
+        pianoNotes: [57, 64, 67, 71],
+        padNotes: [45, 52, 57],
+        bassNote: 33,
+        bellNotes: [{ time: 11.8, note: 76 }, { time: 13.4, note: 74 }]
+      },
+      {
+        timeOffset: 15.0,
+        pianoNotes: [55, 59, 62, 67],
+        padNotes: [43, 50, 55],
+        bassNote: 35,
+        bellNotes: [{ time: 17.2, note: 79 }, { time: 18.6, note: 83 }]
+      },
+      {
+        timeOffset: 20.0,
+        pianoNotes: [52, 59, 64, 67],
+        padNotes: [40, 47, 52],
+        bassNote: 40,
+        bellNotes: [{ time: 22.0, note: 76 }, { time: 23.5, note: 71 }]
+      },
+      {
+        timeOffset: 25.0,
+        pianoNotes: [53, 57, 60, 65, 72],
+        padNotes: [41, 48, 53],
+        bassNote: 41,
+        bellNotes: [{ time: 27.2, note: 77 }, { time: 28.8, note: 72 }]
+      },
+      {
+        timeOffset: 30.5,
+        pianoNotes: [48, 55, 60, 64, 71],
+        padNotes: [36, 48, 55],
+        bassNote: 36,
+        bellNotes: [{ time: 33.0, note: 84 }, { time: 35.0, note: 79 }]
+      }
+    ]
+  },
+  {
+    name: "C418 - Wet Hands (Manos Húmedas)",
+    duration: 36,
+    pauseDuration: 12,
+    chords: [
+      {
+        timeOffset: 0.5,
+        pianoNotes: [50, 57, 62, 65],
+        padNotes: [38, 50, 57],
+        bassNote: 38,
+        bellNotes: [{ time: 1.8, note: 74 }, { time: 3.2, note: 77 }, { time: 4.4, note: 81 }]
+      },
+      {
+        timeOffset: 5.5,
+        pianoNotes: [46, 53, 58, 62, 65],
+        padNotes: [34, 46, 53],
+        bassNote: 34,
+        bellNotes: [{ time: 7.2, note: 74 }, { time: 8.8, note: 77 }]
+      },
+      {
+        timeOffset: 11.0,
+        pianoNotes: [41, 48, 53, 60, 65],
+        padNotes: [41, 53, 60],
+        bassNote: 41,
+        bellNotes: [{ time: 12.8, note: 72 }, { time: 14.5, note: 69 }]
+      },
+      {
+        timeOffset: 16.5,
+        pianoNotes: [48, 55, 60, 64, 67],
+        padNotes: [36, 48, 55],
+        bassNote: 36,
+        bellNotes: [{ time: 18.2, note: 76 }, { time: 20.0, note: 79 }]
+      },
+      {
+        timeOffset: 22.0,
+        pianoNotes: [43, 50, 55, 58, 62],
+        padNotes: [43, 55, 62],
+        bassNote: 43,
+        bellNotes: [{ time: 24.0, note: 74 }, { time: 25.8, note: 70 }]
+      },
+      {
+        timeOffset: 28.0,
+        pianoNotes: [50, 57, 62, 69, 74],
+        padNotes: [38, 50, 57],
+        bassNote: 38,
+        bellNotes: [{ time: 30.5, note: 81 }, { time: 33.0, note: 74 }]
+      }
+    ]
+  },
+  {
+    name: "C418 - Subwoofer Lullaby (Atardecer Voxel)",
+    duration: 40,
+    pauseDuration: 14,
+    chords: [
+      {
+        timeOffset: 0.5,
+        pianoNotes: [52, 59, 64, 67],
+        padNotes: [40, 52, 59],
+        bassNote: 28,
+        bellNotes: [{ time: 2.2, note: 76 }, { time: 3.8, note: 79 }]
+      },
+      {
+        timeOffset: 6.0,
+        pianoNotes: [48, 55, 60, 64, 71],
+        padNotes: [36, 48, 55],
+        bassNote: 36,
+        bellNotes: [{ time: 7.8, note: 79 }, { time: 9.5, note: 83 }]
+      },
+      {
+        timeOffset: 12.0,
+        pianoNotes: [43, 50, 55, 59, 67],
+        padNotes: [43, 55, 59],
+        bassNote: 31,
+        bellNotes: [{ time: 14.0, note: 74 }, { time: 15.8, note: 79 }]
+      },
+      {
+        timeOffset: 18.0,
+        pianoNotes: [47, 54, 59, 62, 66],
+        padNotes: [35, 47, 54],
+        bassNote: 35,
+        bellNotes: [{ time: 20.0, note: 74 }, { time: 21.8, note: 71 }]
+      },
+      {
+        timeOffset: 24.0,
+        pianoNotes: [45, 52, 57, 60, 67],
+        padNotes: [45, 57, 64],
+        bassNote: 33,
+        bellNotes: [{ time: 26.2, note: 72 }, { time: 28.0, note: 76 }]
+      },
+      {
+        timeOffset: 31.0,
+        pianoNotes: [40, 47, 52, 59, 64, 76],
+        padNotes: [28, 40, 52],
+        bassNote: 28,
+        bellNotes: [{ time: 33.5, note: 83 }, { time: 36.0, note: 76 }]
+      }
+    ]
+  }
+];
+
+const midiToFreq = (midi: number): number => {
+  return 440 * Math.pow(2, (midi - 69) / 12);
+};
+
+const playPianoNote = (
+  ctx: AudioContext,
+  dest: AudioNode,
+  midi: number,
+  time: number,
+  velocity = 0.8,
+  dur = 3.5
+) => {
+  try {
+    const freq = midiToFreq(midi);
+    const osc1 = ctx.createOscillator();
+    osc1.type = 'sine';
+    osc1.frequency.setValueAtTime(freq, time);
+
+    const osc2 = ctx.createOscillator();
+    osc2.type = 'triangle';
+    osc2.frequency.setValueAtTime(freq * 1.0015, time);
+
+    const osc3 = ctx.createOscillator();
+    osc3.type = 'sine';
+    osc3.frequency.setValueAtTime(freq * 2.0, time);
+
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    const baseCutoff = Math.min(3000, freq * 3.2 + velocity * 1000);
+    filter.frequency.setValueAtTime(baseCutoff, time);
+    filter.frequency.exponentialRampToValueAtTime(Math.max(220, freq * 1.1), time + dur);
+
+    const noteGain = ctx.createGain();
+    const peakVol = velocity * 0.13;
+    noteGain.gain.setValueAtTime(0.0001, time);
+    noteGain.gain.linearRampToValueAtTime(peakVol, time + 0.025);
+    noteGain.gain.exponentialRampToValueAtTime(peakVol * 0.42, time + 0.35);
+    noteGain.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+
+    const osc2Gain = ctx.createGain();
+    osc2Gain.gain.value = 0.32;
+    osc2.connect(osc2Gain);
+    osc2Gain.connect(filter);
+
+    const osc3Gain = ctx.createGain();
+    osc3Gain.gain.value = 0.10;
+    osc3.connect(osc3Gain);
+    osc3Gain.connect(filter);
+
+    osc1.connect(filter);
+    filter.connect(noteGain);
+    noteGain.connect(dest);
+
+    osc1.start(time);
+    osc2.start(time);
+    osc3.start(time);
+
+    osc1.stop(time + dur);
+    osc2.stop(time + dur);
+    osc3.stop(time + dur);
+  } catch (e) {}
+};
+
+const playPadChord = (
+  ctx: AudioContext,
+  dest: AudioNode,
+  notes: number[],
+  time: number,
+  dur = 5.5
+) => {
+  try {
+    notes.forEach((midi, idx) => {
+      const freq = midiToFreq(midi);
+      const osc = ctx.createOscillator();
+      osc.type = 'triangle';
+      const detune = (idx % 2 === 0 ? 1 : -1) * 3.5;
+      osc.detune.setValueAtTime(detune, time);
+      osc.frequency.setValueAtTime(freq, time);
+
+      const padFilter = ctx.createBiquadFilter();
+      padFilter.type = 'lowpass';
+      padFilter.frequency.setValueAtTime(520, time);
+      padFilter.frequency.linearRampToValueAtTime(780, time + dur * 0.4);
+      padFilter.frequency.linearRampToValueAtTime(420, time + dur);
+
+      const gain = ctx.createGain();
+      const padVol = 0.042;
+      gain.gain.setValueAtTime(0.0001, time);
+      gain.gain.linearRampToValueAtTime(padVol, time + 1.2);
+      gain.gain.linearRampToValueAtTime(padVol * 0.8, time + dur * 0.65);
+      gain.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+
+      osc.connect(padFilter);
+      padFilter.connect(gain);
+      gain.connect(dest);
+
+      osc.start(time);
+      osc.stop(time + dur);
+    });
+  } catch (e) {}
+};
+
+const playSubBass = (
+  ctx: AudioContext,
+  dest: AudioNode,
+  midi: number,
+  time: number,
+  dur = 4.5
+) => {
+  try {
+    const freq = midiToFreq(midi);
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(freq, time);
+
+    const gain = ctx.createGain();
+    const bassVol = 0.11;
+    gain.gain.setValueAtTime(0.0001, time);
+    gain.gain.linearRampToValueAtTime(bassVol, time + 0.08);
+    gain.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+
+    osc.connect(gain);
+    gain.connect(dest);
+
+    osc.start(time);
+    osc.stop(time + dur);
+  } catch (e) {}
+};
+
+const playBellTone = (
+  ctx: AudioContext,
+  dest: AudioNode,
+  midi: number,
+  time: number,
+  dur = 2.8
+) => {
+  try {
+    const freq = midiToFreq(midi);
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(freq, time);
+
+    const harmOsc = ctx.createOscillator();
+    harmOsc.type = 'sine';
+    harmOsc.frequency.setValueAtTime(freq * 3.0, time);
+
+    const harmGain = ctx.createGain();
+    harmGain.gain.value = 0.16;
+    harmOsc.connect(harmGain);
+
+    const gain = ctx.createGain();
+    const bellVol = 0.038;
+    gain.gain.setValueAtTime(0.0001, time);
+    gain.gain.linearRampToValueAtTime(bellVol, time + 0.015);
+    gain.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+
+    osc.connect(gain);
+    harmGain.connect(gain);
+    gain.connect(dest);
+
+    osc.start(time);
+    harmOsc.start(time);
+    osc.stop(time + dur);
+    harmOsc.stop(time + dur);
+  } catch (e) {}
+};
+
+const getMusicMasterGain = (ctx: AudioContext): GainNode => {
+  if (!musicMasterGain) {
+    musicMasterGain = ctx.createGain();
+    musicMasterGain.gain.setValueAtTime(customBgMusicVolume, ctx.currentTime);
+    musicMasterGain.connect(ctx.destination);
+  }
+  return musicMasterGain;
+};
+
+const stopProceduralSequencer = () => {
+  if (musicSchedulerTimer) {
+    clearTimeout(musicSchedulerTimer);
+    musicSchedulerTimer = null;
+  }
+  if (chiptuneTimeoutId) {
+    clearTimeout(chiptuneTimeoutId);
+    chiptuneTimeoutId = null;
+  }
+};
+
+const startC418MusicLoop = () => {
+  stopProceduralSequencer();
+  const ctx = initAudio();
+  if (!ctx || ctx.state === 'suspended' || currentMusicMode !== 'c418') return;
+
+  const masterGain = getMusicMasterGain(ctx);
+  const track = AMBIENT_TRACKS[currentTrackIndex % AMBIENT_TRACKS.length];
+  currentTrackName = track.name;
+
+  const startTime = ctx.currentTime + 0.1;
+
+  track.chords.forEach((chord) => {
+    const chordTime = startTime + chord.timeOffset;
+
+    chord.pianoNotes.forEach((midi, noteIdx) => {
+      const noteDelay = noteIdx * 0.038;
+      playPianoNote(ctx, masterGain, midi, chordTime + noteDelay, 0.75 - noteIdx * 0.05);
+    });
+
+    if (chord.padNotes && chord.padNotes.length > 0) {
+      playPadChord(ctx, masterGain, chord.padNotes, chordTime, 5.0);
+    }
+
+    if (chord.bassNote) {
+      playSubBass(ctx, masterGain, chord.bassNote, chordTime, 4.5);
+    }
+
+    if (chord.bellNotes) {
+      chord.bellNotes.forEach((bell) => {
+        playBellTone(ctx, masterGain, bell.note, startTime + bell.time);
+      });
+    }
+  });
+
+  const nextTrackDelayMs = (track.duration + track.pauseDuration) * 1000;
+  musicSchedulerTimer = setTimeout(() => {
+    if (currentMusicMode === 'c418') {
+      currentTrackIndex = (currentTrackIndex + 1) % AMBIENT_TRACKS.length;
+      startC418MusicLoop();
+    }
+  }, nextTrackDelayMs);
+};
+
+const startChiptuneSequencer = () => {
+  stopProceduralSequencer();
+  const ctx = initAudio();
+  if (!ctx || ctx.state === 'suspended' || currentMusicMode !== 'chiptune') return;
+
+  currentTrackName = "Retro Chiptune - Aventura Pixel 8-Bit";
+  chiptuneNextTime = ctx.currentTime + 0.1;
+  chiptuneStep = 0;
+
+  const scheduleLoop = () => {
+    if (currentMusicMode !== 'chiptune') return;
+    while (chiptuneNextTime < ctx.currentTime + 0.35) {
+      scheduleChiptuneStep(chiptuneStep, chiptuneNextTime, ctx);
+      chiptuneNextTime += CHIPTUNE_STEP_DURATION;
+      chiptuneStep = (chiptuneStep + 1) % 32;
+    }
+    chiptuneTimeoutId = setTimeout(scheduleLoop, 100);
+  };
+  scheduleLoop();
+};
+
+const scheduleChiptuneStep = (step: number, time: number, ctx: AudioContext) => {
+  if (currentMusicMode !== 'chiptune') return;
+  const masterGain = getMusicMasterGain(ctx);
+
+  const bassNotes = [
+    130.81, 130.81, 130.81, 130.81, 130.81, 130.81, 130.81, 130.81,
+    98.00,  98.00,  98.00,  98.00,  98.00,  98.00,  98.00,  98.00,
+    110.00, 110.00, 110.00, 110.00, 110.00, 110.00, 110.00, 110.00,
+    87.31,  87.31,  87.31,  87.31,  87.31,  87.31,  87.31,  87.31
+  ];
+
+  const melodyNotes = [
+    523.25, 659.25, 783.99, 1046.50, 783.99, 659.25, 523.25, 783.99,
+    493.88, 587.33, 783.99, 987.77,  783.99, 587.33, 493.88, 783.99,
+    440.00, 523.25, 659.25, 880.00,  659.25, 523.25, 440.00, 659.25,
+    349.23, 440.00, 523.25, 698.46,  523.25, 440.00, 349.23, 523.25
+  ];
+
+  if (step % 2 === 0 || step % 4 === 1) {
+    try {
+      const osc = ctx.createOscillator();
+      const filter = ctx.createBiquadFilter();
+      const gainNode = ctx.createGain();
+
+      osc.type = 'square';
+      let freq = melodyNotes[step];
+      osc.frequency.setValueAtTime(freq, time);
+
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(2200, time);
+
+      gainNode.gain.setValueAtTime(0.0001, time);
+      gainNode.gain.linearRampToValueAtTime(0.065, time + 0.015);
+      gainNode.gain.exponentialRampToValueAtTime(0.0001, time + 0.18);
+
+      osc.connect(filter);
+      filter.connect(gainNode);
+      gainNode.connect(masterGain);
+
+      osc.start(time);
+      osc.stop(time + 0.20);
+    } catch (e) {}
+  }
+
+  if (step % 2 === 0) {
+    try {
+      const bassOsc = ctx.createOscillator();
+      const bassGain = ctx.createGain();
+
+      bassOsc.type = 'triangle';
+      let bassFreq = bassNotes[step];
+      if (step % 4 === 2) bassFreq *= 2.0;
+
+      bassOsc.frequency.setValueAtTime(bassFreq, time);
+
+      bassGain.gain.setValueAtTime(0.0001, time);
+      bassGain.gain.linearRampToValueAtTime(0.12, time + 0.02);
+      bassGain.gain.exponentialRampToValueAtTime(0.0001, time + 0.22);
+
+      bassOsc.connect(bassGain);
+      bassGain.connect(masterGain);
+
+      bassOsc.start(time);
+      bassOsc.stop(time + 0.24);
+    } catch (e) {}
+  }
+};
+
+export const setMusicMode = (mode: MusicMode) => {
+  currentMusicMode = mode;
+
+  if (mode === 'soundtrack') {
+    stopProceduralSequencer();
+    if (customBgMusic) customBgMusic.pause();
+    isCustomMusicPlayingState = false;
+    syncSoundtrackPlayback(true);
+  } else if (mode === 'c418') {
+    stopSoundtrackAudio();
+    if (customBgMusic) customBgMusic.pause();
+    isCustomMusicPlayingState = false;
+    startC418MusicLoop();
+  } else if (mode === 'chiptune') {
+    stopSoundtrackAudio();
+    if (customBgMusic) customBgMusic.pause();
+    isCustomMusicPlayingState = false;
+    startChiptuneSequencer();
+  } else if (mode === 'custom') {
+    stopSoundtrackAudio();
+    stopProceduralSequencer();
+    if (customBgMusic) {
+      customBgMusic.play().catch(e => console.log("Custom audio play blocked:", e));
+      isCustomMusicPlayingState = true;
+    }
+  }
+};
+
+export const getCurrentMusicMode = (): MusicMode => currentMusicMode;
+
+export const getMusicTrackTitle = (): string => {
+  if (currentMusicMode === 'custom') {
+    return customMusicName ? `MP3: ${customMusicName}` : "Música Personalizada";
+  }
+  if (currentMusicMode === 'soundtrack') {
+    return getActiveSoundtrackEntry().title;
+  }
+  return currentTrackName;
+};
+
+export const skipToNextTrack = () => {
+  if (currentMusicMode === 'soundtrack') {
+    if (currentMusicScene === 'world') {
+      worldTrackIdx = (worldTrackIdx + 1) % WORLD_SOUNDTRACKS.length;
+      syncSoundtrackPlayback(true);
+    } else if (soundtrackAudio) {
+      soundtrackAudio.currentTime = 0;
+      syncSoundtrackPlayback(false);
+    }
+  } else if (currentMusicMode === 'c418') {
+    currentTrackIndex = (currentTrackIndex + 1) % AMBIENT_TRACKS.length;
+    startC418MusicLoop();
+  }
+};
+
+export const setUseProceduralMusic = (use: boolean) => {
+  if (use) {
+    setMusicMode('soundtrack');
+  } else {
+    setMusicMode('custom');
+  }
+};
+
+export const getUseProceduralMusic = () => currentMusicMode !== 'custom';
+
+export const setCustomBackgroundMusicFile = (file: File) => {
+  try {
+    stopSoundtrackAudio();
+    if (customBgMusic) {
+      customBgMusic.pause();
+      customBgMusic.src = "";
+    }
+    stopProceduralSequencer();
+    const url = URL.createObjectURL(file);
+    customBgMusic = new Audio(url);
+    customBgMusic.loop = true;
+    customBgMusic.volume = customBgMusicVolume;
+    customMusicName = file.name;
+    
+    currentMusicMode = 'custom';
+    isCustomMusicPlayingState = true;
+    
+    customBgMusic.play().catch(e => console.log("Custom audio autoplay blocked:", e));
+  } catch (err) {
+    console.error("Error setting custom background music file:", err);
+  }
+};
+
+export const playCustomBackgroundMusic = () => {
+  isCustomMusicPlayingState = true;
+  currentMusicMode = 'custom';
+  stopSoundtrackAudio();
+  stopProceduralSequencer();
+  if (customBgMusic) {
+    customBgMusic.play().catch(e => console.log("Custom audio play blocked:", e));
+  }
+};
+
+export const pauseCustomBackgroundMusic = () => {
+  isCustomMusicPlayingState = false;
+  if (customBgMusic) {
+    customBgMusic.pause();
+  }
+  stopProceduralSequencer();
+};
+
+export const setCustomBackgroundMusicVolume = (vol: number) => {
+  customBgMusicVolume = Math.max(0, Math.min(1, vol));
+  if (soundtrackAudio) {
+    soundtrackAudio.volume = customBgMusicVolume;
+  }
+  if (customBgMusic) {
+    customBgMusic.volume = customBgMusicVolume;
+  }
+  const ctx = initAudio();
+  if (musicMasterGain && ctx) {
+    musicMasterGain.gain.setValueAtTime(customBgMusicVolume, ctx.currentTime);
+  }
+};
+
+export const getCustomBackgroundMusicVolume = () => customBgMusicVolume;
+export const getCustomMusicName = () => customMusicName;
+export const isCustomMusicPlaying = () => isCustomMusicPlayingState;
+export const isCustomMusicLoaded = () => customBgMusic !== null;
+
+export const playBackgroundMusic = () => {
+  if (currentMusicMode === 'soundtrack') {
+    bgMusicStarted = true;
+    ensureSoundtrackPlaying();
+    return;
+  }
+  const ctx = initAudio();
+  if (!ctx || bgMusicStarted) return;
+  bgMusicStarted = true;
+
+  if (currentMusicMode === 'c418') {
+    startC418MusicLoop();
+  } else if (currentMusicMode === 'chiptune') {
+    startChiptuneSequencer();
+  } else if (currentMusicMode === 'custom' && customBgMusic) {
+    customBgMusic.play().catch(e => console.log("Custom audio play blocked:", e));
+  }
 };
 
 export const playSleepSound = () => {
@@ -778,6 +1508,39 @@ export const playSleepSound = () => {
 
   osc.start();
   osc.stop(ctx.currentTime + 2.0);
+};
+
+export const playAttackSwingSound = () => {
+  try {
+    const ctx = initAudio();
+    if (ctx.state === 'suspended') return;
+    const now = ctx.currentTime;
+
+    const bufferSize = Math.floor(ctx.sampleRate * 0.12);
+    const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < bufferSize; i++) {
+      data[i] = Math.random() * 2 - 1;
+    }
+    const noise = ctx.createBufferSource();
+    noise.buffer = buffer;
+
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.setValueAtTime(800, now);
+    filter.frequency.exponentialRampToValueAtTime(220, now + 0.12);
+
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.2, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+
+    noise.connect(filter);
+    filter.connect(gain);
+    gain.connect(ctx.destination);
+
+    noise.start(now);
+    noise.stop(now + 0.12);
+  } catch (e) {}
 };
 
 export const playHurtSound = () => {

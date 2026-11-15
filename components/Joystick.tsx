@@ -1,5 +1,4 @@
-
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 
 interface JoystickProps {
   onMove: (vector: { x: number; y: number }) => void;
@@ -7,92 +6,228 @@ interface JoystickProps {
   size?: number;
 }
 
-const Joystick: React.FC<JoystickProps> = ({ onMove, onEnd, size = 160 }) => {
-  const [position, setPosition] = useState({ x: 0, y: 0 });
+const Joystick: React.FC<JoystickProps> = ({ onMove, onEnd, size = 140 }) => {
   const [isActive, setIsActive] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const thumbRef = useRef<HTMLDivElement>(null);
+  const activePointerIdRef = useRef<number | null>(null);
+  const centerRef = useRef<{ cx: number; cy: number; maxRadius: number }>({
+    cx: 0,
+    cy: 0,
+    maxRadius: Math.max(20, size / 2 - 15),
+  });
+  const lastSentRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const onMoveRef = useRef(onMove);
+  const onEndRef = useRef(onEnd);
+  onMoveRef.current = onMove;
+  onEndRef.current = onEnd;
 
-  const handleTouch = (e: React.TouchEvent | React.MouseEvent) => {
-    // Prevent the touch from bubbling up to the camera rotation handlers
-    e.stopPropagation();
-    
-    if (!containerRef.current) return;
-    
-    const rect = containerRef.current.getBoundingClientRect();
-    const centerX = rect.width / 2;
-    const centerY = rect.height / 2;
-    
-    const clientX = 'touches' in e ? e.targetTouches[0].clientX : (e as React.MouseEvent).clientX;
-    const clientY = 'touches' in e ? e.targetTouches[0].clientY : (e as React.MouseEvent).clientY;
-    
-    const relX = clientX - rect.left - centerX;
-    const relY = clientY - rect.top - centerY;
-    
-    const distance = Math.sqrt(relX * relX + relY * relY);
-    const maxRadius = size / 2 - 20;
-    
+  const setThumbTransform = useCallback((x: number, y: number) => {
+    if (thumbRef.current) {
+      thumbRef.current.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+    }
+  }, []);
+
+  const updatePosition = useCallback((clientX: number, clientY: number) => {
+    const { cx, cy, maxRadius } = centerRef.current;
+    const relX = clientX - cx;
+    const relY = clientY - cy;
+    const distance = Math.hypot(relX, relY);
+
     let moveX = relX;
     let moveY = relY;
-    
-    if (distance > maxRadius) {
-      moveX = (relX / distance) * maxRadius;
-      moveY = (relY / distance) * maxRadius;
+
+    if (distance > maxRadius && distance > 0.0001) {
+      const scale = maxRadius / distance;
+      moveX = relX * scale;
+      moveY = relY * scale;
     }
-    
-    setPosition({ x: moveX, y: moveY });
-    onMove({ x: moveX / maxRadius, y: -moveY / maxRadius });
-  };
 
-  const handleStart = (e: React.TouchEvent | React.MouseEvent) => {
-    e.stopPropagation();
-    setIsActive(true);
-    handleTouch(e);
-  };
+    const normalizedDist = Math.min(1, distance / maxRadius);
+    if (normalizedDist < 0.08) {
+      setThumbTransform(0, 0);
+      if (lastSentRef.current.x !== 0 || lastSentRef.current.y !== 0) {
+        lastSentRef.current = { x: 0, y: 0 };
+        onMoveRef.current({ x: 0, y: 0 });
+      }
+      return;
+    }
 
-  const handleEnd = (e: React.TouchEvent | React.MouseEvent) => {
-    e.stopPropagation();
+    setThumbTransform(moveX, moveY);
+
+    const nx = Math.round((moveX / maxRadius) * 100) / 100;
+    const ny = Math.round((-moveY / maxRadius) * 100) / 100;
+    if (
+      Math.abs(nx - lastSentRef.current.x) >= 0.015 ||
+      Math.abs(ny - lastSentRef.current.y) >= 0.015
+    ) {
+      lastSentRef.current = { x: nx, y: ny };
+      onMoveRef.current({ x: nx, y: ny });
+    }
+  }, [setThumbTransform]);
+
+  const resetStick = useCallback(() => {
+    if (activePointerIdRef.current === null && lastSentRef.current.x === 0 && lastSentRef.current.y === 0) {
+      return;
+    }
+    const ptrId = activePointerIdRef.current;
+    activePointerIdRef.current = null;
+    if (ptrId !== null && containerRef.current) {
+      try {
+        if (containerRef.current.hasPointerCapture(ptrId)) {
+          containerRef.current.releasePointerCapture(ptrId);
+        }
+      } catch {
+        // Ignore if pointer already released
+      }
+    }
     setIsActive(false);
-    setPosition({ x: 0, y: 0 });
-    onEnd();
+    setThumbTransform(0, 0);
+    lastSentRef.current = { x: 0, y: 0 };
+    onEndRef.current();
+  }, [setThumbTransform]);
+
+  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    // Ignore secondary touches while the joystick already owns an active pointer
+    if (activePointerIdRef.current !== null) return;
+    if (!containerRef.current) return;
+
+    const rect = containerRef.current.getBoundingClientRect();
+    centerRef.current = {
+      cx: rect.left + rect.width / 2,
+      cy: rect.top + rect.height / 2,
+      maxRadius: Math.max(20, rect.width / 2 - 15),
+    };
+
+    activePointerIdRef.current = e.pointerId;
+    try {
+      containerRef.current.setPointerCapture(e.pointerId);
+    } catch {
+      // Window listeners below act as fallback when pointer capture isn't supported
+    }
+
+    setIsActive(true);
+    updatePosition(e.clientX, e.clientY);
+  };
+
+  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.stopPropagation();
+    if (activePointerIdRef.current !== e.pointerId) return;
+    e.preventDefault();
+    updatePosition(e.clientX, e.clientY);
+  };
+
+  const handlePointerUpOrCancel = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.stopPropagation();
+    if (activePointerIdRef.current !== e.pointerId) return;
+    e.preventDefault();
+    resetStick();
   };
 
   useEffect(() => {
-    if (isActive) {
-      const moveHandler = (e: MouseEvent) => {
-          // Note: for global moves we don't always want stopPropagation 
-          // but since this is attached to window when active, it's fine
-          handleTouch(e as unknown as React.MouseEvent);
-      };
-      const endHandler = (e: MouseEvent) => handleEnd(e as unknown as React.MouseEvent);
-      window.addEventListener('mousemove', moveHandler);
-      window.addEventListener('mouseup', endHandler);
-      return () => {
-        window.removeEventListener('mousemove', moveHandler);
-        window.removeEventListener('mouseup', endHandler);
-      };
-    }
-  }, [isActive]);
+    if (!isActive) return;
+
+    const handleWindowPointerMove = (e: PointerEvent) => {
+      if (activePointerIdRef.current !== e.pointerId) return;
+      updatePosition(e.clientX, e.clientY);
+    };
+
+    const handleWindowPointerEnd = (e: PointerEvent) => {
+      if (activePointerIdRef.current !== e.pointerId) return;
+      resetStick();
+    };
+
+    const handleVisibilityOrBlur = () => {
+      resetStick();
+    };
+
+    window.addEventListener('pointermove', handleWindowPointerMove, { passive: true });
+    window.addEventListener('pointerup', handleWindowPointerEnd);
+    window.addEventListener('pointercancel', handleWindowPointerEnd);
+    window.addEventListener('blur', handleVisibilityOrBlur);
+    document.addEventListener('visibilitychange', handleVisibilityOrBlur);
+
+    return () => {
+      window.removeEventListener('pointermove', handleWindowPointerMove);
+      window.removeEventListener('pointerup', handleWindowPointerEnd);
+      window.removeEventListener('pointercancel', handleWindowPointerEnd);
+      window.removeEventListener('blur', handleVisibilityOrBlur);
+      document.removeEventListener('visibilitychange', handleVisibilityOrBlur);
+    };
+  }, [isActive, updatePosition, resetStick]);
+
+  useEffect(() => {
+    return () => {
+      activePointerIdRef.current = null;
+      lastSentRef.current = { x: 0, y: 0 };
+      onEndRef.current();
+    };
+  }, []);
+
+  const stopBubble = (e: React.SyntheticEvent) => {
+    e.stopPropagation();
+  };
 
   return (
-    <div 
+    <div
       ref={containerRef}
-      onMouseDown={handleStart}
-      onTouchStart={handleStart}
-      onTouchMove={handleTouch}
-      onTouchEnd={handleEnd}
-      className="bg-black/30 rounded-full border-4 border-white/20 flex items-center justify-center relative touch-none shadow-inner"
-      style={{ width: `${size}px`, height: `${size}px` }}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUpOrCancel}
+      onPointerCancel={handlePointerUpOrCancel}
+      onLostPointerCapture={handlePointerUpOrCancel}
+      onTouchStart={stopBubble}
+      onTouchMove={stopBubble}
+      onTouchEnd={stopBubble}
+      onTouchCancel={stopBubble}
+      onMouseDown={stopBubble}
+      onMouseMove={stopBubble}
+      onMouseUp={stopBubble}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      }}
+      className={`rounded-full border-2 flex items-center justify-center relative touch-none select-none transition-colors duration-100 ${
+        isActive
+          ? 'bg-black/60 border-emerald-400 shadow-[0_0_20px_rgba(16,185,129,0.3)]'
+          : 'bg-black/40 backdrop-blur-md border-white/20 shadow-lg'
+      }`}
+      style={{ width: `${size}px`, height: `${size}px`, touchAction: 'none', WebkitUserSelect: 'none' }}
     >
-      <div 
-        className="bg-white/50 rounded-full shadow-lg pointer-events-none transition-transform duration-75"
-        style={{ 
-          width: `${size * 0.4}px`, 
-          height: `${size * 0.4}px`,
-          transform: `translate(${position.x}px, ${position.y}px)` 
-        }}
+      {/* Direction Cross Indicators */}
+      <span className="absolute top-1 text-white/30 text-[9px] font-bold pointer-events-none">▲</span>
+      <span className="absolute bottom-1 text-white/30 text-[9px] font-bold pointer-events-none">▼</span>
+      <span className="absolute left-1.5 text-white/30 text-[9px] font-bold pointer-events-none">◀</span>
+      <span className="absolute right-1.5 text-white/30 text-[9px] font-bold pointer-events-none">▶</span>
+
+      {/* Outer tracking ring */}
+      <div
+        className="rounded-full border border-white/10 pointer-events-none absolute"
+        style={{ width: `${size * 0.75}px`, height: `${size * 0.75}px` }}
       />
+
+      {/* Stick Thumb Puck */}
+      <div
+        ref={thumbRef}
+        className={`rounded-full pointer-events-none flex items-center justify-center border will-change-transform ${
+          isActive
+            ? 'bg-gradient-to-b from-emerald-400 to-teal-500 border-emerald-300 shadow-[0_0_15px_rgba(52,211,153,0.8)]'
+            : 'bg-white/40 border-white/60 shadow-md transition-transform duration-150 ease-out'
+        }`}
+        style={{
+          width: `${size * 0.42}px`,
+          height: `${size * 0.42}px`,
+          transform: 'translate3d(0px, 0px, 0)',
+        }}
+      >
+        <div className={`w-3.5 h-3.5 rounded-full ${isActive ? 'bg-white/80' : 'bg-white/40'}`} />
+      </div>
     </div>
   );
 };
 
 export default Joystick;
+

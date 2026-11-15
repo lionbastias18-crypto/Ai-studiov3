@@ -17,9 +17,14 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
     function isLion() {
       return isSignedIn() && 
              'email' in request.auth.token && 
+             request.auth.token.email_verified == true &&
              request.auth.token.email == "lionbastias18@gmail.com";
     }
 
@@ -53,11 +58,37 @@ service cloud.firestore {
              (!('blocksBroken' in data) || data.blocksBroken is number) &&
              (!('worldsCreated' in data) || data.worldsCreated is number) &&
              (!('score' in data) || data.score is number) &&
-             (!('displayName' in data) || data.displayName is string) &&
+             (!('displayName' in data) || (data.displayName is string && data.displayName.size() <= 128)) &&
              (!('lastActive' in data) || data.lastActive is number) &&
              (!('vipActive' in data) || data.vipActive is bool) &&
+             (!('mvpActive' in data) || data.mvpActive is bool) &&
              (!('unlockedWorldsPass' in data) || data.unlockedWorldsPass is bool) &&
-             (!('goldCoins' in data) || data.goldCoins is number);
+             (!('goldCoins' in data) || data.goldCoins is number) &&
+             (!('indefCoins' in data) || (data.indefCoins is number && data.indefCoins >= 0)) &&
+             (!('ownedShopItems' in data) || (data.ownedShopItems is list && data.ownedShopItems.size() <= 100)) &&
+             (!('characterSkin' in data) || (data.characterSkin is string && data.characterSkin.size() <= 64)) &&
+             (!('customSkin' in data) || data.customSkin is map);
+    }
+
+    // Validates a UserPurchase / Gift document
+    function isValidUserPurchase(data) {
+      return data.id is string &&
+             data.id.size() <= 128 &&
+             data.email is string &&
+             data.email.size() <= 128 &&
+             data.productId is string &&
+             data.productId.size() <= 64 &&
+             data.productName is string &&
+             data.productName.size() <= 128 &&
+             data.price is number &&
+             data.price >= 0 &&
+             data.timestamp is number &&
+             (!('currency' in data) || (data.currency is string && data.currency.size() <= 16)) &&
+             (!('paymentMethod' in data) || (data.paymentMethod is string && data.paymentMethod.size() <= 64)) &&
+             (!('indefAmount' in data) || (data.indefAmount is number && data.indefAmount >= 0)) &&
+             (!('status' in data) || (data.status is string && data.status.size() <= 32)) &&
+             (!('giftedBy' in data) || (data.giftedBy is string && data.giftedBy.size() <= 128)) &&
+             (!('giftNote' in data) || (data.giftNote is string && data.giftNote.size() <= 200));
     }
 
     // Validates an ActivityLog document
@@ -83,7 +114,26 @@ service cloud.firestore {
              data.name.size() <= 128 &&
              data.pos is map &&
              data.lastActive is number &&
+             (!('yaw' in data) || data.yaw is number) &&
+             (!('pitch' in data) || data.pitch is number) &&
+             (!('skinId' in data) || data.skinId is string) &&
+             (!('customSkin' in data) || data.customSkin is map) &&
+             (!('heldBlock' in data) || data.heldBlock is number) &&
+             (!('attackSeq' in data) || data.attackSeq is number) &&
              (!('dimension' in data) || data.dimension is string);
+    }
+
+    // Validates a WorldMessage chat document
+    function isValidWorldMessage(data) {
+      return data.id is string &&
+             data.id.size() <= 128 &&
+             data.senderId is string &&
+             data.senderId.size() <= 128 &&
+             data.senderName is string &&
+             data.senderName.size() <= 128 &&
+             data.text is string &&
+             data.text.size() <= 500 &&
+             data.timestamp is number;
     }
 
     // Validates a World document
@@ -94,20 +144,23 @@ service cloud.firestore {
              data.name.size() <= 128 &&
              data.creator is string &&
              data.creator.size() <= 128 &&
+             (!('creatorName' in data) || data.creatorName is string) &&
              data.createdAt is number &&
              data.gameMode is string &&
-             (data.gameMode == "creative" || data.gameMode == "survival" || data.gameMode == "adventure") &&
+             (data.gameMode == "creative" || data.gameMode == "survival" || data.gameMode == "adventure" || data.gameMode == "spectator") &&
              data.worldType is string &&
              (data.worldType == "flat" || data.worldType == "normal" || data.worldType == "edge_farlands") &&
              (!('playerPos' in data) || data.playerPos is map) &&
-             (!('edits' in data) || data.edits is map);
+             (!('edits' in data) || data.edits is map) &&
+             (!('survivalInventory' in data) || data.survivalInventory is map);
     }
 
     // --- Collections ---
 
     match /user_roles/{email} {
       allow read: if isSignedIn();
-      allow create, update: if isLion() || (isSignedIn() && 'email' in request.auth.token && request.auth.token.email == email && isValidUserRole(incoming()));
+      allow create, update: if (isLion() && isValidUserRole(incoming())) ||
+        (isSignedIn() && request.auth.token.email_verified == true && 'email' in request.auth.token && request.auth.token.email == email && isValidUserRole(incoming()));
       allow delete: if isLion();
     }
 
@@ -123,6 +176,12 @@ service cloud.firestore {
       match /players/{userId} {
         allow read, create, update, delete: if true;
       }
+
+      match /messages/{messageId} {
+        allow read: if true;
+        allow create, update: if isValidWorldMessage(incoming());
+        allow delete: if isLion();
+      }
     }
 
     match /friendships/{friendshipId} {
@@ -134,8 +193,11 @@ service cloud.firestore {
     }
 
     match /user_purchases/{purchaseId} {
-      allow read: if isSignedIn();
-      allow create: if isSignedIn();
+      allow read: if isSignedIn() && (isLion() || ('email' in request.auth.token && resource.data.email == request.auth.token.email));
+      allow create: if isSignedIn() && isValidId(purchaseId) && isValidUserPurchase(incoming()) && (
+        isLion() ||
+        ('email' in request.auth.token && request.auth.token.email_verified == true && incoming().email == request.auth.token.email && !('giftedBy' in incoming()))
+      );
       allow update, delete: if isLion();
     }
   }

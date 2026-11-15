@@ -73,13 +73,33 @@
           "type": "boolean",
           "description": "Is VIP active"
         },
+        "mvpActive": {
+          "type": "boolean",
+          "description": "Is MVP+ Supremo active"
+        },
         "unlockedWorldsPass": {
           "type": "boolean",
           "description": "Bypasses normal limits"
         },
         "goldCoins": {
           "type": "number",
-          "description": "Amount of purchased gold coins"
+          "description": "Legacy coin balance"
+        },
+        "indefCoins": {
+          "type": "number",
+          "description": "Indef (Minecoin) balance"
+        },
+        "ownedShopItems": {
+          "type": "array",
+          "description": "List of purchased VIP shop item IDs"
+        },
+        "characterSkin": {
+          "type": "string",
+          "description": "Selected character skin ID"
+        },
+        "customSkin": {
+          "type": "object",
+          "description": "Custom 3D character configuration"
         }
       },
       "required": ["email", "role"]
@@ -107,11 +127,25 @@
         "currency": {
           "type": "string"
         },
+        "paymentMethod": {
+          "type": "string"
+        },
+        "indefAmount": {
+          "type": "number"
+        },
         "timestamp": {
           "type": "number"
         },
         "status": {
           "type": "string"
+        },
+        "giftedBy": {
+          "type": "string",
+          "description": "Email of the owner who gifted this item, if gifted"
+        },
+        "giftNote": {
+          "type": "string",
+          "description": "Optional personalized message from the owner"
         }
       },
       "required": ["id", "email", "productId", "price", "timestamp"]
@@ -165,6 +199,30 @@
           "type": "object",
           "description": "Position vector {x, y, z}"
         },
+        "yaw": {
+          "type": "number",
+          "description": "Horizontal look rotation in radians"
+        },
+        "pitch": {
+          "type": "number",
+          "description": "Vertical look pitch in radians"
+        },
+        "skinId": {
+          "type": "string",
+          "description": "Selected 3D character skin preset ID"
+        },
+        "customSkin": {
+          "type": "object",
+          "description": "Custom 3D character appearance object"
+        },
+        "heldBlock": {
+          "type": "number",
+          "description": "Block or tool type currently held in hand"
+        },
+        "attackSeq": {
+          "type": "number",
+          "description": "Monotonic counter triggered on melee swing"
+        },
         "lastActive": {
           "type": "number",
           "description": "Heartbeat timestamp"
@@ -175,6 +233,34 @@
         }
       },
       "required": ["id", "email", "name", "pos", "lastActive"]
+    },
+    "WorldMessage": {
+      "title": "WorldMessage",
+      "description": "Real-time multiplayer chat message inside a world",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique message identifier"
+        },
+        "senderId": {
+          "type": "string",
+          "description": "Sender UID or guest session ID"
+        },
+        "senderName": {
+          "type": "string",
+          "description": "Display name of sender"
+        },
+        "text": {
+          "type": "string",
+          "description": "Chat message content"
+        },
+        "timestamp": {
+          "type": "number",
+          "description": "Unix timestamp in milliseconds"
+        }
+      },
+      "required": ["id", "senderId", "senderName", "text", "timestamp"]
     }
   },
   "firestore": {
@@ -193,6 +279,10 @@
     "/worlds/{worldId}/players/{userId}": {
       "schema": "ActivePlayer",
       "description": "Subcollection tracking active multiplayer connections"
+    },
+    "/worlds/{worldId}/messages/{messageId}": {
+      "schema": "WorldMessage",
+      "description": "Subcollection storing real-time multiplayer chat messages for a world"
     },
     "/user_purchases/{purchaseId}": {
       "schema": "UserPurchase",

@@ -63,7 +63,49 @@ export enum BlockType {
   WARPED_NYLIUM = 60,
   PORTAL = 61,
   MOSS = 62,
-  VINES = 63
+  VINES = 63,
+  CUSHION = 64,
+  WOOL = 65,
+  WOOL_STAIRS = 66,
+  CONCRETE = 67,
+  CONCRETE_STAIRS = 68,
+  GRAVEL = 69,
+  FIRE = 70,
+  FLINT_AND_STEEL = 71,
+  MAP = 72,
+  LOCATOR_MAP = 73,
+  REDSTONE = 74,
+  SUGAR_CANE = 75,
+  PAPER = 76,
+  SUGAR = 77,
+  CARTOGRAPHY_TABLE = 78,
+  FURNACE = 79,
+  BAMBOO = 80,
+  CHEST = 81,
+  FROG_EGGS = 82,
+  CHICKEN_EGG = 83,
+  CHERRY_LOG = 84,
+  CHERRY_LEAVES = 85,
+  CHERRY_WOOD = 86,
+  DARK_LOG = 87,
+  DARK_LEAVES = 88,
+  DARK_GRASS = 89,
+  WOOD_SWORD = 90,
+  WOOD_PICKAXE = 91,
+  WOOD_SHOVEL = 92,
+  STONE_SWORD = 93,
+  STONE_AXE = 94,
+  IRON_PICKAXE = 95,
+  IRON_AXE = 96,
+  IRON_SHOVEL = 97,
+  GOLD_SWORD = 98,
+  GOLD_PICKAXE = 99,
+  GOLD_AXE = 100,
+  GOLD_SHOVEL = 101,
+  DIAMOND_SWORD = 102,
+  DIAMOND_PICKAXE = 103,
+  DIAMOND_AXE = 104,
+  DIAMOND_SHOVEL = 105
 }
 
 export enum EntityType {
@@ -75,7 +117,15 @@ export enum EntityType {
   ARROW = 'ARROW',
   VILLAGER = 'VILLAGER',
   HOGLIN = 'HOGLIN',
-  CAT = 'CAT'
+  CAT = 'CAT',
+  IRON_GOLEM = 'IRON_GOLEM',
+  ZOMBIFIED_PIGLIN = 'ZOMBIFIED_PIGLIN',
+  ENDERMAN = 'ENDERMAN',
+  SNOW_SKELETON = 'SNOW_SKELETON',
+  SWAMP_SKELETON = 'SWAMP_SKELETON',
+  WOLF = 'WOLF',
+  FROG = 'FROG',
+  CHICKEN = 'CHICKEN'
 }
 
 export interface EntityData {
@@ -110,4 +160,88 @@ export interface GeminiSuggestion {
   title: string;
   description: string;
   steps: string[];
+}
+
+export interface NoiseConfig {
+  simplex3DEnabled: boolean;
+  simplex3DThreshold: number;
+  simplex3DScaleX: number;
+  simplex3DScaleY: number;
+  simplex3DScaleZ: number;
+
+  ridgedEnabled: boolean;
+  ridgedFreq: number;
+  ridgedAmp: number;
+  ridgedWeight: number;
+
+  fbmEnabled: boolean;
+  fbmOctaves: number;
+  fbmFreq: number;
+  fbmAmp: number;
+  fbmLacunarity: number;
+  fbmGain: number;
+
+  tempEnabled: boolean;
+  tempFreq: number;
+}
+
+export interface PerformanceConfig {
+  renderDistance: number;
+  simulationDistance: number;
+  maxConcurrentChunks: number;
+  lightingQuality: 'high' | 'low';
+  particlesEnabled: boolean;
+  maxEntities: number;
+  effectsQuality: 'high' | 'low';
+}
+
+export type CharacterSkinId =
+  | 'cyber'
+  | 'knight'
+  | 'explorer'
+  | 'mage'
+  | 'classic'
+  | 'shadow'
+  | 'dragon'
+  | 'angel'
+  | 'titan'
+  | 'poseidon'
+  | 'obsidian'
+  | 'custom';
+
+export interface CustomCharacterConfig {
+  skin: string;
+  hair: string;
+  eyes: string;
+  shirt: string;
+  shirtAccent: string;
+  pants: string;
+  shoes: string;
+  sole: string;
+  accent: string;
+  gear: 'headphones' | 'crown' | 'goggles' | 'hood' | 'none' | 'headband';
+  backGear: 'backpack' | 'cape' | 'satchel' | 'sheath' | 'none';
+  capeColor: string;
+}
+
+export interface ActivePlayerInfo {
+  id: string;
+  name: string;
+  pos: Vector3D;
+  yaw?: number;
+  pitch?: number;
+  skinId?: CharacterSkinId;
+  customSkin?: CustomCharacterConfig;
+  heldBlock?: BlockType;
+  attackSeq?: number;
+  dimension: string;
+}
+
+export type AICompanionMode = 'follow' | 'gather' | 'build' | 'guard' | 'explore' | 'stay';
+
+export interface AICompanionConfig {
+  enabled: boolean;
+  name: string;
+  skinId: CharacterSkinId;
+  mode: AICompanionMode;
 }

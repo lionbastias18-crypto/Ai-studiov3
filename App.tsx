@@ -1,11 +1,34 @@
-import React, { useState, useCallback, useRef, useEffect } from "react";
-import VoxelWorld from "./components/VoxelWorld";
+import React, { useState, useCallback, useRef, useEffect, useMemo } from "react";
+import VoxelWorld, { DEFAULT_NOISE_CONFIG } from "./components/VoxelWorld";
 import Joystick from "./components/Joystick";
 import { FpsCounter } from "./components/FpsCounter";
-import { BlockType, ToolType, Vector3D, GeminiSuggestion } from "./types";
+import { MenuPanorama3D } from "./components/MenuPanorama3D";
+import { BlockType, ToolType, Vector3D, GeminiSuggestion, NoiseConfig, PerformanceConfig, CharacterSkinId, CustomCharacterConfig, ActivePlayerInfo, AICompanionConfig, AICompanionMode } from "./types";
+import { CharacterModel, CHARACTER_SKINS, DEFAULT_CUSTOM_SKIN } from "./components/CharacterModel";
+import { CharacterPreviewCard } from "./components/CharacterPreviewCard";
 import { BLOCK_NAMES, BLOCK_COLORS } from "./constants";
-import { getBuildingSuggestion } from "./services/geminiService";
-import { resumeAudio } from "./services/audioService";
+import { getBuildingSuggestion, askAICompanion, AICompanionChatAction } from "./services/geminiService";
+import {
+  resumeAudio,
+  setUseProceduralMusic,
+  getUseProceduralMusic,
+  setCustomBackgroundMusicFile,
+  playCustomBackgroundMusic,
+  pauseCustomBackgroundMusic,
+  setCustomBackgroundMusicVolume,
+  getCustomBackgroundMusicVolume,
+  getCustomMusicName,
+  isCustomMusicPlaying,
+  isCustomMusicLoaded,
+  setMusicMode,
+  setMusicContext,
+  getCurrentMusicMode,
+  getMusicTrackTitle,
+  skipToNextTrack,
+  MusicMode,
+  playAttackSwingSound,
+  playPlaceSound
+} from "./services/audioService";
 import { dict, Language } from "./dictionary";
 import { useGameState, gameState } from "./store";
 import {
@@ -52,16 +75,19 @@ interface CraftingRecipe {
   resultCount: number;
   ingredients: { type: BlockType; count: number }[];
   requiresCraftingTable: boolean;
+  category: "tools" | "utility" | "building";
   name: string;
 }
 
 const CRAFTING_RECIPES: CraftingRecipe[] = [
+  // --- BÁSICOS Y ANTORCHAS ---
   {
     id: "wood_planks",
     result: BlockType.WOOD,
     resultCount: 4,
     ingredients: [{ type: BlockType.LOG, count: 1 }],
     requiresCraftingTable: false,
+    category: "building",
     name: "Tablones de Madera",
   },
   {
@@ -70,7 +96,32 @@ const CRAFTING_RECIPES: CraftingRecipe[] = [
     resultCount: 1,
     ingredients: [{ type: BlockType.WOOD, count: 4 }],
     requiresCraftingTable: false,
+    category: "utility",
     name: "Mesa de Crafteo",
+  },
+  {
+    id: "coal_torches",
+    result: BlockType.TORCH,
+    resultCount: 4,
+    ingredients: [
+      { type: BlockType.WOOD, count: 1 },
+      { type: BlockType.COAL_ORE, count: 1 }
+    ],
+    requiresCraftingTable: false,
+    category: "utility",
+    name: "Antorchas de Carbón",
+  },
+  {
+    id: "wood_torches",
+    result: BlockType.TORCH,
+    resultCount: 2,
+    ingredients: [
+      { type: BlockType.WOOD, count: 1 },
+      { type: BlockType.LOG, count: 1 }
+    ],
+    requiresCraftingTable: false,
+    category: "utility",
+    name: "Antorchas de Carbón Vegetal",
   },
   {
     id: "torches",
@@ -81,7 +132,8 @@ const CRAFTING_RECIPES: CraftingRecipe[] = [
       { type: BlockType.MUSHROOM_BROWN, count: 1 }
     ],
     requiresCraftingTable: false,
-    name: "Antorchas",
+    category: "utility",
+    name: "Antorchas de Champiñón",
   },
   {
     id: "sulfur_torches",
@@ -92,8 +144,249 @@ const CRAFTING_RECIPES: CraftingRecipe[] = [
       { type: BlockType.SULFUR, count: 1 }
     ],
     requiresCraftingTable: false,
+    category: "utility",
     name: "Antorchas de Azufre Súper",
   },
+
+  // --- HERRAMIENTAS Y ARMAS: MADERA ---
+  {
+    id: "wood_sword",
+    result: BlockType.WOOD_SWORD,
+    resultCount: 1,
+    ingredients: [{ type: BlockType.WOOD, count: 3 }],
+    requiresCraftingTable: true,
+    category: "tools",
+    name: "Espada de Madera",
+  },
+  {
+    id: "wood_pickaxe",
+    result: BlockType.WOOD_PICKAXE,
+    resultCount: 1,
+    ingredients: [{ type: BlockType.WOOD, count: 5 }],
+    requiresCraftingTable: true,
+    category: "tools",
+    name: "Pico de Madera",
+  },
+  {
+    id: "axe",
+    result: BlockType.AXE,
+    resultCount: 1,
+    ingredients: [{ type: BlockType.WOOD, count: 4 }],
+    requiresCraftingTable: true,
+    category: "tools",
+    name: "Hacha de Madera",
+  },
+  {
+    id: "wood_shovel",
+    result: BlockType.WOOD_SHOVEL,
+    resultCount: 1,
+    ingredients: [{ type: BlockType.WOOD, count: 2 }],
+    requiresCraftingTable: true,
+    category: "tools",
+    name: "Pala de Madera",
+  },
+
+  // --- HERRAMIENTAS Y ARMAS: PIEDRA ---
+  {
+    id: "stone_sword",
+    result: BlockType.STONE_SWORD,
+    resultCount: 1,
+    ingredients: [
+      { type: BlockType.STONE, count: 2 },
+      { type: BlockType.WOOD, count: 1 }
+    ],
+    requiresCraftingTable: true,
+    category: "tools",
+    name: "Espada de Piedra",
+  },
+  {
+    id: "pickaxe",
+    result: BlockType.PICKAXE,
+    resultCount: 1,
+    ingredients: [
+      { type: BlockType.STONE, count: 3 },
+      { type: BlockType.WOOD, count: 2 }
+    ],
+    requiresCraftingTable: true,
+    category: "tools",
+    name: "Pico de Piedra",
+  },
+  {
+    id: "stone_axe",
+    result: BlockType.STONE_AXE,
+    resultCount: 1,
+    ingredients: [
+      { type: BlockType.STONE, count: 3 },
+      { type: BlockType.WOOD, count: 1 }
+    ],
+    requiresCraftingTable: true,
+    category: "tools",
+    name: "Hacha de Piedra",
+  },
+  {
+    id: "shovel",
+    result: BlockType.SHOVEL,
+    resultCount: 1,
+    ingredients: [
+      { type: BlockType.STONE, count: 1 },
+      { type: BlockType.WOOD, count: 2 }
+    ],
+    requiresCraftingTable: true,
+    category: "tools",
+    name: "Pala de Piedra",
+  },
+
+  // --- HERRAMIENTAS Y ARMAS: HIERRO ---
+  {
+    id: "sword",
+    result: BlockType.SWORD,
+    resultCount: 1,
+    ingredients: [
+      { type: BlockType.IRON_ORE, count: 2 },
+      { type: BlockType.WOOD, count: 1 }
+    ],
+    requiresCraftingTable: true,
+    category: "tools",
+    name: "Espada de Hierro",
+  },
+  {
+    id: "iron_pickaxe",
+    result: BlockType.IRON_PICKAXE,
+    resultCount: 1,
+    ingredients: [
+      { type: BlockType.IRON_ORE, count: 3 },
+      { type: BlockType.WOOD, count: 2 }
+    ],
+    requiresCraftingTable: true,
+    category: "tools",
+    name: "Pico de Hierro",
+  },
+  {
+    id: "iron_axe",
+    result: BlockType.IRON_AXE,
+    resultCount: 1,
+    ingredients: [
+      { type: BlockType.IRON_ORE, count: 3 },
+      { type: BlockType.WOOD, count: 1 }
+    ],
+    requiresCraftingTable: true,
+    category: "tools",
+    name: "Hacha de Hierro",
+  },
+  {
+    id: "iron_shovel",
+    result: BlockType.IRON_SHOVEL,
+    resultCount: 1,
+    ingredients: [
+      { type: BlockType.IRON_ORE, count: 1 },
+      { type: BlockType.WOOD, count: 2 }
+    ],
+    requiresCraftingTable: true,
+    category: "tools",
+    name: "Pala de Hierro",
+  },
+
+  // --- HERRAMIENTAS Y ARMAS: ORO ---
+  {
+    id: "gold_sword",
+    result: BlockType.GOLD_SWORD,
+    resultCount: 1,
+    ingredients: [
+      { type: BlockType.GOLD_ORE, count: 2 },
+      { type: BlockType.WOOD, count: 1 }
+    ],
+    requiresCraftingTable: true,
+    category: "tools",
+    name: "Espada de Oro",
+  },
+  {
+    id: "gold_pickaxe",
+    result: BlockType.GOLD_PICKAXE,
+    resultCount: 1,
+    ingredients: [
+      { type: BlockType.GOLD_ORE, count: 3 },
+      { type: BlockType.WOOD, count: 2 }
+    ],
+    requiresCraftingTable: true,
+    category: "tools",
+    name: "Pico de Oro",
+  },
+  {
+    id: "gold_axe",
+    result: BlockType.GOLD_AXE,
+    resultCount: 1,
+    ingredients: [
+      { type: BlockType.GOLD_ORE, count: 3 },
+      { type: BlockType.WOOD, count: 1 }
+    ],
+    requiresCraftingTable: true,
+    category: "tools",
+    name: "Hacha de Oro",
+  },
+  {
+    id: "gold_shovel",
+    result: BlockType.GOLD_SHOVEL,
+    resultCount: 1,
+    ingredients: [
+      { type: BlockType.GOLD_ORE, count: 1 },
+      { type: BlockType.WOOD, count: 2 }
+    ],
+    requiresCraftingTable: true,
+    category: "tools",
+    name: "Pala de Oro",
+  },
+
+  // --- HERRAMIENTAS Y ARMAS: DIAMANTE ---
+  {
+    id: "diamond_sword",
+    result: BlockType.DIAMOND_SWORD,
+    resultCount: 1,
+    ingredients: [
+      { type: BlockType.DIAMOND_ORE, count: 2 },
+      { type: BlockType.WOOD, count: 1 }
+    ],
+    requiresCraftingTable: true,
+    category: "tools",
+    name: "Espada de Diamante",
+  },
+  {
+    id: "diamond_pickaxe",
+    result: BlockType.DIAMOND_PICKAXE,
+    resultCount: 1,
+    ingredients: [
+      { type: BlockType.DIAMOND_ORE, count: 3 },
+      { type: BlockType.WOOD, count: 2 }
+    ],
+    requiresCraftingTable: true,
+    category: "tools",
+    name: "Pico de Diamante",
+  },
+  {
+    id: "diamond_axe",
+    result: BlockType.DIAMOND_AXE,
+    resultCount: 1,
+    ingredients: [
+      { type: BlockType.DIAMOND_ORE, count: 3 },
+      { type: BlockType.WOOD, count: 1 }
+    ],
+    requiresCraftingTable: true,
+    category: "tools",
+    name: "Hacha de Diamante",
+  },
+  {
+    id: "diamond_shovel",
+    result: BlockType.DIAMOND_SHOVEL,
+    resultCount: 1,
+    ingredients: [
+      { type: BlockType.DIAMOND_ORE, count: 1 },
+      { type: BlockType.WOOD, count: 2 }
+    ],
+    requiresCraftingTable: true,
+    category: "tools",
+    name: "Pala de Diamante",
+  },
+
+  // --- UTILIDAD ---
   {
     id: "bed",
     result: BlockType.BED,
@@ -103,6 +396,7 @@ const CRAFTING_RECIPES: CraftingRecipe[] = [
       { type: BlockType.FLOWER_RED, count: 2 }
     ],
     requiresCraftingTable: true,
+    category: "utility",
     name: "Cama Cómoda",
   },
   {
@@ -111,8 +405,98 @@ const CRAFTING_RECIPES: CraftingRecipe[] = [
     resultCount: 1,
     ingredients: [{ type: BlockType.WOOD, count: 6 }],
     requiresCraftingTable: true,
+    category: "utility",
     name: "Puerta de Madera",
   },
+  {
+    id: "furnace",
+    result: BlockType.FURNACE,
+    resultCount: 1,
+    ingredients: [{ type: BlockType.STONE, count: 8 }],
+    requiresCraftingTable: true,
+    category: "utility",
+    name: "Horno",
+  },
+  {
+    id: "chest",
+    result: BlockType.CHEST,
+    resultCount: 1,
+    ingredients: [{ type: BlockType.WOOD, count: 8 }],
+    requiresCraftingTable: true,
+    category: "utility",
+    name: "Cofre",
+  },
+  {
+    id: "empty_bucket",
+    result: BlockType.BUCKET_EMPTY,
+    resultCount: 1,
+    ingredients: [{ type: BlockType.IRON_ORE, count: 3 }],
+    requiresCraftingTable: true,
+    category: "utility",
+    name: "Cubeta Metálica",
+  },
+  {
+    id: "flint_and_steel",
+    result: BlockType.FLINT_AND_STEEL,
+    resultCount: 1,
+    ingredients: [
+      { type: BlockType.STONE, count: 1 },
+      { type: BlockType.IRON_ORE, count: 1 }
+    ],
+    requiresCraftingTable: false,
+    category: "utility",
+    name: "Encendedor",
+  },
+  {
+    id: "jukebox",
+    result: BlockType.JUKEBOX,
+    resultCount: 1,
+    ingredients: [
+      { type: BlockType.WOOD, count: 8 },
+      { type: BlockType.DIAMOND_ORE, count: 1 }
+    ],
+    requiresCraftingTable: true,
+    category: "utility",
+    name: "Tocadiscos",
+  },
+  {
+    id: "map",
+    result: BlockType.MAP,
+    resultCount: 1,
+    ingredients: [
+      { type: BlockType.PAPER, count: 4 },
+      { type: BlockType.REDSTONE, count: 1 }
+    ],
+    requiresCraftingTable: true,
+    category: "utility",
+    name: "Mapa",
+  },
+  {
+    id: "locator_map",
+    result: BlockType.LOCATOR_MAP,
+    resultCount: 1,
+    ingredients: [
+      { type: BlockType.MAP, count: 1 },
+      { type: BlockType.COPPER_BLOCK, count: 1 }
+    ],
+    requiresCraftingTable: true,
+    category: "utility",
+    name: "Mapa Localizador",
+  },
+  {
+    id: "cartography_table",
+    result: BlockType.CARTOGRAPHY_TABLE,
+    resultCount: 1,
+    ingredients: [
+      { type: BlockType.WOOD, count: 4 },
+      { type: BlockType.PAPER, count: 2 }
+    ],
+    requiresCraftingTable: true,
+    category: "utility",
+    name: "Mesa de Cartografía",
+  },
+
+  // --- CONSTRUCCIÓN Y MATERIALES ---
   {
     id: "obsidian",
     result: BlockType.OBSIDIAN,
@@ -122,15 +506,8 @@ const CRAFTING_RECIPES: CraftingRecipe[] = [
       { type: BlockType.LAVA, count: 1 }
     ],
     requiresCraftingTable: true,
+    category: "building",
     name: "Bloque de Obsidiana",
-  },
-  {
-    id: "empty_bucket",
-    result: BlockType.BUCKET_EMPTY,
-    resultCount: 1,
-    ingredients: [{ type: BlockType.STONE, count: 3 }],
-    requiresCraftingTable: true,
-    name: "Cubeta Metálica",
   },
   {
     id: "copper_block",
@@ -138,6 +515,7 @@ const CRAFTING_RECIPES: CraftingRecipe[] = [
     resultCount: 1,
     ingredients: [{ type: BlockType.COPPER_ORE, count: 4 }],
     requiresCraftingTable: true,
+    category: "building",
     name: "Bloque de Cobre",
   },
   {
@@ -149,53 +527,231 @@ const CRAFTING_RECIPES: CraftingRecipe[] = [
       { type: BlockType.FLOWER_YELLOW, count: 1 }
     ],
     requiresCraftingTable: true,
+    category: "building",
     name: "Bloque de Cobre Oxidado",
   },
   {
-    id: "sword",
-    result: BlockType.SWORD,
+    id: "wool",
+    result: BlockType.WOOL,
     resultCount: 1,
-    ingredients: [
-      { type: BlockType.STONE, count: 2 },
-      { type: BlockType.WOOD, count: 1 }
-    ],
-    requiresCraftingTable: true,
-    name: "Espada de Combate (Herr.)",
+    ingredients: [{ type: BlockType.LEAVES, count: 4 }],
+    requiresCraftingTable: false,
+    category: "building",
+    name: "Lana",
   },
   {
-    id: "pickaxe",
-    result: BlockType.PICKAXE,
+    id: "cushion",
+    result: BlockType.CUSHION,
     resultCount: 1,
     ingredients: [
-      { type: BlockType.STONE, count: 3 },
-      { type: BlockType.WOOD, count: 2 }
-    ],
-    requiresCraftingTable: true,
-    name: "Pico de Minería (Herr.)",
-  },
-  {
-    id: "axe",
-    result: BlockType.AXE,
-    resultCount: 1,
-    ingredients: [
-      { type: BlockType.WOOD, count: 3 },
-      { type: BlockType.LOG, count: 2 }
-    ],
-    requiresCraftingTable: true,
-    name: "Hacha de Tala (Herr.)",
-  },
-  {
-    id: "shovel",
-    result: BlockType.SHOVEL,
-    resultCount: 1,
-    ingredients: [
-      { type: BlockType.STONE, count: 1 },
-      { type: BlockType.WOOD, count: 2 }
+      { type: BlockType.WOOL, count: 2 },
+      { type: BlockType.FLOWER_RED, count: 1 }
     ],
     requiresCraftingTable: false,
-    name: "Pala de Tierra (Herr.)",
+    category: "building",
+    name: "Cojín",
+  },
+  {
+    id: "wool_stairs",
+    result: BlockType.WOOL_STAIRS,
+    resultCount: 4,
+    ingredients: [{ type: BlockType.WOOL, count: 6 }],
+    requiresCraftingTable: true,
+    category: "building",
+    name: "Escaleras de Lana",
+  },
+  {
+    id: "concrete",
+    result: BlockType.CONCRETE,
+    resultCount: 4,
+    ingredients: [
+      { type: BlockType.SAND, count: 2 },
+      { type: BlockType.STONE, count: 2 }
+    ],
+    requiresCraftingTable: false,
+    category: "building",
+    name: "Concreto",
+  },
+  {
+    id: "concrete_stairs",
+    result: BlockType.CONCRETE_STAIRS,
+    resultCount: 4,
+    ingredients: [{ type: BlockType.CONCRETE, count: 6 }],
+    requiresCraftingTable: true,
+    category: "building",
+    name: "Escaleras de Concreto",
+  },
+  {
+    id: "paper",
+    result: BlockType.PAPER,
+    resultCount: 3,
+    ingredients: [{ type: BlockType.SUGAR_CANE, count: 3 }],
+    requiresCraftingTable: false,
+    category: "building",
+    name: "Papel",
+  },
+  {
+    id: "sugar",
+    result: BlockType.SUGAR,
+    resultCount: 1,
+    ingredients: [{ type: BlockType.SUGAR_CANE, count: 1 }],
+    requiresCraftingTable: false,
+    category: "building",
+    name: "Azúcar",
+  },
+  {
+    id: "redstone",
+    result: BlockType.REDSTONE,
+    resultCount: 4,
+    ingredients: [{ type: BlockType.REDSTONE_ORE, count: 1 }],
+    requiresCraftingTable: false,
+    category: "building",
+    name: "Redstone",
   }
 ];
+
+const getUiToolMeta = (type: BlockType): {
+  kind: "sword" | "pickaxe" | "axe" | "shovel";
+  blade: string;
+  hi: string;
+} | null => {
+  const tiers = {
+    wood: { blade: "#b6895b", hi: "#e2ba8e" },
+    stone: { blade: "#94a3b8", hi: "#cbd5e1" },
+    iron: { blade: "#e2e8f0", hi: "#ffffff" },
+    gold: { blade: "#facc15", hi: "#fef08a" },
+    diamond: { blade: "#22d3ee", hi: "#a5f3fc" },
+  };
+  switch (type) {
+    case BlockType.WOOD_SWORD: return { kind: "sword", ...tiers.wood };
+    case BlockType.STONE_SWORD: return { kind: "sword", ...tiers.stone };
+    case BlockType.SWORD: return { kind: "sword", ...tiers.iron };
+    case BlockType.GOLD_SWORD: return { kind: "sword", ...tiers.gold };
+    case BlockType.DIAMOND_SWORD: return { kind: "sword", ...tiers.diamond };
+    case BlockType.WOOD_PICKAXE: return { kind: "pickaxe", ...tiers.wood };
+    case BlockType.PICKAXE: return { kind: "pickaxe", ...tiers.stone };
+    case BlockType.IRON_PICKAXE: return { kind: "pickaxe", ...tiers.iron };
+    case BlockType.GOLD_PICKAXE: return { kind: "pickaxe", ...tiers.gold };
+    case BlockType.DIAMOND_PICKAXE: return { kind: "pickaxe", ...tiers.diamond };
+    case BlockType.AXE: return { kind: "axe", ...tiers.wood };
+    case BlockType.STONE_AXE: return { kind: "axe", ...tiers.stone };
+    case BlockType.IRON_AXE: return { kind: "axe", ...tiers.iron };
+    case BlockType.GOLD_AXE: return { kind: "axe", ...tiers.gold };
+    case BlockType.DIAMOND_AXE: return { kind: "axe", ...tiers.diamond };
+    case BlockType.WOOD_SHOVEL: return { kind: "shovel", ...tiers.wood };
+    case BlockType.SHOVEL: return { kind: "shovel", ...tiers.stone };
+    case BlockType.IRON_SHOVEL: return { kind: "shovel", ...tiers.iron };
+    case BlockType.GOLD_SHOVEL: return { kind: "shovel", ...tiers.gold };
+    case BlockType.DIAMOND_SHOVEL: return { kind: "shovel", ...tiers.diamond };
+    default: return null;
+  }
+};
+
+const isUiToolBlock = (type: BlockType) => getUiToolMeta(type) !== null;
+
+const ItemVisualBadge: React.FC<{ type: BlockType; className?: string }> = ({
+  type,
+  className = "w-full h-full",
+}) => {
+  const toolMeta = getUiToolMeta(type);
+  if (toolMeta) {
+    return (
+      <div className={`${className} rounded-lg bg-zinc-950/90 border border-white/10 flex items-center justify-center p-1 shadow-inner`}>
+        <svg viewBox="0 0 16 16" className="w-full h-full drop-shadow" shapeRendering="crispEdges">
+          {toolMeta.kind === "sword" && (
+            <>
+              <rect x="2" y="12" width="2" height="2" fill="#5c3a21" />
+              <rect x="4" y="10" width="2" height="2" fill="#7c5230" />
+              <rect x="3" y="8" width="2" height="2" fill="#4e342e" />
+              <rect x="6" y="11" width="2" height="2" fill="#4e342e" />
+              <rect x="5" y="9" width="2" height="2" fill={toolMeta.blade} />
+              <rect x="7" y="7" width="2" height="2" fill={toolMeta.blade} />
+              <rect x="9" y="5" width="2" height="2" fill={toolMeta.blade} />
+              <rect x="11" y="3" width="2" height="2" fill={toolMeta.blade} />
+              <rect x="12" y="2" width="2" height="2" fill={toolMeta.hi} />
+              <rect x="7" y="7" width="1" height="1" fill={toolMeta.hi} />
+              <rect x="9" y="5" width="1" height="1" fill={toolMeta.hi} />
+            </>
+          )}
+          {toolMeta.kind === "pickaxe" && (
+            <>
+              <rect x="2" y="12" width="2" height="2" fill="#5c3a21" />
+              <rect x="4" y="10" width="2" height="2" fill="#7c5230" />
+              <rect x="6" y="8" width="2" height="2" fill="#7c5230" />
+              <rect x="8" y="6" width="2" height="2" fill="#7c5230" />
+              <rect x="4" y="2" width="8" height="2" fill={toolMeta.blade} />
+              <rect x="11" y="3" width="2" height="8" fill={toolMeta.blade} />
+              <rect x="2" y="3" width="2" height="2" fill={toolMeta.blade} />
+              <rect x="10" y="10" width="2" height="2" fill={toolMeta.blade} />
+              <rect x="5" y="2" width="6" height="1" fill={toolMeta.hi} />
+            </>
+          )}
+          {toolMeta.kind === "axe" && (
+            <>
+              <rect x="2" y="12" width="2" height="2" fill="#5c3a21" />
+              <rect x="4" y="10" width="2" height="2" fill="#7c5230" />
+              <rect x="6" y="8" width="2" height="2" fill="#7c5230" />
+              <rect x="8" y="6" width="2" height="2" fill="#7c5230" />
+              <rect x="6" y="2" width="6" height="5" fill={toolMeta.blade} />
+              <rect x="10" y="4" width="3" height="5" fill={toolMeta.blade} />
+              <rect x="7" y="2" width="4" height="2" fill={toolMeta.hi} />
+            </>
+          )}
+          {toolMeta.kind === "shovel" && (
+            <>
+              <rect x="2" y="12" width="2" height="2" fill="#5c3a21" />
+              <rect x="4" y="10" width="2" height="2" fill="#7c5230" />
+              <rect x="6" y="8" width="2" height="2" fill="#7c5230" />
+              <rect x="8" y="3" width="5" height="5" fill={toolMeta.blade} />
+              <rect x="10" y="2" width="4" height="3" fill={toolMeta.hi} />
+            </>
+          )}
+        </svg>
+      </div>
+    );
+  }
+
+  if (type === BlockType.TORCH) {
+    return (
+      <div className={`${className} rounded-lg bg-zinc-950/90 border border-amber-500/40 flex items-center justify-center p-1 shadow-inner`}>
+        <svg viewBox="0 0 16 16" className="w-full h-full drop-shadow" shapeRendering="crispEdges">
+          <rect x="5" y="1" width="6" height="4" fill="#ff7300" />
+          <rect x="6" y="1" width="4" height="3" fill="#ffcf33" />
+          <rect x="7" y="2" width="2" height="2" fill="#fffce0" />
+          <rect x="6" y="5" width="4" height="2" fill="#2b1b12" />
+          <rect x="6" y="7" width="4" height="8" fill="#6d4423" />
+          <rect x="7" y="7" width="2" height="8" fill="#8b5a2b" />
+        </svg>
+      </div>
+    );
+  }
+
+  if (type === BlockType.CRAFTING_TABLE) {
+    return (
+      <div className={`${className} rounded-lg bg-[#ab7d4d] border border-[#4e3315] grid grid-cols-3 grid-rows-3 gap-[1px] p-[2px] shadow-inner`}>
+        {Array.from({ length: 9 }).map((_, idx) => (
+          <div key={idx} className="bg-[#7b522c]/80 rounded-[1px]" />
+        ))}
+      </div>
+    );
+  }
+
+  if (type === BlockType.FURNACE) {
+    return (
+      <div className={`${className} rounded-lg bg-[#607d8b] border border-zinc-800 flex flex-col items-center justify-between p-1.5 shadow-inner`}>
+        <div className="w-3/4 h-1.5 bg-zinc-900 rounded-sm" />
+        <div className="w-3/4 h-2.5 bg-orange-600/90 border border-zinc-900 rounded-sm shadow-inner" />
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={`${className} rounded-lg shadow-inner border border-white/10`}
+      style={{ backgroundColor: BLOCK_COLORS[type] }}
+    />
+  );
+};
 
 // Nether Portal Frame and Blocks Validation Helpers
 const isFrameValidX = (ix: number, iy: number, iz: number, getBlockAt: (x: number, y: number, z: number) => BlockType) => {
@@ -253,7 +809,10 @@ const isPortalBlockValid = (px: number, py: number, pz: number, getBlockAt: (x: 
 };
 
 const App: React.FC = () => {
+  const [lang, setLang] = useState<Language>("es");
+
   const [profiles, setProfiles] = useState<Profile[]>(() => loadProfiles());
+  // Profiles loaded
   const [worlds, setWorlds] = useState<World[]>(() => loadWorlds());
   const [currentUser, setCurrentUser] = useState<string | null>(() => getActiveSession());
   const [activeSession, setActiveSessionState] = useState<string | null>(() => getActiveSession());
@@ -264,23 +823,149 @@ const App: React.FC = () => {
   }, []);
 
   const [currentBlock, setCurrentBlock] = useState<BlockType>(BlockType.WOOD);
+  const [noiseConfig, setNoiseConfig] = useState<NoiseConfig>(() => {
+    const saved = localStorage.getItem("minecraft_noise_config");
+    if (saved) {
+      try {
+        return { ...DEFAULT_NOISE_CONFIG, ...JSON.parse(saved) };
+      } catch (e) {
+        return DEFAULT_NOISE_CONFIG;
+      }
+    }
+    return DEFAULT_NOISE_CONFIG;
+  });
+  const [perfConfig, setPerfConfig] = useState<PerformanceConfig>(() => {
+    const safeDefault: PerformanceConfig = {
+      renderDistance: 2,
+      simulationDistance: 2,
+      maxConcurrentChunks: 2,
+      lightingQuality: "low",
+      particlesEnabled: true,
+      maxEntities: 15,
+      effectsQuality: "low",
+    };
+    if (typeof window !== "undefined") {
+      try {
+        const saved = localStorage.getItem("minecraft_performance_config");
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          return {
+            renderDistance: (parsed.renderDistance >= 1 && parsed.renderDistance <= 5) ? Number(parsed.renderDistance) : safeDefault.renderDistance,
+            simulationDistance: (parsed.simulationDistance >= 1 && parsed.simulationDistance <= 4) ? Number(parsed.simulationDistance) : safeDefault.simulationDistance,
+            maxConcurrentChunks: (parsed.maxConcurrentChunks >= 1 && parsed.maxConcurrentChunks <= 8) ? Number(parsed.maxConcurrentChunks) : safeDefault.maxConcurrentChunks,
+            lightingQuality: (parsed.lightingQuality === "high" || parsed.lightingQuality === "low") ? parsed.lightingQuality : safeDefault.lightingQuality,
+            particlesEnabled: typeof parsed.particlesEnabled === "boolean" ? parsed.particlesEnabled : safeDefault.particlesEnabled,
+            maxEntities: (parsed.maxEntities >= 5 && parsed.maxEntities <= 50) ? Number(parsed.maxEntities) : safeDefault.maxEntities,
+            effectsQuality: (parsed.effectsQuality === "high" || parsed.effectsQuality === "low") ? parsed.effectsQuality : safeDefault.effectsQuality,
+          };
+        }
+      } catch (err) {
+        console.warn("Failed to load performance config, using defaults", err);
+      }
+    }
+    return safeDefault;
+  });
   const [playerPos, setPlayerPos] = useState<Vector3D>({ x: 0, y: 80, z: 0 });
   const activePlayerPosRef = useRef<Vector3D>({ x: 0, y: 80, z: 0 });
-  const [moveVector, setMoveVector] = useState({ x: 0, y: 0 });
+  const moveVectorRef = useRef({ x: 0, y: 0 });
+  const staticZeroMoveVector = useMemo(() => ({ x: 0, y: 0 }), []);
+  const handleJoystickMove = useCallback((v: { x: number; y: number }) => {
+    moveVectorRef.current.x = v.x;
+    moveVectorRef.current.y = v.y;
+  }, []);
+  const handleJoystickEnd = useCallback(() => {
+    moveVectorRef.current.x = 0;
+    moveVectorRef.current.y = 0;
+  }, []);
+  const [aiCompanionConfig, setAiCompanionConfig] = useState<AICompanionConfig>(() => {
+    try {
+      const saved = localStorage.getItem("voxel_ai_companion");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return {
+          enabled: !!parsed.enabled,
+          name: parsed.name || "Alex IA",
+          skinId: parsed.skinId || "explorer",
+          mode: parsed.mode || "follow",
+        };
+      }
+    } catch {}
+    return { enabled: false, name: "Alex IA", skinId: "explorer", mode: "follow" };
+  });
+  const [isCompanionPanelOpen, setIsCompanionPanelOpen] = useState(false);
+  const [aiCompanionTpTrigger, setAiCompanionTpTrigger] = useState(0);
+  const aiCompanionPosRef = useRef<Vector3D>({ x: 0, y: 80, z: 0 });
+  const aiCompanionBagRef = useRef<Record<number, number>>({});
+  const aiCompanionConfigRef = useRef(aiCompanionConfig);
+  aiCompanionConfigRef.current = aiCompanionConfig;
+  useEffect(() => {
+    try {
+      localStorage.setItem("voxel_ai_companion", JSON.stringify(aiCompanionConfig));
+    } catch {}
+  }, [aiCompanionConfig]);
   const [isInventoryOpen, setIsInventoryOpen] = useState(false);
   const [interactionMode, setInteractionMode] = useState<"break" | "place">(
-    "break",
+    "place",
   );
+  const [buildBrush, setBuildBrush] = useState<"single" | "line3" | "wall3x2">("single");
   const [isLoadingSuggestion, setIsLoadingSuggestion] = useState(false);
   const [suggestion, setSuggestion] = useState<GeminiSuggestion | null>(null);
   const [appState, setAppState] = useState<"login-prompt" | "login" | "menu" | "settings" | "playing" | "worlds-list">(
     getActiveSession() ? "menu" : "login-prompt"
   );
-  const [lang, setLang] = useState<Language>("es");
   const [isJumping, setIsJumping] = useState(false);
+  const [attackTrigger, setAttackTrigger] = useState(0);
+  const [placeTrigger, setPlaceTrigger] = useState(0);
+  const placeHoldTimerRef = useRef<any>(null);
+  const pendingLocalEditsRef = useRef<Record<string, { value: BlockType; ts: number }>>({});
+
+  const handleAttack = useCallback(() => {
+    resumeAudio();
+    playAttackSwingSound();
+    setAttackTrigger((prev) => prev + 1);
+  }, []);
+
+  const stopContinuousPlace = useCallback(() => {
+    if (placeHoldTimerRef.current) {
+      clearInterval(placeHoldTimerRef.current);
+      clearTimeout(placeHoldTimerRef.current);
+      placeHoldTimerRef.current = null;
+    }
+  }, []);
+
+  const startContinuousPlace = useCallback(() => {
+    resumeAudio();
+    setPlaceTrigger((prev) => prev + 1);
+    stopContinuousPlace();
+    const t = setTimeout(() => {
+      placeHoldTimerRef.current = setInterval(() => {
+        setPlaceTrigger((prev) => prev + 1);
+      }, 165);
+    }, 220);
+    placeHoldTimerRef.current = t;
+  }, [stopContinuousPlace]);
+
+  useEffect(() => () => stopContinuousPlace(), [stopContinuousPlace]);
+
   const [weather, setWeather] = useState<"clear" | "rain" | "snow" | "thunderstorm" | "snow_rain">("clear");
   const [dimension, setDimension] = useState<"overworld" | "nether">("overworld");
   const [isGameMenuOpen, setIsGameMenuOpen] = useState<boolean>(false);
+  const [isCinemaMode, setIsCinemaMode] = useState<boolean>(false);
+
+  // Background Music & Soundtrack Engine States
+  const [musicFileName, setMusicFileName] = useState<string | null>(() => getCustomMusicName());
+  const [musicVolume, setMusicVolume] = useState<number>(() => getCustomBackgroundMusicVolume());
+  const [isMusicPlaying, setIsMusicPlayingState] = useState<boolean>(() => isCustomMusicPlaying());
+  const [isProceduralActive, setIsProceduralActive] = useState<boolean>(() => getUseProceduralMusic());
+  const [musicMode, setMusicModeState] = useState<MusicMode>(() => getCurrentMusicMode());
+  const [currentTrackTitle, setCurrentTrackTitle] = useState<string>(() => getMusicTrackTitle());
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentTrackTitle(getMusicTrackTitle());
+    }, 2500);
+    return () => clearInterval(timer);
+  }, []);
 
   // Portal Teleportation cinematic & state
   const [isTeleporting, setIsTeleporting] = useState(false);
@@ -288,11 +973,55 @@ const App: React.FC = () => {
   // Friends & Multiplayer states
   const [isFriendsOpen, setIsFriendsOpen] = useState(false);
   const [friendSearchEmail, setFriendSearchEmail] = useState("");
+  const [joinWorldCodeInput, setJoinWorldCodeInput] = useState("");
   const [friendships, setFriendships] = useState<any[]>([]);
   const [onlinePlayers, setOnlinePlayers] = useState<Record<string, any>>({});
   const [friendshipError, setFriendshipError] = useState("");
   const [friendshipSuccess, setFriendshipSuccess] = useState("");
   const [friendshipLoading, setFriendshipLoading] = useState(false);
+
+  // Character skin & live pose tracking
+  const [characterSkin, setCharacterSkin] = useState<CharacterSkinId>(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("minecraft_character_skin") as CharacterSkinId | null;
+      if (saved && CHARACTER_SKINS[saved]) return saved;
+    }
+    return "cyber";
+  });
+  const [customSkin, setCustomSkin] = useState<CustomCharacterConfig>(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const raw = localStorage.getItem("minecraft_custom_skin");
+        if (raw) {
+          return { ...DEFAULT_CUSTOM_SKIN, ...JSON.parse(raw) };
+        }
+      } catch {}
+    }
+    return DEFAULT_CUSTOM_SKIN;
+  });
+  const handleSelectSkin = useCallback((skin: CharacterSkinId) => {
+    setCharacterSkin(skin);
+    if (typeof window !== "undefined") {
+      localStorage.setItem("minecraft_character_skin", skin);
+    }
+    const emailKey = auth.currentUser?.email?.toLowerCase();
+    if (emailKey) {
+      setDoc(doc(db, "user_roles", emailKey), { characterSkin: skin }, { merge: true }).catch(() => {});
+    }
+  }, []);
+  const handleUpdateCustomSkin = useCallback((next: CustomCharacterConfig) => {
+    setCustomSkin(next);
+    if (typeof window !== "undefined") {
+      localStorage.setItem("minecraft_custom_skin", JSON.stringify(next));
+    }
+    const emailKey = auth.currentUser?.email?.toLowerCase();
+    if (emailKey) {
+      setDoc(doc(db, "user_roles", emailKey), { customSkin: next }, { merge: true }).catch(() => {});
+    }
+  }, []);
+  const activePlayerPoseRef = useRef<{ yaw: number; pitch: number }>({ yaw: 0, pitch: 0 });
+  const multiplayerUserIdRef = useRef<string>("guest");
+  const seenChatMessageIdsRef = useRef<Set<string>>(new Set());
 
   const handlePortalTeleport = useCallback(() => {
     setIsTeleporting(true);
@@ -342,10 +1071,16 @@ const App: React.FC = () => {
     height: typeof window !== "undefined" ? window.innerHeight : 720,
     aspectRatio: typeof window !== "undefined" ? (window.innerWidth / (window.innerHeight || 1)) : 1.78,
   });
-  const { health, food } = useGameState();
+  const { health, food, air, isInWater, isUnderwater, aquaticPerk, isRegenerating } = useGameState();
 
   // Active World
   const [currentWorld, setCurrentWorld] = useState<World | null>(null);
+
+  const isInWorldScene = (appState === "playing" || appState === "settings") && currentWorld !== null;
+  useEffect(() => {
+    setMusicContext(isInWorldScene ? "world" : "menu");
+    setCurrentTrackTitle(getMusicTrackTitle());
+  }, [isInWorldScene]);
 
   // New Custom States
   const [autoJumpEnabled, setAutoJumpEnabled] = useState<boolean>(() => {
@@ -362,38 +1097,125 @@ const App: React.FC = () => {
     }
     return false;
   });
+  const [mvpActive, setMvpActive] = useState<boolean>(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("minecraft_mvp_active") === "true";
+    }
+    return false;
+  });
   const [unlockedWorldsPass, setUnlockedWorldsPass] = useState<boolean>(() => {
     if (typeof window !== "undefined") {
       return localStorage.getItem("minecraft_unlocked_worlds") === "true";
     }
     return false;
   });
-  const [goldCoins, setGoldCoins] = useState<number>(() => {
+  const [indefCoins, setIndefCoins] = useState<number>(() => {
     if (typeof window !== "undefined") {
-      const val = localStorage.getItem("minecraft_gold_coins");
-      return val ? parseInt(val, 10) : 0;
+      const val = localStorage.getItem("minecraft_indef_coins") ?? localStorage.getItem("minecraft_gold_coins");
+      return val ? Math.max(0, parseInt(val, 10) || 0) : 0;
     }
     return 0;
   });
+  const [ownedShopItems, setOwnedShopItems] = useState<string[]>(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const raw = localStorage.getItem("minecraft_owned_shop_items");
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) return parsed;
+        }
+      } catch {}
+    }
+    return [];
+  });
+  const [purchaseHistory, setPurchaseHistory] = useState<Array<{
+    id: string;
+    productId: string;
+    productName: string;
+    price: number;
+    currency?: string;
+    paymentMethod?: string;
+    timestamp: number;
+    status: string;
+    giftedBy?: string;
+    giftNote?: string;
+  }>>(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const raw = localStorage.getItem("minecraft_purchase_history");
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) return parsed;
+        }
+      } catch {}
+    }
+    return [];
+  });
   const [biomeConfig, setBiomeConfig] = useState<{ surface: number; underground: number; flora: number } | null>(null);
-  const [activePlayers, setActivePlayers] = useState<Array<{ id: string; name: string; pos: Vector3D; dimension: string }>>([]);
+  const [activePlayers, setActivePlayers] = useState<ActivePlayerInfo[]>([]);
   const [activityLogs, setActivityLogs] = useState<Array<{ id: string; playerEmail: string; playerName: string; action: string; timestamp: number }>>([]);
-  const [allUserRolesList, setAllUserRolesList] = useState<Array<{ email: string; role: string; biomeSurface?: number; biomeUnderground?: number; biomeFlora?: number; blocksPlaced?: number; blocksBroken?: number; worldsCreated?: number; score?: number; displayName?: string; lastActive?: number }>>([]);
+  const [allUserRolesList, setAllUserRolesList] = useState<Array<{ email: string; role: string; biomeSurface?: number; biomeUnderground?: number; biomeFlora?: number; blocksPlaced?: number; blocksBroken?: number; worldsCreated?: number; score?: number; displayName?: string; lastActive?: number; vipActive?: boolean; mvpActive?: boolean; unlockedWorldsPass?: boolean; indefCoins?: number; ownedShopItems?: string[] }>>([]);
   const [isLeaderboardOpen, setIsLeaderboardOpen] = useState(false);
   const [isShopOpen, setIsShopOpen] = useState(false);
-  const [selectedProduct, setSelectedProduct] = useState<"vip_pass" | "unlocked_worlds" | "gold_coins_500" | null>(null);
-  const [paymentMethod, setPaymentMethod] = useState<"card" | "paypal" | null>(null);
-  const [paymentStep, setPaymentStep] = useState<"idle" | "form" | "processing" | "success">("idle");
+  const [shopCategory, setShopCategory] = useState<"all" | "indefs" | "passes" | "skins" | "cosmetics" | "history">("all");
+  const [selectedProduct, setSelectedProduct] = useState<
+    | "indef_500"
+    | "indef_1500"
+    | "indef_4000"
+    | "indef_10000"
+    | "vip_pass"
+    | "mvp_plus"
+    | "aquatic_vip"
+    | "unlocked_worlds"
+    | "skin_dragon"
+    | "skin_angel"
+    | "skin_titan"
+    | "skin_poseidon"
+    | "skin_obsidian"
+    | "kit_builder"
+    | "kit_explorer_pro"
+    | "kit_aquatic_starter"
+    | "cape_royal"
+    | null
+  >(null);
+  const [lastDailyIndefClaim, setLastDailyIndefClaim] = useState<number>(() => {
+    if (typeof window !== "undefined") {
+      return Math.max(0, Number(localStorage.getItem("minecraft_last_daily_indef") || 0) || 0);
+    }
+    return 0;
+  });
+  const [claimedWorldKits, setClaimedWorldKits] = useState<Record<string, boolean>>({});
+  const [paymentMethod, setPaymentMethod] = useState<"card" | "paypal" | "indefs" | null>(null);
+  const [paymentStep, setPaymentStep] = useState<"idle" | "form" | "gift" | "processing" | "success">("idle");
   const [cardForm, setCardForm] = useState({ number: "", name: "", expiry: "", cvv: "" });
   const [paypalEmail, setPaypalEmail] = useState("");
   const [paypalPassword, setPaypalPassword] = useState("");
+  const [giftRecipientEmail, setGiftRecipientEmail] = useState("");
+  const [giftNote, setGiftNote] = useState("");
+  const [giftSearch, setGiftSearch] = useState("");
+  const [shopCheckoutError, setShopCheckoutError] = useState("");
+  const [lastReceiptSummary, setLastReceiptSummary] = useState<{ method: string; amountText: string } | null>(null);
+  const [lastGiftSummary, setLastGiftSummary] = useState<{
+    recipientEmail: string;
+    productName: string;
+    note: string;
+    indefAdded: number;
+  } | null>(null);
   const [transactionId, setTransactionId] = useState("");
   const [leaderboardToast, setLeaderboardToast] = useState<string | null>(null);
+
+  useEffect(() => {
+    gameState.setAquaticPerk(vipActive || mvpActive || ownedShopItems.includes("aquatic_vip"));
+  }, [vipActive, mvpActive, ownedShopItems]);
+
+  useEffect(() => {
+    setClaimedWorldKits({});
+  }, [currentWorld?.id]);
   const [leaderboardSearch, setLeaderboardSearch] = useState("");
   const blocksPlacedRef = useRef(0);
   const blocksBrokenRef = useRef(0);
 
-  const isBypassingWorldLimit = userRole === "owner" || userRole === "mod" || userRole === "staff" || userRole === "admin" || vipActive || unlockedWorldsPass;
+  const isBypassingWorldLimit = userRole === "owner" || userRole === "mod" || userRole === "staff" || userRole === "admin" || vipActive || mvpActive || unlockedWorldsPass;
 
   const [survivalInventory, setSurvivalInventory] = useState<Record<number, number>>({
     [BlockType.DIRT]: 16,
@@ -402,8 +1224,13 @@ const App: React.FC = () => {
     [BlockType.CRAFTING_TABLE]: 1,
   });
   const [inventoryTab, setInventoryTab] = useState<"items" | "crafting">("items");
+  const [craftingCategory, setCraftingCategory] = useState<"all" | "tools" | "utility" | "building">("all");
+  const [craftingSearch, setCraftingSearch] = useState<string>("");
+  const [settingsSection, setSettingsSection] = useState<"game" | "graphics" | "audio" | "world" | "multiplayer">("game");
+  const [inventoryCategory, setInventoryCategory] = useState<"all" | "building" | "nature" | "tools">("all");
+  const [inventorySearch, setInventorySearch] = useState<string>("");
 
-  const getDimensionEdits = useCallback(() => {
+  const dimensionEdits = useMemo(() => {
     if (!currentWorld) return {};
     const edits: Record<string, number> = {};
     if (dimension === "nether") {
@@ -421,7 +1248,7 @@ const App: React.FC = () => {
       }
     }
     return edits;
-  }, [currentWorld, dimension]);
+  }, [currentWorld?.edits, dimension]);
 
   // Chat & Commands State
   const [isChatOpen, setIsChatOpen] = useState(false);
@@ -501,33 +1328,214 @@ const App: React.FC = () => {
           activePlayerPosRef.current = targetPos;
           setChatMessages((prev) => [...prev, "🌀 [Sistema] Teletransportado a Edge Farlands (X: 1530, Y: 110, Z: 1530)."]);
         } else {
-          const x = parseFloat(parts[1]);
-          const y = parseFloat(parts[2]);
-          const z = parseFloat(parts[3]);
-          if (!isNaN(x) && !isNaN(z)) {
-            const finalY = isNaN(y) ? 90 : y;
-            const targetPos = { x, y: finalY, z };
+          // Check if destination matches an online player name first
+          const targetQuery = (parts.slice(1).join(" ") || "").trim().toLowerCase();
+          const matchedPlayer = targetQuery
+            ? activePlayers.find((p) => p.name.toLowerCase() === targetQuery || p.name.toLowerCase().includes(targetQuery))
+            : undefined;
+          if (matchedPlayer) {
+            const targetPos = {
+              x: matchedPlayer.pos.x + 1.5,
+              y: matchedPlayer.pos.y + 0.5,
+              z: matchedPlayer.pos.z + 1.5,
+            };
+            if (matchedPlayer.dimension && matchedPlayer.dimension !== dimension) {
+              setDimension(matchedPlayer.dimension as "overworld" | "nether");
+            }
             setPlayerPos(targetPos);
             activePlayerPosRef.current = targetPos;
-            setChatMessages((prev) => [...prev, `🌀 [Sistema] Teletransportado a X: ${x.toFixed(0)}, Y: ${finalY.toFixed(0)}, Z: ${z.toFixed(0)}`]);
+            setChatMessages((prev) => [...prev, `🌀 [Sistema] Teletransportado junto a ${matchedPlayer.name}.`]);
           } else {
-            setChatMessages((prev) => [
-              ...prev,
-              "❌ Sintaxis: /tp edge_farlands  o  /tp [X] [Y] [Z]"
-            ]);
+            const x = parseFloat(parts[1]);
+            const y = parseFloat(parts[2]);
+            const z = parseFloat(parts[3]);
+            if (!isNaN(x) && !isNaN(z)) {
+              const finalY = isNaN(y) ? 90 : y;
+              const targetPos = { x, y: finalY, z };
+              setPlayerPos(targetPos);
+              activePlayerPosRef.current = targetPos;
+              setChatMessages((prev) => [...prev, `🌀 [Sistema] Teletransportado a X: ${x.toFixed(0)}, Y: ${finalY.toFixed(0)}, Z: ${z.toFixed(0)}`]);
+            } else {
+              setChatMessages((prev) => [
+                ...prev,
+                "❌ Sintaxis: /tp edge_farlands | /tp [Jugador] | /tp [X] [Y] [Z]"
+              ]);
+            }
           }
+        }
+      } else if (
+        cmd === "ai" ||
+        cmd === "amigo" ||
+        cmd === "companion" ||
+        cmd === "bot"
+      ) {
+        const sub = (parts[1] || "").toLowerCase();
+        if (!sub || sub === "on" || sub === "invocar" || sub === "activar") {
+          setAiCompanionConfig((prev) => ({ ...prev, enabled: true }));
+          setChatMessages((prev) => [...prev, `🤖 [${aiCompanionConfigRef.current.name}] ¡Aquí estoy! Listo para jugar contigo.`]);
+        } else if (sub === "off" || sub === "quitar" || sub === "desactivar") {
+          setAiCompanionConfig((prev) => ({ ...prev, enabled: false }));
+          setChatMessages((prev) => [...prev, `🤖 [${aiCompanionConfigRef.current.name}] ¡Nos vemos pronto!`]);
+        } else if (sub === "follow" || sub === "seguir") {
+          setAiCompanionConfig((prev) => ({ ...prev, enabled: true, mode: "follow" }));
+          setChatMessages((prev) => [...prev, `🤖 [${aiCompanionConfigRef.current.name}] Te sigo de cerca.`]);
+        } else if (sub === "gather" || sub === "mine" || sub === "minar" || sub === "talar") {
+          setAiCompanionConfig((prev) => ({ ...prev, enabled: true, mode: "gather" }));
+          setChatMessages((prev) => [...prev, `🤖 [${aiCompanionConfigRef.current.name}] ⛏️ ¡Voy a minar y talar recursos!`]);
+        } else if (sub === "build" || sub === "construir" || sub === "casa") {
+          setAiCompanionConfig((prev) => ({ ...prev, enabled: true, mode: "build" }));
+          setChatMessages((prev) => [...prev, `🤖 [${aiCompanionConfigRef.current.name}] 🏠 ¡Construyendo un refugio cercano!`]);
+        } else if (sub === "guard" || sub === "proteger" || sub === "atacar") {
+          setAiCompanionConfig((prev) => ({ ...prev, enabled: true, mode: "guard" }));
+          setChatMessages((prev) => [...prev, `🤖 [${aiCompanionConfigRef.current.name}] ⚔️ ¡Espada lista para protegerte!`]);
+        } else if (sub === "explore" || sub === "explorar") {
+          setAiCompanionConfig((prev) => ({ ...prev, enabled: true, mode: "explore" }));
+          setChatMessages((prev) => [...prev, `🤖 [${aiCompanionConfigRef.current.name}] 🧭 ¡A explorar los alrededores!`]);
+        } else if (sub === "stay" || sub === "esperar") {
+          setAiCompanionConfig((prev) => ({ ...prev, enabled: true, mode: "stay" }));
+          setChatMessages((prev) => [...prev, `🤖 [${aiCompanionConfigRef.current.name}] 🛑 Me quedo aquí.`]);
+        } else if (sub === "tp" || sub === "ven") {
+          setAiCompanionConfig((prev) => ({ ...prev, enabled: true }));
+          setAiCompanionTpTrigger((t) => t + 1);
+          setChatMessages((prev) => [...prev, `🤖 [${aiCompanionConfigRef.current.name}] ¡Voy hacia ti!`]);
+        } else if (sub === "dar" || sub === "share" || sub === "bloques") {
+          handleShareCompanionBag();
+        } else {
+          triggerCompanionReply(parts.slice(1).join(" "));
         }
       } else {
         setChatMessages((prev) => [
           ...prev,
-          `❌ Comando desconocido "/${cmd}". Intenta: /day, /night, /heal, /gamemode creative`
+          `❌ Comando desconocido "/${cmd}". Intenta: /day, /night, /heal, /gamemode creative, /ai`
         ]);
       }
     } else {
-      setChatMessages((prev) => [...prev, "💬 [Chat] No hay otros jugadores conectados en este mundo solitario."]);
+      if (currentWorld && db) {
+        const senderId = multiplayerUserIdRef.current || activeSession || "guest";
+        const senderName = googleUser ? (googleUser.displayName || googleUser.email || "Jugador") : (currentUser || "Invitado");
+        const msgId = `msg_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+        seenChatMessageIdsRef.current.add(msgId);
+        setDoc(doc(db, "worlds", currentWorld.id, "messages", msgId), {
+          id: msgId,
+          senderId,
+          senderName,
+          text: trimmed,
+          timestamp: Date.now(),
+        }).catch((err) => {
+          console.warn("Error sending world chat message:", err);
+        });
+      }
+      if (aiCompanionConfigRef.current.enabled) {
+        triggerCompanionReply(trimmed);
+      } else if (activePlayers.length === 0) {
+        setChatMessages((prev) => [...prev, "💬 [Chat] Mensaje guardado en el chat del mundo. ¡Comparte el Código del Mundo o activa a tu Amigo IA!"]);
+      }
     }
   };
+
+  const handleShareCompanionBag = useCallback(() => {
+    const bag = aiCompanionBagRef.current;
+    const entries = Object.entries(bag).filter(([, qty]) => qty > 0);
+    if (entries.length === 0) {
+      setChatMessages((prev) => [
+        ...prev,
+        `🤖 [${aiCompanionConfigRef.current.name}] 🎒 Aún no tengo bloques en mi mochila. ¡Ponme en modo Minar para recolectar!`,
+      ]);
+      return;
+    }
+    setSurvivalInventory((prev) => {
+      const next = { ...prev };
+      for (const [blkStr, qty] of entries) {
+        const blkId = Number(blkStr);
+        next[blkId] = (next[blkId] || 0) + qty;
+      }
+      return next;
+    });
+    const summary = entries
+      .slice(0, 5)
+      .map(([blkStr, qty]) => `${qty}x ${BLOCK_NAMES[Number(blkStr)] || "Bloque"}`)
+      .join(", ");
+    aiCompanionBagRef.current = {};
+    setChatMessages((prev) => [
+      ...prev,
+      `🎁 [${aiCompanionConfigRef.current.name}] ¡Toma lo que conseguí!: ${summary}`,
+    ]);
+  }, []);
+
+  const applyCompanionAction = useCallback((action: AICompanionChatAction) => {
+    if (action === "none") return;
+    if (action === "share") {
+      handleShareCompanionBag();
+      return;
+    }
+    if (action === "tp_to_player") {
+      setAiCompanionConfig((prev) => ({ ...prev, enabled: true }));
+      setAiCompanionTpTrigger((t) => t + 1);
+      return;
+    }
+    setAiCompanionConfig((prev) => ({ ...prev, enabled: true, mode: action }));
+  }, [handleShareCompanionBag]);
+
+  const triggerCompanionReply = useCallback(async (message: string) => {
+    const cfg = aiCompanionConfigRef.current;
+    const bag = aiCompanionBagRef.current;
+    const gatheredTotal = Object.values(bag).reduce((acc, v) => acc + (v || 0), 0);
+    const res = await askAICompanion(message, {
+      companionName: cfg.name || "Alex IA",
+      mode: cfg.mode,
+      gatheredTotal,
+      isNight: false,
+      altitude: activePlayerPosRef.current.y,
+      nearbyHostiles: 0,
+      lang: lang === "en" ? "en" : "es",
+    });
+    applyCompanionAction(res.action);
+    if (res.action !== "share") {
+      setChatMessages((prev) => [...prev, `🤖 [${cfg.name || "Alex IA"}] ${res.reply}`]);
+    }
+  }, [lang, applyCompanionAction]);
+
+  const handleCompanionBuildComplete = useCallback(() => {
+    setAiCompanionConfig((prev) => (prev.mode === "build" ? { ...prev, mode: "follow" } : prev));
+  }, []);
+
+  const handleCompanionSpeak = useCallback((msg: string) => {
+    setChatMessages((prev) => [...prev, `🤖 [${aiCompanionConfigRef.current.name || "Alex IA"}] ${msg}`]);
+  }, []);
   const [isCraftingTableActive, setIsCraftingTableActive] = useState<boolean>(false);
+  const [isFurnaceOpen, setIsFurnaceOpen] = useState<boolean>(false);
+  const [isCartographyOpen, setIsCartographyOpen] = useState<boolean>(false);
+  const [isChestOpen, setIsChestOpen] = useState<boolean>(false);
+  const [isMapOpen, setIsMapOpen] = useState<boolean>(false);
+
+  // Chest storage state
+  const [chestInventory, setChestInventory] = useState<Record<number, number>>({
+    [BlockType.DIRT]: 8,
+    [BlockType.STONE]: 4,
+    [BlockType.WOOD]: 2
+  });
+
+  // Furnace smelting states
+  const [furnaceInput, setFurnaceInput] = useState<BlockType | null>(null);
+  const [furnaceInputCount, setFurnaceInputCount] = useState<number>(0);
+  const [furnaceFuel, setFurnaceFuel] = useState<BlockType | null>(null);
+  const [furnaceFuelCount, setFurnaceFuelCount] = useState<number>(0);
+  const [furnaceOutput, setFurnaceOutput] = useState<BlockType | null>(null);
+  const [furnaceOutputCount, setFurnaceOutputCount] = useState<number>(0);
+  const [furnaceProgress, setFurnaceProgress] = useState<number>(0);
+
+  const getSmeltingResult = (input: BlockType): BlockType | null => {
+    if (input === BlockType.STONE) return BlockType.CONCRETE;
+    if (input === BlockType.SAND) return BlockType.TERRACOTTA_WHITE;
+    if (input === BlockType.IRON_ORE) return BlockType.COPPER_BLOCK;
+    if (input === BlockType.LOG) return BlockType.TORCH;
+    if (input === BlockType.SUGAR_CANE) return BlockType.SUGAR;
+    return null;
+  };
+
+  const isFurnaceFuel = (fuel: BlockType): boolean => {
+    return fuel === BlockType.LOG || fuel === BlockType.WOOD || fuel === BlockType.COAL_ORE || fuel === BlockType.LAVA || fuel === BlockType.SOUL_SAND;
+  };
   const [selectedRecipeId, setSelectedRecipeId] = useState<string>("wood_planks");
   const [worldSearchQuery, setWorldSearchQuery] = useState("");
 
@@ -674,14 +1682,16 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if (currentWorld) {
-      if ((currentWorld as any).survivalInventory) {
-        setSurvivalInventory((currentWorld as any).survivalInventory);
+      const existing = (currentWorld as any).survivalInventory;
+      if (existing && typeof existing === "object" && Object.keys(existing).length > 0) {
+        setSurvivalInventory(existing);
       } else {
-        const initialInv = {
-          [BlockType.DIRT]: 16,
-          [BlockType.WOOD]: 8,
-          [BlockType.LOG]: 4,
+        const initialInv: Record<number, number> = {
+          [BlockType.DIRT]: 32,
+          [BlockType.WOOD]: 16,
+          [BlockType.LOG]: 8,
           [BlockType.CRAFTING_TABLE]: 1,
+          [BlockType.TORCH]: 8,
         };
         (currentWorld as any).survivalInventory = initialInv;
         setSurvivalInventory(initialInv);
@@ -704,6 +1714,17 @@ const App: React.FC = () => {
   const [newWorldType, setNewWorldType] = useState<"flat" | "normal" | "edge_farlands">("normal");
 
   const [googleUser, setGoogleUser] = useState<any | null>(null);
+
+  const userWorlds = worlds.filter((w) => {
+    if (googleUser) {
+      return (
+        w.creator.toLowerCase() === googleUser.uid.toLowerCase() ||
+        w.creator.toLowerCase() === (currentUser || "").toLowerCase()
+      );
+    } else {
+      return w.creator.toLowerCase() === (currentUser || "Invitado").toLowerCase();
+    }
+  });
 
   const lookOffsetRef = useRef({ x: 0, y: 0 });
 
@@ -794,19 +1815,40 @@ const App: React.FC = () => {
           setUserRole(data.role);
         }
         
-        // Sync VIP and Purchase States
+        // Sync VIP, Indefs (Minecoins), Owned Items, and Custom Character States
         if (data) {
           const isVip = data.vipActive === true;
+          const isMvp = data.mvpActive === true;
           const hasPass = data.unlockedWorldsPass === true;
-          const coins = typeof data.goldCoins === "number" ? data.goldCoins : 0;
-          
-          setVipActive(isVip);
-          setUnlockedWorldsPass(hasPass);
-          setGoldCoins(coins);
+          const coins =
+            typeof data.indefCoins === "number"
+              ? data.indefCoins
+              : typeof data.goldCoins === "number"
+                ? data.goldCoins
+                : 0;
+          const itemsList = Array.isArray(data.ownedShopItems) ? data.ownedShopItems : [];
 
-          localStorage.setItem("minecraft_vip_active", String(isVip));
+          setVipActive(isVip || isMvp);
+          setMvpActive(isMvp);
+          setUnlockedWorldsPass(hasPass);
+          setIndefCoins(coins);
+          setOwnedShopItems(itemsList);
+
+          if (data.characterSkin && CHARACTER_SKINS[data.characterSkin as CharacterSkinId]) {
+            setCharacterSkin(data.characterSkin as CharacterSkinId);
+            localStorage.setItem("minecraft_character_skin", data.characterSkin);
+          }
+          if (data.customSkin && typeof data.customSkin === "object") {
+            const merged = { ...DEFAULT_CUSTOM_SKIN, ...data.customSkin };
+            setCustomSkin(merged);
+            localStorage.setItem("minecraft_custom_skin", JSON.stringify(merged));
+          }
+
+          localStorage.setItem("minecraft_vip_active", String(isVip || isMvp));
+          localStorage.setItem("minecraft_mvp_active", String(isMvp));
           localStorage.setItem("minecraft_unlocked_worlds", String(hasPass));
-          localStorage.setItem("minecraft_gold_coins", String(coins));
+          localStorage.setItem("minecraft_indef_coins", String(coins));
+          localStorage.setItem("minecraft_owned_shop_items", JSON.stringify(itemsList));
         }
 
         if (data && data.biomeSurface !== undefined) {
@@ -823,11 +1865,15 @@ const App: React.FC = () => {
           setUserRole("user");
           setBiomeConfig(null);
           setVipActive(false);
+          setMvpActive(false);
           setUnlockedWorldsPass(false);
-          setGoldCoins(0);
+          setIndefCoins(0);
+          setOwnedShopItems([]);
           localStorage.setItem("minecraft_vip_active", "false");
+          localStorage.setItem("minecraft_mvp_active", "false");
           localStorage.setItem("minecraft_unlocked_worlds", "false");
-          localStorage.setItem("minecraft_gold_coins", "0");
+          localStorage.setItem("minecraft_indef_coins", "0");
+          localStorage.setItem("minecraft_owned_shop_items", "[]");
 
           // Register user in the database so they show up on the leaderboard
           setDoc(roleRef, {
@@ -840,8 +1886,10 @@ const App: React.FC = () => {
             score: 0,
             lastActive: Date.now(),
             vipActive: false,
+            mvpActive: false,
             unlockedWorldsPass: false,
-            goldCoins: 0
+            indefCoins: 0,
+            ownedShopItems: []
           }, { merge: true }).catch(err => {
             console.error("Error auto-registering user role:", err);
           });
@@ -852,12 +1900,52 @@ const App: React.FC = () => {
       handleFirestoreError(error, OperationType.GET, `user_roles/${emailKey}`);
     });
 
+    // Listen to verified purchases for this account
+    const purchasesQuery = query(
+      collection(db, "user_purchases"),
+      where("email", "==", emailKey),
+      limit(30)
+    );
+    const unsubPurchases = onSnapshot(purchasesQuery, (snap) => {
+      const list: Array<any> = [];
+      snap.forEach((docSnap) => {
+        const d = docSnap.data();
+        if (d) list.push(d);
+      });
+      list.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+      setPurchaseHistory(list);
+      localStorage.setItem("minecraft_purchase_history", JSON.stringify(list));
+    }, () => {});
+
     return () => {
       unsubRole();
+      unsubPurchases();
     };
   }, [googleUser]);
 
-  // Handle active gameplay presence and multiplayer syncing
+  // Live telemetry refs so the multiplayer sync interval reads fresh values without restarting
+  const liveMultiplayerStateRef = useRef({
+    characterSkin,
+    customSkin,
+    currentBlock,
+    attackTrigger,
+    dimension,
+    gameMode: currentWorld?.gameMode || "survival",
+    worldName: currentWorld?.name || "",
+  });
+  useEffect(() => {
+    liveMultiplayerStateRef.current = {
+      characterSkin,
+      customSkin,
+      currentBlock,
+      attackTrigger,
+      dimension,
+      gameMode: currentWorld?.gameMode || "survival",
+      worldName: currentWorld?.name || "",
+    };
+  }, [characterSkin, customSkin, currentBlock, attackTrigger, dimension, currentWorld?.gameMode, currentWorld?.name]);
+
+  // Handle active gameplay presence, world initialization, chat, and multiplayer syncing
   useEffect(() => {
     if (appState !== "playing" || !currentWorld) {
       setActivePlayers([]);
@@ -865,64 +1953,157 @@ const App: React.FC = () => {
     }
 
     const worldId = currentWorld.id;
-    const userId = googleUser ? googleUser.uid : activeSession;
+    // Guarantee unique persistent client ID to eliminate guest ID collision
+    const guestUniqueId = (() => {
+      if (typeof window === "undefined") return "guest_" + Date.now();
+      let gid = localStorage.getItem("minecraft_guest_unique_id");
+      if (!gid) {
+        gid = "guest_" + Math.random().toString(36).substring(2, 9) + "_" + Date.now().toString(36);
+        localStorage.setItem("minecraft_guest_unique_id", gid);
+      }
+      return gid;
+    })();
+
+    const userId = googleUser ? googleUser.uid : (activeSession ? `${activeSession}_${guestUniqueId.slice(-6)}` : guestUniqueId);
     const userEmail = googleUser ? (googleUser.email?.toLowerCase() || "") : "invitado@example.com";
-    const userName = googleUser ? (googleUser.displayName || googleUser.email || "Usuario de Google") : `${currentUser || "Invitado"} (Invitado)`;
+    const userName = googleUser ? (googleUser.displayName || googleUser.email || "Usuario de Google") : `${currentUser || "Invitado"}`;
 
     if (!userId) return;
+    multiplayerUserIdRef.current = userId;
+    seenChatMessageIdsRef.current.clear();
+
+    // Ensure the world document exists in Firestore so ANY world (including guest worlds) is joinable by World Code or Friends
+    const worldDocRef = doc(db, "worlds", worldId);
+    getDoc(worldDocRef)
+      .then((snap) => {
+        if (!snap.exists()) {
+          setDoc(worldDocRef, {
+            id: currentWorld.id,
+            name: currentWorld.name,
+            creator: currentWorld.creator || userId,
+            creatorName: currentWorld.creatorName || userName,
+            createdAt: currentWorld.createdAt || Date.now(),
+            playerPos: currentWorld.playerPos || { x: 0, y: 80, z: 0 },
+            gameMode: currentWorld.gameMode || "survival",
+            worldType: currentWorld.worldType || "normal",
+            edits: currentWorld.edits || {},
+            survivalInventory: currentWorld.survivalInventory || {},
+          }, { merge: true }).catch((err) => console.warn("Failed to ensure world doc in Firestore:", err));
+        }
+      })
+      .catch(() => {});
 
     const presenceRef = doc(db, "worlds", worldId, "players", userId);
+    const onlinePlayerRef = doc(db, "online_players", userId);
 
-    // Write presence heartbeat every 3 seconds
-    const updatePresence = async () => {
+    let lastSentPos = { x: NaN, y: NaN, z: NaN };
+    let lastSentYaw = NaN;
+    let lastSentPitch = NaN;
+    let lastSentSkin: CharacterSkinId | "" = "";
+    let lastSentBlock: BlockType | -1 = -1;
+    let lastSentAttack = -1;
+    let lastSentDim = "";
+    let lastPresenceWrite = 0;
+    let lastOnlineWrite = 0;
+
+    // Adaptive fast sync (~350ms check): writes immediately on movement/rotation/action, keep-alive every 3.5s
+    const updatePresence = async (force = false) => {
       try {
         const now = Date.now();
-        // 1. Write player's local subcollection presence
-        await setDoc(presenceRef, {
-          id: userId,
-          email: userEmail,
-          name: userName,
-          pos: activePlayerPosRef.current,
-          dimension: dimension,
-          lastActive: now,
-          spectator: currentWorld?.gameMode === "spectator"
-        });
+        const pos = activePlayerPosRef.current;
+        const { yaw, pitch } = activePlayerPoseRef.current;
+        const live = liveMultiplayerStateRef.current;
 
-        // 2. Also write/refresh global /online_players presence
-        const onlinePlayerRef = doc(db, "online_players", userId);
-        await setDoc(onlinePlayerRef, {
-          id: userId,
-          name: userName,
-          email: userEmail,
-          worldId: worldId,
-          worldName: currentWorld.name,
-          dimension: dimension,
-          lastActive: now,
-          spectator: currentWorld?.gameMode === "spectator"
-        }, { merge: true });
+        const movedDistSq =
+          (pos.x - lastSentPos.x) ** 2 +
+          (pos.y - lastSentPos.y) ** 2 +
+          (pos.z - lastSentPos.z) ** 2;
+        const rotated =
+          isNaN(lastSentYaw) ||
+          Math.abs(yaw - lastSentYaw) > 0.08 ||
+          Math.abs(pitch - lastSentPitch) > 0.08;
+        const stateChanged =
+          live.characterSkin !== lastSentSkin ||
+          live.currentBlock !== lastSentBlock ||
+          live.attackTrigger !== lastSentAttack ||
+          live.dimension !== lastSentDim;
+        const keepAliveDue = now - lastPresenceWrite >= 3500;
 
+        if (force || isNaN(movedDistSq) || movedDistSq > 0.015 || rotated || stateChanged || keepAliveDue) {
+          lastSentPos = { x: pos.x, y: pos.y, z: pos.z };
+          lastSentYaw = yaw;
+          lastSentPitch = pitch;
+          lastSentSkin = live.characterSkin;
+          lastSentBlock = live.currentBlock;
+          lastSentAttack = live.attackTrigger;
+          lastSentDim = live.dimension;
+          lastPresenceWrite = now;
+
+          await setDoc(presenceRef, {
+            id: userId,
+            email: userEmail,
+            name: userName,
+            pos: { x: Number(pos.x.toFixed(2)), y: Number(pos.y.toFixed(2)), z: Number(pos.z.toFixed(2)) },
+            yaw: Number(yaw.toFixed(3)),
+            pitch: Number(pitch.toFixed(3)),
+            skinId: live.characterSkin,
+            customSkin: live.characterSkin === "custom" ? live.customSkin : undefined,
+            heldBlock: live.currentBlock,
+            attackSeq: live.attackTrigger,
+            dimension: live.dimension,
+            lastActive: now,
+            spectator: live.gameMode === "spectator",
+          });
+        }
+
+        // Refresh global /online_players discovery entry every 4 seconds
+        if (force || now - lastOnlineWrite >= 4000) {
+          lastOnlineWrite = now;
+          await setDoc(onlinePlayerRef, {
+            id: userId,
+            name: userName,
+            email: userEmail,
+            worldId: worldId,
+            worldName: live.worldName || currentWorld.name,
+            dimension: live.dimension,
+            skinId: live.characterSkin,
+            pos: { x: Number(pos.x.toFixed(1)), y: Number(pos.y.toFixed(1)), z: Number(pos.z.toFixed(1)) },
+            lastActive: now,
+            spectator: live.gameMode === "spectator",
+          }, { merge: true });
+        }
       } catch (err) {
-        console.error("Error writing presence heartbeat:", err);
-        handleFirestoreError(err, OperationType.WRITE, `worlds/${worldId}/players/${userId}`);
+        console.warn("Error writing presence heartbeat:", err);
       }
     };
 
-    updatePresence();
-    const intervalId = setInterval(updatePresence, 3000);
+    updatePresence(true);
+    const intervalId = setInterval(() => updatePresence(false), 350);
 
     // Listen to presence subcollection
     const playersColRef = collection(db, "worlds", worldId, "players");
     const unsubPlayers = onSnapshot(playersColRef, (snapshot) => {
-      const list: any[] = [];
+      const list: ActivePlayerInfo[] = [];
       const now = Date.now();
       snapshot.forEach((docSnap) => {
         const data = docSnap.data();
-        // Ignore self, dead/inactive heartbeats (> 15 seconds), and invisible spectators
-        if (data.id !== userId && (now - (data.lastActive || 0) < 15000) && !data.spectator) {
+        const timeDelta = Math.abs(now - (data.lastActive || 0));
+        // Ignore self, dead/inactive heartbeats (> 90 seconds, clock skew immune), and invisible spectators
+        if (data.id !== userId && timeDelta < 90000 && !data.spectator) {
           list.push({
             id: data.id,
             name: data.name || data.email || "Jugador",
-            pos: data.pos || { x: 0, y: 80, z: 0 },
+            pos: {
+              x: typeof data.pos?.x === 'number' && !isNaN(data.pos.x) ? data.pos.x : 0,
+              y: typeof data.pos?.y === 'number' && !isNaN(data.pos.y) ? data.pos.y : 80,
+              z: typeof data.pos?.z === 'number' && !isNaN(data.pos.z) ? data.pos.z : 0
+            },
+            yaw: typeof data.yaw === 'number' && !isNaN(data.yaw) ? data.yaw : 0,
+            pitch: typeof data.pitch === 'number' && !isNaN(data.pitch) ? data.pitch : 0,
+            skinId: (data.skinId && CHARACTER_SKINS[data.skinId as CharacterSkinId]) ? (data.skinId as CharacterSkinId) : 'cyber',
+            customSkin: (data.customSkin && typeof data.customSkin === "object") ? { ...DEFAULT_CUSTOM_SKIN, ...data.customSkin } : undefined,
+            heldBlock: typeof data.heldBlock === 'number' ? data.heldBlock : undefined,
+            attackSeq: typeof data.attackSeq === 'number' ? data.attackSeq : 0,
             dimension: data.dimension || "overworld"
           });
         }
@@ -930,8 +2111,29 @@ const App: React.FC = () => {
       setActivePlayers(list);
     }, (error) => {
       console.error("Error watching world players:", error);
-      handleFirestoreError(error, OperationType.LIST, `worlds/${worldId}/players`);
     });
+
+    // Real-time multiplayer world chat listener
+    const joinedAtMs = Date.now() - 120000; // show recent 2 min messages on join
+    const messagesQuery = query(
+      collection(db, "worlds", worldId, "messages"),
+      orderBy("timestamp", "asc"),
+      limit(30)
+    );
+    const unsubMessages = onSnapshot(messagesQuery, (snapshot) => {
+      const newLines: string[] = [];
+      snapshot.forEach((docSnap) => {
+        const msg = docSnap.data();
+        if (!msg || !msg.id || seenChatMessageIdsRef.current.has(msg.id)) return;
+        seenChatMessageIdsRef.current.add(msg.id);
+        if (msg.senderId === userId) return;
+        if (typeof msg.timestamp === "number" && msg.timestamp < joinedAtMs) return;
+        newLines.push(`💬 [${msg.senderName || "Jugador"}] ${msg.text}`);
+      });
+      if (newLines.length > 0) {
+        setChatMessages((prev) => [...prev, ...newLines].slice(-60));
+      }
+    }, () => {});
 
     // Write a join world log
     logUserActivity(`Entró al mundo '${currentWorld.name}' (Generación: ${currentWorld.worldType})`);
@@ -940,14 +2142,14 @@ const App: React.FC = () => {
     return () => {
       clearInterval(intervalId);
       unsubPlayers();
-      deleteDoc(presenceRef).catch(err => {
+      unsubMessages();
+      deleteDoc(presenceRef).catch((err) => {
         console.error("Error removing presence on exit:", err);
       });
-      // Delete from online_players as well
-      deleteDoc(doc(db, "online_players", userId)).catch(() => {});
+      deleteDoc(onlinePlayerRef).catch(() => {});
       logUserActivity(`Salió del mundo '${currentWorld.name}'`);
     };
-  }, [appState, currentWorld?.id, dimension, googleUser, activeSession, currentUser, logUserActivity]);
+  }, [appState, currentWorld?.id, googleUser, activeSession, currentUser, logUserActivity]);
 
   // Listen to world edits in real-time for multiplayer
   useEffect(() => {
@@ -958,18 +2160,31 @@ const App: React.FC = () => {
       if (docSnap.exists()) {
         const data = docSnap.data();
         if (data && data.edits) {
-          const dbEdits = data.edits;
+          const now = Date.now();
+          const mergedEdits: Record<string, number> = { ...data.edits };
+          // Protect optimistic local block edits until Firestore server explicitly confirms them (or 15s safety ceiling)
+          for (const [k, entry] of Object.entries(pendingLocalEditsRef.current)) {
+            const serverVal = data.edits[k];
+            const isConfirmedOnServer =
+              !docSnap.metadata.hasPendingWrites &&
+              (serverVal === entry.value || (entry.value === BlockType.AIR && serverVal === undefined));
+            if (isConfirmedOnServer || now - entry.ts >= 15000) {
+              delete pendingLocalEditsRef.current[k];
+            } else {
+              mergedEdits[k] = entry.value;
+            }
+          }
+
           setCurrentWorld((prev) => {
             if (!prev) return prev;
-            // Check if there are differences
             let hasDiff = false;
             const prevEditsKeys = Object.keys(prev.edits);
-            const dbEditsKeys = Object.keys(dbEdits);
+            const dbEditsKeys = Object.keys(mergedEdits);
             if (prevEditsKeys.length !== dbEditsKeys.length) {
               hasDiff = true;
             } else {
               for (const key of dbEditsKeys) {
-                if (prev.edits[key] !== dbEdits[key]) {
+                if (prev.edits[key] !== mergedEdits[key]) {
                   hasDiff = true;
                   break;
                 }
@@ -978,7 +2193,7 @@ const App: React.FC = () => {
             if (hasDiff) {
               return {
                 ...prev,
-                edits: dbEdits
+                edits: mergedEdits
               };
             }
             return prev;
@@ -1087,6 +2302,52 @@ const App: React.FC = () => {
     };
   }, [appState, activeSession, currentUser, googleUser, lang]);
 
+  // Furnace auto-smelting background tick loop
+  useEffect(() => {
+    if (appState !== "playing") return;
+    if (!furnaceInput || furnaceInputCount <= 0 || !furnaceFuel || furnaceFuelCount <= 0) {
+      setFurnaceProgress(0);
+      return;
+    }
+
+    const outputType = getSmeltingResult(furnaceInput);
+    if (!outputType) {
+      setFurnaceProgress(0);
+      return;
+    }
+
+    // Verify output slot compatibility
+    if (furnaceOutput && furnaceOutput !== outputType) {
+      setFurnaceProgress(0);
+      return;
+    }
+
+    const interval = setInterval(() => {
+      setFurnaceProgress((prev) => {
+        const next = prev + 20;
+        if (next >= 100) {
+          // Smelted 1 item successfully!
+          setFurnaceInputCount((ic) => {
+            const nextIc = ic - 1;
+            if (nextIc <= 0) setFurnaceInput(null);
+            return Math.max(0, nextIc);
+          });
+          setFurnaceOutput(outputType);
+          setFurnaceOutputCount((oc) => oc + 1);
+          setFurnaceFuelCount((fc) => {
+            const nextFc = fc - 1;
+            if (nextFc <= 0) setFurnaceFuel(null);
+            return Math.max(0, nextFc);
+          });
+          return 0;
+        }
+        return next;
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [appState, furnaceInput, furnaceInputCount, furnaceFuel, furnaceFuelCount, furnaceOutput]);
+
   // Staff and Mod specific collections watchers (all users list and activity logs)
   useEffect(() => {
     if (!activeSession) {
@@ -1134,9 +2395,7 @@ const App: React.FC = () => {
 
   // Keep latest state in a ref to avoid resetting the auto-save interval on every block/inventory change!
   const latestSaveDataRef = useRef({ currentWorld, survivalInventory, googleUser, appState });
-  useEffect(() => {
-    latestSaveDataRef.current = { currentWorld, survivalInventory, googleUser, appState };
-  }, [currentWorld, survivalInventory, googleUser, appState]);
+  latestSaveDataRef.current = { currentWorld, survivalInventory, googleUser, appState };
 
   const flushUserStats = useCallback(async () => {
     const { googleUser: activeUser } = latestSaveDataRef.current;
@@ -1188,9 +2447,22 @@ const App: React.FC = () => {
 
       if (activeUser) {
         try {
-          await saveWorldToFirestore(updatedWorld);
-          const dbWorlds = await loadWorldsFromFirestore(activeUser.uid);
-          setWorlds(dbWorlds);
+          // Merge ONLY playerPos & survivalInventory so concurrent block edits in Firestore are never overwritten
+          const worldDocRef = doc(db, "worlds", activeWorld.id);
+          await setDoc(worldDocRef, {
+            id: updatedWorld.id,
+            name: updatedWorld.name,
+            creator: updatedWorld.creator,
+            creatorName: updatedWorld.creatorName || updatedWorld.creator,
+            createdAt: updatedWorld.createdAt,
+            playerPos: activePlayerPosRef.current,
+            gameMode: updatedWorld.gameMode || "survival",
+            worldType: updatedWorld.worldType || "normal",
+            survivalInventory: activeInv,
+          }, { merge: true });
+          setWorlds((prev) =>
+            prev.map((w) => (w.id === activeWorld.id ? { ...w, playerPos: activePlayerPosRef.current, survivalInventory: activeInv } : w))
+          );
           // Flush user stats too!
           await flushUserStats();
         } catch (e) {
@@ -1365,31 +2637,61 @@ const App: React.FC = () => {
     setAppState("menu");
   };
 
-  const handleCreateWorld = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleCreateWorld = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     resumeAudio();
 
-    if (worlds.length >= 70 && !isBypassingWorldLimit) {
+    if (userWorlds.length >= 70 && !isBypassingWorldLimit) {
       setChatMessages((p) => [...p, "❌ Límite de 70 mundos alcanzado. Por favor elimina algún mundo antes de continuar."]);
       return;
     }
 
     const creator = googleUser ? googleUser.uid : (currentUser || "Invitado");
-    const creatorName = googleUser ? (googleUser.displayName || googleUser.email) : (currentUser || "Invitado");
+    const creatorName = googleUser ? (googleUser.displayName || googleUser.email || "Jugador") : (currentUser || "Invitado");
     const name = worldNameInput.trim() || dict[lang].new_world_default;
 
-    const initialInv = {
-      [BlockType.DIRT]: 16,
-      [BlockType.WOOD]: 8,
-      [BlockType.LOG]: 4,
-      [BlockType.CRAFTING_TABLE]: 1,
-    };
+    const hasBuilderKit = ownedShopItems.includes("kit_builder") || vipActive || mvpActive;
+    const hasExplorerKit = ownedShopItems.includes("kit_explorer_pro") || mvpActive;
+    const hasAquaticKit = ownedShopItems.includes("kit_aquatic_starter") || ownedShopItems.includes("aquatic_vip") || vipActive || mvpActive;
+
+    const initialInv: Record<number, number> = hasBuilderKit
+      ? {
+          [BlockType.DIRT]: 24,
+          [BlockType.WOOD]: 32,
+          [BlockType.LOG]: 16,
+          [BlockType.TORCH]: 16,
+          [BlockType.PICKAXE]: 1,
+          [BlockType.BED]: 1,
+          [BlockType.CRAFTING_TABLE]: 1,
+          [BlockType.FURNACE]: 1,
+        }
+      : {
+          [BlockType.DIRT]: 16,
+          [BlockType.WOOD]: 8,
+          [BlockType.LOG]: 4,
+          [BlockType.CRAFTING_TABLE]: 1,
+        };
+
+    if (hasExplorerKit) {
+      initialInv[BlockType.DIAMOND_SWORD] = (initialInv[BlockType.DIAMOND_SWORD] || 0) + 1;
+      initialInv[BlockType.DIAMOND_PICKAXE] = (initialInv[BlockType.DIAMOND_PICKAXE] || 0) + 1;
+      initialInv[BlockType.TORCH] = (initialInv[BlockType.TORCH] || 0) + 24;
+      initialInv[BlockType.LOCATOR_MAP] = (initialInv[BlockType.LOCATOR_MAP] || 0) + 1;
+      initialInv[BlockType.CHEST] = (initialInv[BlockType.CHEST] || 0) + 2;
+    }
+
+    if (hasAquaticKit) {
+      initialInv[BlockType.BUCKET_WATER] = (initialInv[BlockType.BUCKET_WATER] || 0) + 2;
+      initialInv[BlockType.GLOWSTONE] = (initialInv[BlockType.GLOWSTONE] || 0) + 12;
+      initialInv[BlockType.CONCRETE] = (initialInv[BlockType.CONCRETE] || 0) + 32;
+      initialInv[BlockType.TORCH] = (initialInv[BlockType.TORCH] || 0) + 12;
+    }
 
     const newWorld: World = {
       id: `world_${Date.now()}_${Math.floor(Math.random() * 10000)}`,
       name: name,
       creator: creator,
-      creatorName: creatorName || undefined,
+      creatorName: creatorName || "Jugador",
       createdAt: Date.now(),
       playerPos: { x: 0, y: newWorldType === "flat" ? 58 : 80, z: 0 },
       gameMode: newWorldGameMode,
@@ -1398,25 +2700,23 @@ const App: React.FC = () => {
       survivalInventory: initialInv
     };
 
-    if (googleUser) {
-      try {
-        await saveWorldToFirestore(newWorld);
-        const dbWorlds = await loadWorldsFromFirestore(googleUser.uid);
-        setWorlds(dbWorlds);
-      } catch (e) {
-        console.error("Error saving new world to firestore:", e);
-      }
-    } else {
-      const nextWorlds = [...worlds, newWorld];
-      setWorlds(nextWorlds);
-      saveWorlds(nextWorlds);
-    }
+    // 1. Immediately update state and localStorage so world opens instantly
+    const nextWorlds = [...worlds, newWorld];
+    setWorlds(nextWorlds);
+    saveWorlds(nextWorlds);
 
     setWorldNameInput("");
     setSurvivalInventory(initialInv);
     setCurrentWorld(newWorld);
     setPlayerPos({ x: 0, y: newWorldType === "flat" ? 58 : 80, z: 0 });
     setAppState("playing");
+
+    // 2. Sync to Firestore in background without blocking UI
+    if (googleUser) {
+      saveWorldToFirestore(newWorld).catch((err) => {
+        console.warn("Background firestore save new world:", err);
+      });
+    }
   };
 
   const handleDeleteWorld = async (id: string, e: React.MouseEvent) => {
@@ -1487,117 +2787,124 @@ const App: React.FC = () => {
     }
   };
 
-  const handleCraft = (recipe: CraftingRecipe) => {
-    // Verify ingredients
-    let hasAll = true;
-    for (const ing of recipe.ingredients) {
-      if ((survivalInventory[ing.type] || 0) < ing.count) {
-        hasAll = false;
-        break;
+  const handleCraft = (recipe: CraftingRecipe, equipAfter = false) => {
+    if (!isCreativeMode) {
+      for (const ing of recipe.ingredients) {
+        if ((survivalInventory[ing.type] || 0) < ing.count) {
+          return;
+        }
       }
+
+      setSurvivalInventory((prev) => {
+        const next = { ...prev };
+        for (const ing of recipe.ingredients) {
+          next[ing.type] = Math.max(0, (next[ing.type] || 0) - ing.count);
+        }
+        next[recipe.result] = (next[recipe.result] || 0) + recipe.resultCount;
+
+        if (currentWorld) {
+          (currentWorld as any).survivalInventory = next;
+        }
+        return next;
+      });
     }
 
-    if (!hasAll) return;
-
-    // Deduct ingredients and add resulting item to inventory
-    setSurvivalInventory((prev) => {
-      const next = { ...prev };
-      for (const ing of recipe.ingredients) {
-        next[ing.type] = (next[ing.type] || 0) - ing.count;
-      }
-      next[recipe.result] = (next[recipe.result] || 0) + recipe.resultCount;
-
-      if (currentWorld) {
-        (currentWorld as any).survivalInventory = next;
-      }
-      return next;
-    });
+    playPlaceSound(recipe.result);
+    if (equipAfter) {
+      setCurrentBlock(recipe.result);
+      setIsInventoryOpen(false);
+      setIsCraftingTableActive(false);
+    }
   };
 
   const handleBlockEdit = useCallback(
-    (x: number, y: number, z: number, blockType: BlockType, oldBlockType?: BlockType) => {
+    (x: number, y: number, z: number, blockType: BlockType, oldBlockType?: BlockType, isSystemUpdate?: boolean) => {
       if (!currentWorld) return;
 
-      if (blockType === BlockType.AIR) {
-        blocksBrokenRef.current += 1;
-      } else {
-        blocksPlacedRef.current += 1;
-      }
-
-      const actName = blockType === BlockType.AIR ? "Destruyó bloque" : `Colocó bloque de ${BLOCK_NAMES[blockType] || blockType}`;
-      logUserActivity(`${actName} en coord [X: ${x}, Y: ${y}, Z: ${z}] (${dimension === "nether" ? "Nether" : "Overworld"})`);
-
-      const isSurvival = (currentWorld.gameMode as string) === "survival" || (currentWorld.gameMode as string) === "supervivencia";
-      if (isSurvival) {
+      if (!isSystemUpdate) {
         if (blockType === BlockType.AIR) {
-          if (oldBlockType && (oldBlockType as any) !== BlockType.AIR && (oldBlockType as any) !== BlockType.BEDROCK) {
-            setSurvivalInventory((prev) => {
-              const next = {
-                ...prev,
-                [oldBlockType]: (prev[oldBlockType] || 0) + 1,
-              };
-              (currentWorld as any).survivalInventory = next;
-              return next;
-            });
-          }
+          blocksBrokenRef.current += 1;
         } else {
-          setSurvivalInventory((prev) => {
-            const nextCount = (prev[blockType] || 0) - 1;
-            const next = {
-              ...prev,
-              [blockType]: Math.max(0, nextCount),
-            };
+          blocksPlacedRef.current += 1;
+        }
 
-            if (nextCount <= 0 && currentBlock === blockType) {
-              const another = Object.keys(next).map(Number).find((k) => next[k] > 0);
-              if (another) {
-                setCurrentBlock(another);
-              }
+        const actName = blockType === BlockType.AIR ? "Destruyó bloque" : `Colocó bloque de ${BLOCK_NAMES[blockType] || blockType}`;
+        logUserActivity(`${actName} en coord [X: ${x}, Y: ${y}, Z: ${z}] (${dimension === "nether" ? "Nether" : "Overworld"})`);
+
+        const isSurvival = (currentWorld.gameMode as string) === "survival" || (currentWorld.gameMode as string) === "supervivencia";
+        if (isSurvival) {
+          if (blockType === BlockType.AIR) {
+            if (oldBlockType && (oldBlockType as any) !== BlockType.AIR && (oldBlockType as any) !== BlockType.BEDROCK) {
+              setSurvivalInventory((prev) => {
+                const next = {
+                  ...prev,
+                  [oldBlockType]: (prev[oldBlockType] || 0) + 1,
+                };
+                (currentWorld as any).survivalInventory = next;
+                return next;
+              });
             }
+          } else {
+            // Only deduct from survival inventory if this was an intentional placement of the held block
+            if (currentBlock === blockType) {
+              setSurvivalInventory((prev) => {
+                const currentQty = prev[blockType] || 0;
+                if (currentQty <= 0) return prev;
+                const nextCount = currentQty - 1;
+                const next = {
+                  ...prev,
+                  [blockType]: nextCount,
+                };
 
-            (currentWorld as any).survivalInventory = next;
-            return next;
-          });
+                (currentWorld as any).survivalInventory = next;
+                return next;
+              });
+            }
+          }
         }
       }
 
+      const baseWorld = latestSaveDataRef.current.currentWorld || currentWorld;
       const editKey = dimension === "nether" ? `nether:${x},${y},${z}` : `${x},${y},${z}`;
+      pendingLocalEditsRef.current[editKey] = { value: blockType, ts: Date.now() };
 
-      setCurrentWorld((prev) => {
-        if (!prev) return prev;
-        const updatedEdits = { ...prev.edits };
+      const updatedEdits = { ...(baseWorld.edits || {}) };
+      const patchFields: Record<string, any> = {};
 
-        // Helper to get block in the local copy of edits
-        const getLocalBlockAt = (bx: number, by: number, bz: number) => {
-          const key = dimension === "nether" ? `nether:${bx},${by},${bz}` : `${bx},${by},${bz}`;
-          return updatedEdits[key] ?? BlockType.AIR;
-        };
+      // Helper to get block in the local copy of edits
+      const getLocalBlockAt = (bx: number, by: number, bz: number) => {
+        const key = dimension === "nether" ? `nether:${bx},${by},${bz}` : `${bx},${by},${bz}`;
+        return updatedEdits[key] ?? BlockType.AIR;
+      };
 
-        const setLocalBlockAt = (bx: number, by: number, bz: number, type: BlockType) => {
-          const key = dimension === "nether" ? `nether:${bx},${by},${bz}` : `${bx},${by},${bz}`;
-          if (type === BlockType.AIR) {
-            delete updatedEdits[key];
-          } else {
-            updatedEdits[key] = type;
-          }
-        };
-
-        // Standard edit update first
-        if (blockType === BlockType.AIR) {
-          updatedEdits[editKey] = BlockType.AIR;
+      const setLocalBlockAt = (bx: number, by: number, bz: number, type: BlockType) => {
+        const key = dimension === "nether" ? `nether:${bx},${by},${bz}` : `${bx},${by},${bz}`;
+        pendingLocalEditsRef.current[key] = { value: type, ts: Date.now() };
+        if (type === BlockType.AIR) {
+          delete updatedEdits[key];
+          patchFields[`edits.${key}`] = deleteField();
         } else {
-          updatedEdits[editKey] = blockType;
+          updatedEdits[key] = type;
+          patchFields[`edits.${key}`] = type;
         }
+      };
 
+      // Standard edit update first
+      if (blockType === BlockType.AIR) {
+        updatedEdits[editKey] = BlockType.AIR;
+        patchFields[`edits.${editKey}`] = BlockType.AIR;
+      } else {
+        updatedEdits[editKey] = blockType;
+        patchFields[`edits.${editKey}`] = blockType;
+      }
+
+      if (!isSystemUpdate) {
         // 1. Check if any portal frame is completed/valid in the neighborhood of (x, y, z)
         let portalCreated = false;
-        // Search in a small box around the edited block
         for (let tx = x - 3; tx <= x + 3; tx++) {
           for (let ty = y - 3; ty <= y + 3; ty++) {
             for (let tz = z - 3; tz <= z + 3; tz++) {
-              // Try X-aligned frame starting at (tx, ty, tz)
               if (isFrameValidX(tx, ty, tz, getLocalBlockAt)) {
-                // Fill the 6 inner blocks
                 for (let dx = 0; dx <= 1; dx++) {
                   for (let dy = 0; dy <= 2; dy++) {
                     const blockAtPos = getLocalBlockAt(tx + dx, ty + dy, tz);
@@ -1608,9 +2915,7 @@ const App: React.FC = () => {
                   }
                 }
               }
-              // Try Z-aligned frame starting at (tx, ty, tz)
               if (isFrameValidZ(tx, ty, tz, getLocalBlockAt)) {
-                // Fill the 6 inner blocks
                 for (let dz = 0; dz <= 1; dz++) {
                   for (let dy = 0; dy <= 2; dy++) {
                     const blockAtPos = getLocalBlockAt(tx, ty + dy, tz + dz);
@@ -1630,8 +2935,7 @@ const App: React.FC = () => {
           }, 50);
         }
 
-        // 2. Always check and revalidate existing portal blocks in a neighborhood of (x, y, z)
-        // If they are no longer part of a valid frame, break them (set to AIR)
+        // 2. Revalidate existing portal blocks in a neighborhood of (x, y, z)
         for (let tx = x - 4; tx <= x + 4; tx++) {
           for (let ty = y - 4; ty <= y + 4; ty++) {
             for (let tz = z - 4; tz <= z + 4; tz++) {
@@ -1643,31 +2947,51 @@ const App: React.FC = () => {
             }
           }
         }
+      }
 
-        const updatedWorld = {
-          ...prev,
-          edits: updatedEdits,
-          survivalInventory: (prev as any).survivalInventory
-        };
+      const updatedWorld: World = {
+        ...baseWorld,
+        edits: updatedEdits,
+        survivalInventory: (baseWorld as any).survivalInventory,
+      };
 
-        // Sync edits to Firestore in real-time so other players see them instantly!
-        if (db) {
-          updateDoc(doc(db, "worlds", prev.id), { edits: updatedEdits }).catch((err) => {
+      // Update synchronous ref immediately so rapid back-to-back edits accumulate cleanly
+      latestSaveDataRef.current = {
+        ...latestSaveDataRef.current,
+        currentWorld: updatedWorld,
+      };
+
+      setCurrentWorld(updatedWorld);
+
+      // Sync ONLY modified edit keys atomically outside state updater
+      if (db) {
+        const worldDocRef = doc(db, "worlds", updatedWorld.id);
+        updateDoc(worldDocRef, patchFields).catch(() => {
+          setDoc(worldDocRef, {
+            id: updatedWorld.id,
+            name: updatedWorld.name,
+            creator: updatedWorld.creator,
+            creatorName: updatedWorld.creatorName || updatedWorld.creator,
+            createdAt: updatedWorld.createdAt,
+            playerPos: updatedWorld.playerPos || { x: 0, y: 80, z: 0 },
+            gameMode: updatedWorld.gameMode || "survival",
+            worldType: updatedWorld.worldType || "normal",
+            edits: updatedEdits,
+            survivalInventory: updatedWorld.survivalInventory || {},
+          }, { merge: true }).catch((err) => {
             console.warn("Error syncing block edits to Firestore:", err);
           });
-        }
-
-        setWorlds((allWorlds) => {
-          const next = allWorlds.map((w) =>
-            w.id === prev.id ? updatedWorld : w,
-          );
-          if (!googleUser) {
-            saveWorlds(next);
-          }
-          return next;
         });
+      }
 
-        return updatedWorld;
+      setWorlds((allWorlds) => {
+        const next = allWorlds.map((w) =>
+          w.id === updatedWorld.id ? updatedWorld : w,
+        );
+        if (!googleUser) {
+          saveWorlds(next);
+        }
+        return next;
       });
     },
     [currentWorld, googleUser, currentBlock, dimension],
@@ -1766,53 +3090,53 @@ const App: React.FC = () => {
     reader.readAsText(file);
   };
 
-  const handleSaveAndExit = async () => {
+  const handleMusicUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setCustomBackgroundMusicFile(file);
+      setMusicFileName(file.name);
+      setIsMusicPlayingState(true);
+      setIsProceduralActive(false);
+    }
+  };
+
+  const handleSaveAndExit = () => {
+    resumeAudio();
+    setIsGameMenuOpen(false);
+
     if (currentWorld) {
-      const updatedWorld = {
+      const updatedWorld: World = {
         ...currentWorld,
-        playerPos: activePlayerPosRef.current,
+        playerPos: activePlayerPosRef.current || playerPos,
         survivalInventory: survivalInventory,
       };
 
+      // 1. Save locally immediately so no progress is ever lost and transitions are instant
+      setWorlds((prev) => {
+        const next = prev.map((w) =>
+          w.id === currentWorld.id ? updatedWorld : w,
+        );
+        saveWorlds(next);
+        return next;
+      });
+
+      // 2. Perform cloud sync in the background
       if (googleUser) {
-        try {
-          await saveWorldToFirestore(updatedWorld);
-          const dbWorlds = await loadWorldsFromFirestore(googleUser.uid);
-          setWorlds(dbWorlds);
-          await flushUserStats();
-        } catch (e) {
-          console.error("Error saving world to firestore on exit:", e);
-        }
-      } else {
-        setWorlds((prev) => {
-          const next = prev.map((w) =>
-            w.id === currentWorld.id ? updatedWorld : w,
-          );
-          saveWorlds(next);
-          return next;
-        });
+        saveWorldToFirestore(updatedWorld)
+          .then(() => flushUserStats())
+          .catch((e) => console.warn("Background cloud sync on exit:", e));
       }
     }
-    resumeAudio();
+
     setAppState("menu");
     setCurrentWorld(null);
   };
-
-  const userWorlds = worlds.filter((w) => {
-    if (googleUser) {
-      return (
-        w.creator.toLowerCase() === googleUser.uid.toLowerCase() ||
-        w.creator.toLowerCase() === (currentUser || "").toLowerCase()
-      );
-    } else {
-      return w.creator.toLowerCase() === (currentUser || "Invitado").toLowerCase();
-    }
-  });
   const lastTouchPos = useRef<{ x: number; y: number; id: number } | null>(
     null,
   );
 
   const isCreativeMode = (currentWorld?.gameMode as string) === "creative" || (currentWorld?.gameMode as string) === "creativo";
+  const isSpectatorMode = (currentWorld?.gameMode as string) === "spectator" || (currentWorld?.gameMode as string) === "espectador";
 
   const inventoryItems = isCreativeMode
     ? [
@@ -1851,10 +3175,60 @@ const App: React.FC = () => {
         BlockType.CRIMSON_NYLIUM,
         BlockType.WARPED_NYLIUM,
         BlockType.PORTAL,
+        BlockType.CUSHION,
+        BlockType.WOOL,
+        BlockType.WOOL_STAIRS,
+        BlockType.CONCRETE,
+        BlockType.CONCRETE_STAIRS,
+        BlockType.GRAVEL,
+        BlockType.FLINT_AND_STEEL,
+        BlockType.MAP,
+        BlockType.LOCATOR_MAP,
+        BlockType.REDSTONE,
+        BlockType.SUGAR_CANE,
+        BlockType.PAPER,
+        BlockType.SUGAR,
+        BlockType.CARTOGRAPHY_TABLE,
+        BlockType.FURNACE,
+        BlockType.BAMBOO,
+        BlockType.CHEST,
+        BlockType.FROG_EGGS,
+        BlockType.CHICKEN_EGG,
+        BlockType.CHERRY_LOG,
+        BlockType.CHERRY_LEAVES,
+        BlockType.CHERRY_WOOD,
+        BlockType.DARK_LOG,
+        BlockType.DARK_LEAVES,
+        BlockType.DARK_GRASS,
+        BlockType.WOOD_SWORD,
+        BlockType.WOOD_PICKAXE,
+        BlockType.AXE,
+        BlockType.WOOD_SHOVEL,
+        BlockType.STONE_SWORD,
+        BlockType.PICKAXE,
+        BlockType.STONE_AXE,
+        BlockType.SHOVEL,
+        BlockType.SWORD,
+        BlockType.IRON_PICKAXE,
+        BlockType.IRON_AXE,
+        BlockType.IRON_SHOVEL,
+        BlockType.GOLD_SWORD,
+        BlockType.GOLD_PICKAXE,
+        BlockType.GOLD_AXE,
+        BlockType.GOLD_SHOVEL,
+        BlockType.DIAMOND_SWORD,
+        BlockType.DIAMOND_PICKAXE,
+        BlockType.DIAMOND_AXE,
+        BlockType.DIAMOND_SHOVEL,
       ]
-    : Object.keys(survivalInventory)
-        .map(Number)
-        .filter((k) => survivalInventory[k] > 0);
+    : (() => {
+        const activeKeys = Object.keys(survivalInventory).map(Number);
+        const items = activeKeys.filter((k) => (survivalInventory[k] ?? 0) > 0);
+        if (currentBlock && !items.includes(currentBlock) && survivalInventory[currentBlock] !== undefined) {
+          items.push(currentBlock);
+        }
+        return items.length > 0 ? items : [BlockType.DIRT, BlockType.WOOD, BlockType.LOG, BlockType.CRAFTING_TABLE];
+      })();
 
   const lastIntPos = useRef({ x: NaN, y: NaN, z: NaN });
 
@@ -1868,7 +3242,8 @@ const App: React.FC = () => {
   useEffect(() => {
     if (appState !== "playing") {
       activeKeys.current = {};
-      setMoveVector(prev => (prev.x !== 0 || prev.y !== 0) ? { x: 0, y: 0 } : prev);
+      moveVectorRef.current.x = 0;
+      moveVectorRef.current.y = 0;
       setIsJumping(prev => prev ? false : prev);
       setDimension("overworld");
       return;
@@ -1891,10 +3266,8 @@ const App: React.FC = () => {
         left += 1.0;
       }
 
-      setMoveVector(prev => {
-        if (prev.x === left && prev.y === forward) return prev;
-        return { x: left, y: forward };
-      });
+      moveVectorRef.current.x = left;
+      moveVectorRef.current.y = forward;
       setIsJumping(prev => {
         const nextValue = !!activeKeys.current[" "];
         return prev === nextValue ? prev : nextValue;
@@ -1971,7 +3344,9 @@ const App: React.FC = () => {
 
     const handleBlur = () => {
       activeKeys.current = {};
-      setMoveVector(prev => (prev.x !== 0 || prev.y !== 0) ? { x: 0, y: 0 } : prev);
+      moveVectorRef.current.x = 0;
+      moveVectorRef.current.y = 0;
+      lastTouchPos.current = null;
       setIsJumping(prev => prev ? false : prev);
       setIsZooming(false);
     };
@@ -1984,6 +3359,7 @@ const App: React.FC = () => {
     };
   }, [appState]);
 
+  const lastChunkReactRef = useRef({ cx: NaN, cz: NaN, farZone: 0 });
   const handlePosChange = useCallback((newPos: Vector3D) => {
     activePlayerPosRef.current = newPos;
     const ix = Math.round(newPos.x);
@@ -1996,23 +3372,47 @@ const App: React.FC = () => {
       if (el) {
         el.textContent = `X:${ix} Y:${iy - 55} Z:${iz}`;
       }
-      setPlayerPos(newPos);
+
+      // Only trigger full React re-render on chunk crossings or Far Lands threshold changes
+      const cx = Math.floor(newPos.x / 16);
+      const cz = Math.floor(newPos.z / 16);
+      const maxAbs = Math.max(Math.abs(newPos.x), Math.abs(newPos.z));
+      const farZone = maxAbs >= 2000 ? 2 : maxAbs >= 1500 ? 1 : 0;
+      if (
+        cx !== lastChunkReactRef.current.cx ||
+        cz !== lastChunkReactRef.current.cz ||
+        farZone !== lastChunkReactRef.current.farZone
+      ) {
+        lastChunkReactRef.current = { cx, cz, farZone };
+        setPlayerPos(newPos);
+      }
     }
   }, []);
 
   const handleTouchStart = (e: React.TouchEvent | React.MouseEvent) => {
     resumeAudio();
     if ("changedTouches" in e) {
+      // Do not hijack camera look drag if another finger is already rotating the camera
+      if (lastTouchPos.current !== null && lastTouchPos.current.id !== -1) {
+        return;
+      }
       const touch = e.changedTouches[0];
+      if (!touch) return;
       lastTouchPos.current = {
         x: touch.clientX,
         y: touch.clientY,
         id: touch.identifier,
       };
     } else {
+      // Ignore synthetic mouse events while an active touch drag is tracked or non-primary mouse buttons
+      if (lastTouchPos.current !== null && lastTouchPos.current.id !== -1) {
+        return;
+      }
+      const mouseEv = e as React.MouseEvent;
+      if (mouseEv.button !== 0) return;
       lastTouchPos.current = {
-        x: (e as React.MouseEvent).clientX,
-        y: (e as React.MouseEvent).clientY,
+        x: mouseEv.clientX,
+        y: mouseEv.clientY,
         id: -1,
       };
     }
@@ -2023,6 +3423,7 @@ const App: React.FC = () => {
 
     let clientX, clientY;
     if ("changedTouches" in e) {
+      if (lastTouchPos.current.id === -1) return;
       let touch;
       for (let i = 0; i < e.changedTouches.length; i++) {
         if (e.changedTouches[i].identifier === lastTouchPos.current.id) {
@@ -2034,8 +3435,14 @@ const App: React.FC = () => {
       clientX = touch.clientX;
       clientY = touch.clientY;
     } else {
-      clientX = (e as React.MouseEvent).clientX;
-      clientY = (e as React.MouseEvent).clientY;
+      if (lastTouchPos.current.id !== -1) return;
+      const mouseEv = e as React.MouseEvent;
+      if ((mouseEv.buttons & 1) === 0) {
+        lastTouchPos.current = null;
+        return;
+      }
+      clientX = mouseEv.clientX;
+      clientY = mouseEv.clientY;
     }
 
     lookOffsetRef.current.x += clientX - lastTouchPos.current.x;
@@ -2054,7 +3461,7 @@ const App: React.FC = () => {
           break;
         }
       }
-    } else {
+    } else if (lastTouchPos.current.id === -1) {
       lastTouchPos.current = null;
     }
   };
@@ -2073,14 +3480,25 @@ const App: React.FC = () => {
     setIsLoadingSuggestion(false);
   };
 
+  const handleOpenCraftingTable = useCallback(() => {
+    setIsCraftingTableActive(true);
+    setInventoryTab("crafting");
+    setIsInventoryOpen(true);
+  }, []);
+  const handleOpenFurnace = useCallback(() => setIsFurnaceOpen(true), []);
+  const handleOpenCartographyTable = useCallback(() => setIsCartographyOpen(true), []);
+  const handleOpenChest = useCallback(() => setIsChestOpen(true), []);
+  const handleUseMap = useCallback(() => setIsMapOpen(true), []);
+
   const handleCaptureScreenshot = () => {
     resumeAudio();
+    const captureBridge = (window as any).__captureVoxelScreenshot as (() => string) | undefined;
     const container = document.getElementById("voxel-canvas");
     const canvas = (container?.tagName === "CANVAS" 
       ? container 
       : container?.querySelector("canvas") || document.querySelector("canvas")) as HTMLCanvasElement | null;
     
-    if (canvas) {
+    if (captureBridge || canvas) {
       try {
         // Trigger camera flash
         setShowCameraFlash(true);
@@ -2092,8 +3510,8 @@ const App: React.FC = () => {
           setShowCameraFlash(false);
         }, 550);
 
-        // Capture frame as image
-        const dataUrl = canvas.toDataURL("image/png");
+        // Capture frame as image (uses immediate re-render bridge when preserveDrawingBuffer is false)
+        const dataUrl = captureBridge ? captureBridge() : canvas!.toDataURL("image/png");
         const link = document.createElement("a");
         link.download = `voxelworld-${Date.now()}.png`;
         link.href = dataUrl;
@@ -2116,77 +3534,59 @@ const App: React.FC = () => {
 
   if (appState === "login-prompt") {
     return (
-      <div className="w-full h-full bg-slate-900 flex flex-col items-center justify-start sm:justify-center p-4 sm:p-6 relative overflow-y-auto">
-        {/* Tiled Minecraft-style Dirt/Stone elegant dark overlay */}
-        <div 
-          className="absolute inset-0 opacity-15 pointer-events-none"
-          style={{
-            backgroundImage: "radial-gradient(circle, #000 10%, transparent 10%), radial-gradient(circle, #000 10%, transparent 10%)",
-            backgroundSize: "20px 20px",
-            backgroundPosition: "0 0, 10px 10px"
-          }}
+      <div className="w-full h-full bg-slate-900 flex flex-col items-center justify-end p-4 sm:p-6 pb-6 sm:pb-8 relative overflow-hidden select-none">
+        {/* 3D Rotating Voxel Panorama & 3D Logo */}
+        <MenuPanorama3D 
+          showLogo={true} 
+          onEnterCinemaMode={() => setIsCinemaMode(!isCinemaMode)} 
+          isCinemaMode={isCinemaMode} 
         />
 
-        {/* Sky gradient background lights */}
-        <div className="absolute top-[-20%] left-[-20%] w-[60%] h-[60%] bg-emerald-500/10 rounded-full filter blur-[120px] pointer-events-none" />
-        <div className="absolute bottom-[-20%] right-[-20%] w-[60%] h-[60%] bg-sky-500/10 rounded-full filter blur-[120px] pointer-events-none" />
-
-        {/* Decorative blocks behind menu */}
-        <div className="absolute inset-0 pointer-events-none opacity-20 flex flex-wrap gap-4 p-8 justify-center items-center overflow-hidden">
-          {[...Array(24)].map((_, i) => {
-            const colors = ["#059669", "#92400e", "#3f3f46", "#52525b"];
-            const color = colors[i % colors.length];
-            const rotation = (i * 27) % 360;
-            const size = 12 + (i * 7) % 16;
-            return (
-              <div
-                key={i}
-                className="rounded-lg shadow-xl shrink-0"
-                style={{
-                  width: `${size * 4}px`,
-                  height: `${size * 4}px`,
-                  backgroundColor: color,
-                  transform: `rotate(${rotation}deg)`
-                }}
-              />
-            );
-          })}
-        </div>
-
-        <div className="z-10 bg-black/75 backdrop-blur-xl p-6 sm:p-8 rounded-3xl border border-white/20 flex flex-col items-center shadow-2xl max-w-md w-full my-auto">
-          <h1 className="text-white text-4xl sm:text-5xl font-bold minecraft-font uppercase tracking-tighter mb-4 text-center drop-shadow-lg leading-none">
-            {t.menu_title} <span className="text-emerald-400">{t.menu_subtitle}</span>
-          </h1>
-
-          <p className="text-white/80 text-center text-sm md:text-base mt-2 mb-8 minecraft-font font-medium leading-relaxed">
+        <div className={`z-10 max-w-[310px] sm:max-w-sm w-full mx-auto flex flex-col items-center gap-2.5 mb-2 transition-all duration-300 ${isCinemaMode ? "opacity-0 pointer-events-none translate-y-12" : "opacity-100 translate-y-0"}`}>
+          <p className="text-white font-extrabold text-center text-xs md:text-sm mb-1 minecraft-font drop-shadow-[2px_2px_0_#000] bg-black/55 backdrop-blur-sm px-4 py-1.5 rounded-full border border-white/10">
             {t.login_prompt}
           </p>
 
-          <div className="flex flex-col w-full gap-4">
+          <div className="flex flex-col w-full gap-2">
             {/* Google Login button */}
             <button
               onClick={handleGoogleLogin}
-              className="bg-white hover:bg-zinc-100 text-zinc-900 font-bold py-4 rounded-xl text-xs sm:text-sm uppercase tracking-wider shadow-lg transition-all active:scale-95 text-center flex items-center justify-center gap-2 border border-zinc-200"
+              className="w-full py-2.5 sm:py-3 px-4 rounded-lg text-zinc-900 font-extrabold text-xs sm:text-sm uppercase tracking-wider minecraft-font transition-all duration-75 flex items-center justify-center gap-2 border-t-2 border-l-2 border-white border-b-4 border-r-4 border-zinc-400 bg-gradient-to-b from-white via-zinc-100 to-zinc-200 shadow-[0_4px_0_#71717a,0_8px_16px_rgba(0,0,0,0.55)] active:translate-y-[3px] active:shadow-[0_1px_0_#71717a] hover:brightness-105 cursor-pointer"
+              style={{
+                textShadow: "1px 1px 0px rgba(255,255,255,0.7)"
+              }}
             >
-              <i className="fab fa-google text-red-500 text-base" /> {t.login_google}
+              <i className="fab fa-google text-red-500 text-sm" /> {t.login_google}
             </button>
 
+            {/* Sign in button */}
             <button
               onClick={handleChooseSignIn}
-              className="bg-emerald-500 hover:bg-emerald-400 text-white font-bold py-4 rounded-xl text-xs sm:text-sm uppercase tracking-wider shadow-lg shadow-emerald-500/20 transition-all active:scale-95 text-center flex items-center justify-center gap-2"
+              className="w-full py-2.5 sm:py-3 px-4 rounded-lg text-white font-extrabold text-xs sm:text-sm uppercase tracking-wider minecraft-font transition-all duration-75 flex items-center justify-center gap-2 border-t-2 border-l-2 border-emerald-300 border-b-4 border-r-4 border-emerald-950 bg-gradient-to-b from-emerald-500 via-emerald-600 to-emerald-800 shadow-[0_4px_0_#064e3b,0_8px_16px_rgba(0,0,0,0.55)] active:translate-y-[3px] active:shadow-[0_1px_0_#064e3b] hover:brightness-110 cursor-pointer"
+              style={{
+                textShadow: "1px 1px 0px #000, -1px -1px 0px #000",
+                backgroundImage: "linear-gradient(rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(to bottom, #10b981, #059669, #065f46)",
+                backgroundSize: "4px 4px, 4px 4px, 100% 100%"
+              }}
             >
-              <i className="fas fa-lock text-sm" /> {t.option_sign_in}
+              <i className="fas fa-lock text-emerald-200 text-xs" /> {t.option_sign_in}
             </button>
 
+            {/* Guest button */}
             <button
               onClick={handleChooseGuest}
-              className="bg-zinc-800 hover:bg-zinc-700 text-white/90 font-bold py-4 rounded-xl text-xs sm:text-sm uppercase tracking-wider shadow-lg border border-white/10 transition-all active:scale-95 text-center flex items-center justify-center gap-2"
+              className="w-full py-2.5 sm:py-3 px-4 rounded-lg text-white/90 font-extrabold text-xs sm:text-sm uppercase tracking-wider minecraft-font transition-all duration-75 flex items-center justify-center gap-2 border-t-2 border-l-2 border-zinc-400 border-b-4 border-r-4 border-zinc-950 bg-gradient-to-b from-zinc-600 via-zinc-700 to-zinc-800 shadow-[0_4px_0_#18181b,0_8px_16px_rgba(0,0,0,0.55)] active:translate-y-[3px] active:shadow-[0_1px_0_#18181b] hover:brightness-110 cursor-pointer"
+              style={{
+                textShadow: "1px 1px 0px #000, -1px -1px 0px #000",
+                backgroundImage: "linear-gradient(rgba(255,255,255,0.1) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.1) 1px, transparent 1px), linear-gradient(to bottom, #52525b, #3f3f46, #27272a)",
+                backgroundSize: "4px 4px, 4px 4px, 100% 100%"
+              }}
             >
-              <i className="fas fa-user-secret text-sm" /> {t.option_guest}
+              <i className="fas fa-user-secret text-zinc-300 text-xs" /> {t.option_guest}
             </button>
           </div>
           
-          <div className="text-white/35 font-mono text-[9px] mt-6 select-none uppercase tracking-widest text-center border-t border-white/5 pt-4 w-full">
+          <div className="text-white/40 font-mono text-[9px] select-none uppercase tracking-widest text-center font-bold mt-1">
             alpha Mobile 1.0.2
           </div>
         </div>
@@ -2196,44 +3596,15 @@ const App: React.FC = () => {
 
   if (appState === "login") {
     return (
-      <div className="w-full h-full bg-slate-900 flex flex-col items-center justify-start sm:justify-center p-4 sm:p-6 relative overflow-y-auto">
-        {/* Tiled Minecraft-style Dirt/Stone elegant dark overlay */}
-        <div 
-          className="absolute inset-0 opacity-15 pointer-events-none"
-          style={{
-            backgroundImage: "radial-gradient(circle, #000 10%, transparent 10%), radial-gradient(circle, #000 10%, transparent 10%)",
-            backgroundSize: "20px 20px",
-            backgroundPosition: "0 0, 10px 10px"
-          }}
+      <div className="w-full h-full bg-slate-900 flex flex-col items-center justify-center p-4 sm:p-6 relative overflow-hidden select-none">
+        {/* 3D Rotating Voxel Panorama */}
+        <MenuPanorama3D 
+          showLogo={false} 
+          onEnterCinemaMode={() => setIsCinemaMode(!isCinemaMode)} 
+          isCinemaMode={isCinemaMode} 
         />
 
-        {/* Sky gradient background lights */}
-        <div className="absolute top-[-20%] left-[-20%] w-[60%] h-[60%] bg-emerald-500/10 rounded-full filter blur-[120px] pointer-events-none" />
-        <div className="absolute bottom-[-20%] right-[-20%] w-[60%] h-[60%] bg-sky-500/10 rounded-full filter blur-[120px] pointer-events-none" />
-
-        {/* Decorative blocks behind menu */}
-        <div className="absolute inset-0 pointer-events-none opacity-20 flex flex-wrap gap-4 p-8 justify-center items-center overflow-hidden">
-          {[...Array(24)].map((_, i) => {
-            const colors = ["#059669", "#92400e", "#3f3f46", "#52525b"];
-            const color = colors[i % colors.length];
-            const rotation = (i * 27) % 360;
-            const size = 12 + (i * 7) % 16;
-            return (
-              <div
-                key={i}
-                className="rounded-lg shadow-xl shrink-0"
-                style={{
-                  width: `${size * 4}px`,
-                  height: `${size * 4}px`,
-                  backgroundColor: color,
-                  transform: `rotate(${rotation}deg)`
-                }}
-              />
-            );
-          })}
-        </div>
-
-        <div className="z-10 bg-black/75 backdrop-blur-xl p-6 sm:p-8 rounded-3xl border border-white/20 flex flex-col items-center shadow-2xl max-w-sm w-full my-auto">
+        <div className={`z-10 bg-black/80 backdrop-blur-xl p-6 sm:p-8 rounded-3xl border border-white/20 flex flex-col items-center shadow-2xl max-w-sm w-full my-auto transition-all duration-300 ${isCinemaMode ? "opacity-0 pointer-events-none scale-95" : "opacity-100 scale-100"}`}>
           <h2 className="text-white text-3xl font-bold minecraft-font uppercase tracking-tighter mb-4 text-center drop-shadow-lg font-bold">
             {t.option_sign_in}
           </h2>
@@ -2311,20 +3682,9 @@ const App: React.FC = () => {
     );
 
     return (
-      <div className="w-full h-full bg-slate-900 flex flex-col items-center justify-start sm:justify-center p-4 sm:p-8 relative overflow-y-auto">
-        {/* Tiled Minecraft-style Dirt/Stone elegant dark overlay */}
-        <div 
-          className="absolute inset-0 opacity-15 pointer-events-none"
-          style={{
-            backgroundImage: "radial-gradient(circle, #000 10%, transparent 10%), radial-gradient(circle, #000 10%, transparent 10%)",
-            backgroundSize: "20px 20px",
-            backgroundPosition: "0 0, 10px 10px"
-          }}
-        />
-        
-        {/* Sky gradient background lights */}
-        <div className="absolute top-[-20%] left-[-20%] w-[60%] h-[60%] bg-emerald-500/10 rounded-full filter blur-[120px] pointer-events-none" />
-        <div className="absolute bottom-[-20%] right-[-20%] w-[60%] h-[60%] bg-sky-500/10 rounded-full filter blur-[120px] pointer-events-none" />
+      <div className="w-full h-full bg-slate-900 flex flex-col items-center justify-start sm:justify-center p-4 sm:p-8 relative overflow-y-auto select-none">
+        {/* 3D Rotating Voxel Panorama */}
+        <MenuPanorama3D showLogo={false} />
 
         <div className="z-10 bg-zinc-950/90 backdrop-blur-2xl p-6 sm:p-8 rounded-[32px] border border-white/10 flex flex-col w-full max-w-4xl shadow-3xl my-auto">
           {/* Header */}
@@ -2557,7 +3917,7 @@ const App: React.FC = () => {
                   </div>
                 </div>
 
-                {worlds.length >= 70 && !isBypassingWorldLimit && (
+                {userWorlds.length >= 70 && !isBypassingWorldLimit && (
                   <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-3 flex flex-col gap-2.5 text-red-400 font-semibold text-[9px] leading-relaxed uppercase tracking-wider">
                     <div className="flex gap-2 items-center">
                       <i className="fas fa-exclamation-triangle text-[11px] animate-pulse" />
@@ -2620,9 +3980,12 @@ const App: React.FC = () => {
 
                 <button
                   type="submit"
-                  disabled={worlds.length >= 70 && !isBypassingWorldLimit}
+                  onClick={(e) => {
+                    handleCreateWorld(e);
+                  }}
+                  disabled={userWorlds.length >= 70 && !isBypassingWorldLimit}
                   className={`font-bold py-3.5 rounded-xl text-xs uppercase tracking-wide transition-all flex items-center justify-center gap-2 mt-2 ${
-                    worlds.length >= 70 && !isBypassingWorldLimit
+                    userWorlds.length >= 70 && !isBypassingWorldLimit
                       ? "bg-zinc-800 text-zinc-500 cursor-not-allowed border border-white/5"
                       : "bg-emerald-500 hover:bg-emerald-400 text-white shadow-md shadow-emerald-500/10 hover:shadow-emerald-500/20 active:scale-95"
                   }`}
@@ -2653,25 +4016,71 @@ const App: React.FC = () => {
     );
   }
 
-  const handleJoinFriendWorld = async (worldId: string) => {
+  const handleJoinFriendWorld = async (
+    worldId: string,
+    targetPlayerPos?: Vector3D,
+    targetDimension?: "overworld" | "nether"
+  ) => {
+    const cleanId = worldId.trim();
+    if (!cleanId) return;
     try {
-      setIsFriendsOpen(false);
+      setFriendshipError("");
       setFriendshipLoading(true);
-      const worldSnap = await getDoc(doc(db, "worlds", worldId));
+      const worldSnap = await getDoc(doc(db, "worlds", cleanId));
       if (worldSnap.exists()) {
         const worldData = worldSnap.data() as World;
+        let spawnPos = targetPlayerPos
+          ? { x: targetPlayerPos.x + 2, y: targetPlayerPos.y + 0.5, z: targetPlayerPos.z + 2 }
+          : (worldData.playerPos || { x: 0, y: worldData.worldType === "flat" ? 58 : 80, z: 0 });
+        let spawnDim: "overworld" | "nether" = targetDimension || "overworld";
+
+        // If no explicit friend pos given, try spawning near an active player inside that world
+        if (!targetPlayerPos) {
+          try {
+            const pSnap = await getDocs(collection(db, "worlds", cleanId, "players"));
+            const now = Date.now();
+            pSnap.forEach((d) => {
+              const p = d.data();
+              if (p && p.id !== multiplayerUserIdRef.current && Math.abs(now - (p.lastActive || 0)) < 90000 && p.pos) {
+                spawnPos = {
+                  x: (typeof p.pos.x === "number" ? p.pos.x : 0) + 2,
+                  y: (typeof p.pos.y === "number" ? p.pos.y : 80) + 0.5,
+                  z: (typeof p.pos.z === "number" ? p.pos.z : 0) + 2,
+                };
+                if (p.dimension === "nether" || p.dimension === "overworld") {
+                  spawnDim = p.dimension;
+                }
+              }
+            });
+          } catch {}
+        }
+
+        setIsFriendsOpen(false);
+        setIsGameMenuOpen(false);
+        setDimension(spawnDim);
+        setPlayerPos(spawnPos);
+        activePlayerPosRef.current = spawnPos;
+        if (worldData.survivalInventory && Object.keys(worldData.survivalInventory).length > 0) {
+          setSurvivalInventory(worldData.survivalInventory);
+        }
         setCurrentWorld(worldData);
         setAppState("playing");
-        setChatMessages((p) => [...p, `¡Te uniste al mundo de tu amigo: '${worldData.name}'! 🌍`]);
+        setChatMessages((p) => [...p, `🌍 ¡Te uniste al mundo '${worldData.name}'! Escribe en el chat para saludar.`]);
       } else {
-        setFriendshipError("El mundo del amigo ya no está disponible o es privado.");
+        setFriendshipError("Mundo no encontrado. Verifica el código o pide a tu amigo que entre primero al mundo.");
       }
     } catch (err) {
       console.error(err);
-      setFriendshipError("Error al unirse al mundo del amigo.");
+      setFriendshipError("Error al unirse al mundo.");
     } finally {
       setFriendshipLoading(false);
     }
+  };
+
+  const handleJoinByWorldCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!joinWorldCodeInput.trim()) return;
+    await handleJoinFriendWorld(joinWorldCodeInput.trim());
   };
 
   const handleSendFriendRequest = async (e: React.FormEvent) => {
@@ -2809,6 +4218,142 @@ const App: React.FC = () => {
             </div>
           )}
 
+          {/* Amigo IA Companion Section */}
+          <div className="bg-gradient-to-br from-cyan-950/70 via-zinc-950/90 to-indigo-950/70 border border-cyan-500/40 rounded-xl p-3.5 flex flex-col gap-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-lg bg-cyan-500/20 border border-cyan-400/40 flex items-center justify-center text-base">
+                  🤖
+                </div>
+                <div>
+                  <h3 className="text-xs font-black uppercase tracking-wider text-cyan-300">
+                    {lang === "es" ? "Amigo IA (Juega como un Jugador)" : "AI Friend (Plays Like a Player)"}
+                  </h3>
+                  <p className="text-[10px] text-zinc-400">
+                    {lang === "es"
+                      ? "Camina, nada, mina, tala, construye refugios, combate mobs y conversa contigo."
+                      : "Walks, swims, mines, chops, builds shelters, fights mobs & chats with you."}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  resumeAudio();
+                  setAiCompanionConfig((prev) => ({ ...prev, enabled: !prev.enabled }));
+                }}
+                className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition active:scale-95 shrink-0 ${
+                  aiCompanionConfig.enabled
+                    ? "bg-rose-600 hover:bg-rose-500 text-white"
+                    : "bg-cyan-600 hover:bg-cyan-500 text-white"
+                }`}
+              >
+                {aiCompanionConfig.enabled
+                  ? (lang === "es" ? "Desactivar" : "Dismiss")
+                  : (lang === "es" ? "Invocar Amigo IA" : "Summon AI Friend")}
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <div className="flex items-center gap-2 bg-zinc-900/80 border border-white/10 rounded-lg px-2.5 py-1.5">
+                <span className="text-[10px] font-bold text-zinc-400 uppercase shrink-0">
+                  {lang === "es" ? "Nombre:" : "Name:"}
+                </span>
+                <input
+                  type="text"
+                  maxLength={18}
+                  value={aiCompanionConfig.name}
+                  onChange={(e) => setAiCompanionConfig((prev) => ({ ...prev, name: e.target.value }))}
+                  className="flex-1 bg-transparent text-white text-xs font-bold focus:outline-none"
+                  placeholder="Alex IA"
+                />
+              </div>
+
+              <div className="flex items-center gap-1 overflow-x-auto bg-zinc-900/80 border border-white/10 rounded-lg px-2 py-1">
+                {(["explorer", "cyber", "knight", "mage", "classic", "dragon"] as CharacterSkinId[]).map((sid) => (
+                  <button
+                    key={sid}
+                    type="button"
+                    onClick={() => setAiCompanionConfig((prev) => ({ ...prev, skinId: sid }))}
+                    className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase shrink-0 transition ${
+                      aiCompanionConfig.skinId === sid
+                        ? "bg-cyan-600 text-white"
+                        : "bg-zinc-800 text-zinc-400 hover:text-white"
+                    }`}
+                  >
+                    {sid}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-1.5">
+              {([
+                { id: "follow", label: lang === "es" ? "🤝 Seguir" : "🤝 Follow" },
+                { id: "gather", label: lang === "es" ? "⛏️ Minar/Talar" : "⛏️ Gather" },
+                { id: "build", label: lang === "es" ? "🏠 Construir" : "🏠 Build" },
+                { id: "guard", label: lang === "es" ? "⚔️ Proteger" : "⚔️ Guard" },
+                { id: "explore", label: lang === "es" ? "🧭 Explorar" : "🧭 Explore" },
+                { id: "stay", label: lang === "es" ? "🛑 Esperar" : "🛑 Stay" },
+              ] as { id: AICompanionMode; label: string }[]).map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  onClick={() => setAiCompanionConfig((prev) => ({ ...prev, enabled: true, mode: m.id }))}
+                  className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition active:scale-95 ${
+                    aiCompanionConfig.enabled && aiCompanionConfig.mode === m.id
+                      ? "bg-emerald-600 text-white border border-emerald-400/50"
+                      : "bg-zinc-900/90 text-zinc-300 border border-white/10 hover:bg-zinc-800"
+                  }`}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* World Code Share & Join Section */}
+          <div className="bg-zinc-950/80 border border-emerald-500/30 rounded-xl p-3 flex flex-col gap-2">
+            {currentWorld && (
+              <div className="flex items-center justify-between gap-2 bg-emerald-950/30 border border-emerald-500/20 rounded-lg px-2.5 py-1.5">
+                <div className="flex flex-col truncate">
+                  <span className="text-[9px] uppercase font-bold text-emerald-400">
+                    {lang === "es" ? "Código de tu Mundo Actual (Compártelo)" : "Current World Code"}
+                  </span>
+                  <span className="text-xs font-mono text-white font-bold truncate">{currentWorld.id}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard?.writeText(currentWorld.id);
+                    setFriendshipSuccess(lang === "es" ? "¡Código del mundo copiado!" : "World code copied!");
+                  }}
+                  className="bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-bold px-2.5 py-1.5 rounded-lg shrink-0 transition active:scale-95 flex items-center gap-1"
+                >
+                  <i className="fas fa-copy" /> {lang === "es" ? "Copiar" : "Copy"}
+                </button>
+              </div>
+            )}
+
+            <form onSubmit={handleJoinByWorldCode} className="flex gap-2">
+              <input
+                type="text"
+                placeholder={lang === "es" ? "Unirse por Código del Mundo (ej: world_...)" : "Join by World Code (e.g. world_...)"}
+                value={joinWorldCodeInput}
+                onChange={(e) => setJoinWorldCodeInput(e.target.value)}
+                className="flex-1 bg-zinc-900 border border-zinc-800 focus:border-emerald-500 text-white rounded-lg px-3 py-2 text-xs focus:outline-none transition font-mono"
+              />
+              <button
+                type="submit"
+                disabled={friendshipLoading || !joinWorldCodeInput.trim()}
+                className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold px-3.5 py-2 rounded-lg text-xs uppercase tracking-wider transition-all active:scale-95 flex items-center gap-1.5 shrink-0"
+              >
+                <i className="fas fa-door-open" />
+                {lang === "es" ? "Unirse" : "Join"}
+              </button>
+            </form>
+          </div>
+
           {/* Add Friend Form */}
           <form onSubmit={handleSendFriendRequest} className="flex gap-2">
             <input
@@ -2831,6 +4376,44 @@ const App: React.FC = () => {
               {lang === "es" ? "Añadir" : "Add"}
             </button>
           </form>
+
+          {/* Active Online Players Discovery Strip */}
+          {(() => {
+            const now = Date.now();
+            const liveOthers = Object.values(onlinePlayers).filter(
+              (p: any) => p && p.id !== activeSession && p.id !== multiplayerUserIdRef.current && (now - (p.lastActive || 0)) < 25000
+            );
+            if (liveOthers.length === 0) return null;
+            return (
+              <div className="bg-zinc-950/60 border border-sky-500/25 rounded-xl p-2.5 flex flex-col gap-1.5">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-sky-400 flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                  {lang === "es" ? `Jugadores en Línea Ahora (${liveOthers.length})` : `Players Online Now (${liveOthers.length})`}
+                </span>
+                <div className="flex gap-2 overflow-x-auto pb-1">
+                  {liveOthers.map((op: any) => (
+                    <div key={op.id} className="bg-zinc-900 border border-white/10 rounded-lg px-2.5 py-1.5 flex items-center gap-2 shrink-0">
+                      <div className="flex flex-col text-left">
+                        <span className="text-[11px] font-bold text-white truncate max-w-[110px]">{op.name || "Jugador"}</span>
+                        <span className="text-[8px] text-zinc-400 font-mono truncate max-w-[110px]">
+                          {op.worldId ? `🌍 ${op.worldName || "Mundo"}` : (lang === "es" ? "En Menú" : "In Menu")}
+                        </span>
+                      </div>
+                      {op.worldId && (
+                        <button
+                          type="button"
+                          onClick={() => handleJoinFriendWorld(op.worldId, op.pos, op.dimension)}
+                          className="bg-emerald-500 hover:bg-emerald-400 text-white text-[9px] font-black px-2 py-1 rounded uppercase transition active:scale-95"
+                        >
+                          {lang === "es" ? "Entrar" : "Join"}
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Content tabs / columns */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 overflow-y-auto pr-1 max-h-[50vh]">
@@ -2884,7 +4467,7 @@ const App: React.FC = () => {
                           </p>
                           {isPlaying && (
                             <button
-                              onClick={() => handleJoinFriendWorld(onlineData.worldId)}
+                              onClick={() => handleJoinFriendWorld(onlineData.worldId, onlineData.pos, onlineData.dimension)}
                               className="w-full bg-emerald-500 hover:bg-emerald-400 text-white text-[9px] font-bold py-1.5 px-2 rounded uppercase tracking-wider transition-all active:scale-95 flex items-center justify-center gap-1.5 shadow"
                             >
                               <i className="fas fa-arrow-right-to-bracket animate-bounce" />
@@ -3001,158 +4584,750 @@ const App: React.FC = () => {
     }
   };
 
-  const handlePurchaseComplete = async () => {
-    setPaymentStep("processing");
-    // Simulate multi-step secure processing logs
-    await new Promise((resolve) => setTimeout(resolve, 1600));
+  interface StoreProductDef {
+    id:
+      | "indef_500"
+      | "indef_1500"
+      | "indef_4000"
+      | "indef_10000"
+      | "vip_pass"
+      | "mvp_plus"
+      | "aquatic_vip"
+      | "unlocked_worlds"
+      | "skin_dragon"
+      | "skin_angel"
+      | "skin_titan"
+      | "skin_poseidon"
+      | "skin_obsidian"
+      | "kit_builder"
+      | "kit_explorer_pro"
+      | "kit_aquatic_starter"
+      | "cape_royal";
+    category: "indefs" | "passes" | "skins" | "cosmetics";
+    name: string;
+    priceUsd: number;
+    priceIndefs?: number;
+    indefGrant?: number;
+    badge?: string;
+    desc: string;
+    icon: string;
+    accentColor: string;
+    owned: boolean;
+    consumable?: boolean;
+    skinId?: CharacterSkinId;
+    kitId?: "kit_builder" | "kit_explorer_pro" | "kit_aquatic_starter";
+  }
 
-    const txId = "TX-" + Date.now().toString().substring(4) + "-" + Math.floor(Math.random() * 1000);
-    setTransactionId(txId);
+  const getEffectiveIndefPrice = (basePrice?: number): number | undefined => {
+    if (!basePrice) return undefined;
+    if (mvpActive) return Math.max(1, Math.round(basePrice * 0.75));
+    if (vipActive) return Math.max(1, Math.round(basePrice * 0.8));
+    return basePrice;
+  };
 
-    const emailKey = googleUser ? (googleUser.email?.toLowerCase() || "") : "invitado@example.com";
-    const prodId = selectedProduct;
-    let prodName = "";
-    let price = 0;
+  const DAILY_INDEF_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+  const dailyIndefRewardAmount = mvpActive ? 400 : vipActive ? 250 : 100;
 
-    if (prodId === "vip_pass") {
-      prodName = lang === "es" ? "Rango VIP Premium" : "VIP Premium Rank";
-      price = 4.99;
-    } else if (prodId === "unlocked_worlds") {
-      prodName = lang === "es" ? "Desbloqueador de Mundos" : "World Expander Pass";
-      price = 2.99;
-    } else if (prodId === "gold_coins_500") {
-      prodName = lang === "es" ? "Saco de 500 Monedas de Oro" : "Sack of 500 Gold Coins";
-      price = 1.99;
+  const handleClaimDailyIndefs = async () => {
+    const now = Date.now();
+    if (now - lastDailyIndefClaim < DAILY_INDEF_COOLDOWN_MS) return;
+
+    const reward = dailyIndefRewardAmount;
+    const nextIndefs = indefCoins + reward;
+    const txId = `DAILY-${now.toString().slice(-6)}`;
+
+    setIndefCoins(nextIndefs);
+    setLastDailyIndefClaim(now);
+    localStorage.setItem("minecraft_indef_coins", String(nextIndefs));
+    localStorage.setItem("minecraft_last_daily_indef", String(now));
+
+    const dailyReceipt = {
+      id: txId,
+      productId: "daily_indef",
+      productName: lang === "es"
+        ? `Recompensa Diaria (+${reward} Indefs)`
+        : `Daily Reward (+${reward} Indefs)`,
+      price: 0,
+      currency: "BONUS",
+      paymentMethod: mvpActive ? "MVP+ Daily" : vipActive ? "VIP Daily" : "Daily Bonus",
+      timestamp: now,
+      status: "completed",
+    };
+    setPurchaseHistory((prev) => {
+      const nextHist = [dailyReceipt, ...prev].slice(0, 30);
+      localStorage.setItem("minecraft_purchase_history", JSON.stringify(nextHist));
+      return nextHist;
+    });
+
+    try {
+      const emailKey = googleUser?.email?.toLowerCase();
+      if (googleUser && emailKey) {
+        await setDoc(
+          doc(db, "user_roles", emailKey),
+          { indefCoins: nextIndefs, goldCoins: nextIndefs },
+          { merge: true }
+        );
+      }
+    } catch (err) {
+      console.warn("Daily indef Firestore sync skipped:", err);
     }
 
-    const isFree = userRole === "owner" || userRole === "mod" || userRole === "staff" || userRole === "admin";
-    const finalPrice = isFree ? 0 : price;
+    playPurchaseChime();
+    setChatMessages((p) => [
+      ...p,
+      `◈ [Tienda Indef] ¡Reclamaste +${reward} Indefs diarios! Saldo total: ${nextIndefs.toLocaleString()} Indefs.`,
+    ]);
+  };
+
+  const handleClaimKitInWorld = (kitId: "kit_builder" | "kit_explorer_pro" | "kit_aquatic_starter") => {
+    if (!currentWorld || claimedWorldKits[kitId]) return;
+    const kitGrants: Record<"kit_builder" | "kit_explorer_pro" | "kit_aquatic_starter", Record<number, number>> = {
+      kit_builder: {
+        [BlockType.WOOD]: 32,
+        [BlockType.LOG]: 16,
+        [BlockType.TORCH]: 16,
+        [BlockType.PICKAXE]: 1,
+        [BlockType.BED]: 1,
+        [BlockType.CRAFTING_TABLE]: 1,
+        [BlockType.FURNACE]: 1,
+      },
+      kit_explorer_pro: {
+        [BlockType.DIAMOND_SWORD]: 1,
+        [BlockType.DIAMOND_PICKAXE]: 1,
+        [BlockType.TORCH]: 24,
+        [BlockType.LOCATOR_MAP]: 1,
+        [BlockType.CHEST]: 2,
+      },
+      kit_aquatic_starter: {
+        [BlockType.BUCKET_WATER]: 2,
+        [BlockType.GLOWSTONE]: 12,
+        [BlockType.CONCRETE]: 32,
+        [BlockType.TORCH]: 12,
+      },
+    };
+    const grant = kitGrants[kitId];
+    setSurvivalInventory((prev) => {
+      const next = { ...prev };
+      Object.entries(grant).forEach(([k, v]) => {
+        const bType = Number(k);
+        next[bType] = (next[bType] || 0) + Number(v);
+      });
+      if (currentWorld) {
+        (currentWorld as any).survivalInventory = next;
+        setWorlds((prevW) => {
+          const updated = prevW.map((w) => (w.id === currentWorld.id ? { ...w, survivalInventory: next } : w));
+          saveWorlds(updated);
+          return updated;
+        });
+      }
+      return next;
+    });
+    setClaimedWorldKits((prev) => ({ ...prev, [kitId]: true }));
+    playPurchaseChime();
+    setChatMessages((p) => [
+      ...p,
+      `🎒 [Tienda] Kit entregado directamente a tu inventario de "${currentWorld.name}".`,
+    ]);
+  };
+
+  const getStoreCatalog = (): StoreProductDef[] => [
+    {
+      id: "indef_500",
+      category: "indefs",
+      name: "500 Indefs",
+      priceUsd: 1.99,
+      indefGrant: 500,
+      badge: "MINICOIN",
+      desc: lang === "es"
+        ? "Paquete inicial de 500 Indefs para adquirir skins 3D, capas y pases exclusivos en la tienda."
+        : "Starter bundle of 500 Indefs to unlock 3D skins, capes and passes in the marketplace.",
+      icon: "fa-gem text-emerald-400",
+      accentColor: "#10b981",
+      owned: false,
+      consumable: true,
+    },
+    {
+      id: "indef_1500",
+      category: "indefs",
+      name: "1,500 Indefs (+200 Bonus)",
+      priceUsd: 4.99,
+      indefGrant: 1700,
+      badge: "POPULAR",
+      desc: lang === "es"
+        ? "Recibe 1,500 Indefs + 200 Indefs de bonificación directa en tu billetera."
+        : "Receive 1,500 Indefs plus 200 bonus Indefs credited directly to your wallet.",
+      icon: "fa-gem text-cyan-400",
+      accentColor: "#06b6d4",
+      owned: false,
+      consumable: true,
+    },
+    {
+      id: "indef_4000",
+      category: "indefs",
+      name: "4,000 Indefs (+800 Bonus)",
+      priceUsd: 9.99,
+      indefGrant: 4800,
+      badge: lang === "es" ? "MEJOR VALOR" : "BEST VALUE",
+      desc: lang === "es"
+        ? "Cofre legendario con 4,800 Indefs totales para coleccionistas y constructores."
+        : "Legendary chest delivering 4,800 total Indefs for collectors and builders.",
+      icon: "fa-coins text-amber-400",
+      accentColor: "#f59e0b",
+      owned: false,
+      consumable: true,
+    },
+    {
+      id: "indef_10000",
+      category: "indefs",
+      name: "10,000 Indefs (+2,500 Bonus)",
+      priceUsd: 19.99,
+      indefGrant: 12500,
+      badge: "MEGA COFRE",
+      desc: lang === "es"
+        ? "Bóveda Suprema con 12,500 Indefs totales para desbloquear todo el catálogo VIP & Skins."
+        : "Supreme Vault delivering 12,500 total Indefs to unlock the entire VIP & Skin catalog.",
+      icon: "fa-vault text-fuchsia-400",
+      accentColor: "#e879f9",
+      owned: false,
+      consumable: true,
+    },
+    {
+      id: "vip_pass",
+      category: "passes",
+      name: lang === "es" ? "Pase VIP Dorado" : "Gold VIP Pass",
+      priceUsd: 4.99,
+      priceIndefs: 1200,
+      badge: "VIP",
+      desc: lang === "es"
+        ? "Rango ✨ VIP, 20% dto. en Indefs, +250 Indefs diarios, Aletas Poseidón y 4 Skins 3D incluidas."
+        : "✨ VIP tag, 20% Indef discount, +250 daily Indefs, Poseidon Fins & 4 VIP 3D Skins.",
+      icon: "fa-crown text-yellow-400",
+      accentColor: "#eab308",
+      owned: vipActive,
+    },
+    {
+      id: "mvp_plus",
+      category: "passes",
+      name: lang === "es" ? "Rango MVP+ Supremo" : "MVP+ Supreme Rank",
+      priceUsd: 7.99,
+      priceIndefs: 2200,
+      badge: "MVP+",
+      desc: lang === "es"
+        ? "Máximo rango 💎 MVP+: 25% dto. en Indefs, +400 diarios, Skin Monarca Obsidiana, Kit Diamante y VIP completo."
+        : "Ultimate 💎 MVP+: 25% Indef discount, +400 daily Indefs, Obsidian Skin, Diamond Kit & full VIP.",
+      icon: "fa-bolt text-sky-400",
+      accentColor: "#38bdf8",
+      owned: mvpActive,
+    },
+    {
+      id: "aquatic_vip",
+      category: "passes",
+      name: lang === "es" ? "Aletas & Branquias Poseidón" : "Poseidon Fins & Gills",
+      priceUsd: 2.49,
+      priceIndefs: 550,
+      badge: lang === "es" ? "ACUÁTICO" : "AQUATIC",
+      desc: lang === "es"
+        ? "Nado ultra rápido (+55% velocidad) en océanos y lagos + respiración infinita bajo el agua."
+        : "Turbo swimming speed (+55%) across oceans and lakes + infinite underwater oxygen.",
+      icon: "fa-water text-cyan-400",
+      accentColor: "#06b6d4",
+      owned: vipActive || mvpActive || ownedShopItems.includes("aquatic_vip"),
+    },
+    {
+      id: "unlocked_worlds",
+      category: "passes",
+      name: lang === "es" ? "Mundos Ilimitados" : "Unlimited Worlds Pass",
+      priceUsd: 2.99,
+      priceIndefs: 750,
+      desc: lang === "es"
+        ? "Elimina permanentemente el límite de 70 mundos guardados para crear sin fronteras."
+        : "Permanently removes the 70-world cap so you can save unlimited realms.",
+      icon: "fa-infinity text-emerald-400",
+      accentColor: "#10b981",
+      owned: unlockedWorldsPass || vipActive || mvpActive,
+    },
+    {
+      id: "skin_dragon",
+      category: "skins",
+      name: lang === "es" ? "Skin 3D: Dragón Carmesí" : "3D Skin: Crimson Dragon",
+      priceUsd: 2.49,
+      priceIndefs: 650,
+      badge: "3D SKIN",
+      desc: lang === "es"
+        ? "Armadura escamada carmesí con corona real dorada y capa roja visible en multijugador."
+        : "Crimson dragon armor with royal crown and flowing cape synced in multiplayer.",
+      icon: "fa-dragon text-orange-400",
+      accentColor: "#f97316",
+      owned: vipActive || ownedShopItems.includes("skin_dragon"),
+      skinId: "dragon",
+    },
+    {
+      id: "skin_angel",
+      category: "skins",
+      name: lang === "es" ? "Skin 3D: Arcángel Celestial" : "3D Skin: Celestial Angel",
+      priceUsd: 2.99,
+      priceIndefs: 800,
+      badge: "3D SKIN",
+      desc: lang === "es"
+        ? "Túnica blanca metálica, corona celestial brillante y capa azul celeste animada."
+        : "White metallic armor, radiant crown and sky-blue animated cape.",
+      icon: "fa-feather-pointed text-sky-300",
+      accentColor: "#38bdf8",
+      owned: vipActive || ownedShopItems.includes("skin_angel"),
+      skinId: "angel",
+    },
+    {
+      id: "skin_titan",
+      category: "skins",
+      name: lang === "es" ? "Skin 3D: Titán Esmeralda" : "3D Skin: Emerald Titan",
+      priceUsd: 2.49,
+      priceIndefs: 650,
+      badge: "3D SKIN",
+      desc: lang === "es"
+        ? "Blindaje verde esmeralda con visor táctico y katana dorsal para combates épicos."
+        : "Emerald forged armor with tactical goggles and back sheath blade.",
+      icon: "fa-shield-halved text-emerald-400",
+      accentColor: "#10b981",
+      owned: vipActive || ownedShopItems.includes("skin_titan"),
+      skinId: "titan",
+    },
+    {
+      id: "skin_poseidon",
+      category: "skins",
+      name: lang === "es" ? "Skin 3D: Señor de los Mares" : "3D Skin: Lord of the Seas",
+      priceUsd: 2.99,
+      priceIndefs: 780,
+      badge: "VIP SKIN",
+      desc: lang === "es"
+        ? "Armadura abisal turquesa con visor acuático luminoso, corona tridente y capa oceánica."
+        : "Abyssal turquoise armor with luminous aquatic visor, trident crown & ocean cape.",
+      icon: "fa-trident text-cyan-400",
+      accentColor: "#06b6d4",
+      owned: vipActive || ownedShopItems.includes("skin_poseidon"),
+      skinId: "poseidon",
+    },
+    {
+      id: "skin_obsidian",
+      category: "skins",
+      name: lang === "es" ? "Skin 3D: Monarca Obsidiana" : "3D Skin: Obsidian Monarch",
+      priceUsd: 3.49,
+      priceIndefs: 950,
+      badge: "MVP+ SKIN",
+      desc: lang === "es"
+        ? "Blindaje negro forjado con núcleo púrpura neón, katana dorsal y aura real suprema."
+        : "Forged obsidian armor with neon purple core, back katana and supreme monarch aura.",
+      icon: "fa-chess-king text-purple-400",
+      accentColor: "#a855f7",
+      owned: mvpActive || ownedShopItems.includes("skin_obsidian"),
+      skinId: "obsidian",
+    },
+    {
+      id: "kit_builder",
+      category: "cosmetics",
+      name: lang === "es" ? "Kit Maestro Constructor" : "Master Builder Kit",
+      priceUsd: 1.99,
+      priceIndefs: 450,
+      badge: "KIT",
+      desc: lang === "es"
+        ? "Empieza con Madera x32, Troncos x16, Antorchas x16, Pico, Horno y Cama (reclamable en tu mundo)."
+        : "Grants Wood x32, Logs x16, Torches x16, Pickaxe, Furnace & Bed (claimable in-world).",
+      icon: "fa-hammer text-amber-400",
+      accentColor: "#f59e0b",
+      owned: vipActive || ownedShopItems.includes("kit_builder"),
+      kitId: "kit_builder",
+    },
+    {
+      id: "kit_explorer_pro",
+      category: "cosmetics",
+      name: lang === "es" ? "Kit Diamante & Explorador" : "Diamond Explorer Kit",
+      priceUsd: 2.49,
+      priceIndefs: 600,
+      badge: "KIT PRO",
+      desc: lang === "es"
+        ? "Espada y Pico de Diamante, Antorchas x24, Mapa Localizador y Cofres x2 listos para aventuras."
+        : "Diamond Sword & Pickaxe, Torches x24, Locator Map & 2 Chests ready for expeditions.",
+      icon: "fa-gem text-sky-400",
+      accentColor: "#38bdf8",
+      owned: mvpActive || ownedShopItems.includes("kit_explorer_pro"),
+      kitId: "kit_explorer_pro",
+    },
+    {
+      id: "kit_aquatic_starter",
+      category: "cosmetics",
+      name: lang === "es" ? "Kit Marino Constructor" : "Marine Builder Kit",
+      priceUsd: 1.49,
+      priceIndefs: 350,
+      badge: "KIT MAR",
+      desc: lang === "es"
+        ? "Cubetas de Agua x2, Piedra Luminosa x12, Concreto x32 y Antorchas x12 para bases submarinas."
+        : "Water Buckets x2, Glowstone x12, Concrete x32 & Torches x12 for underwater bases.",
+      icon: "fa-anchor text-teal-400",
+      accentColor: "#14b8a6",
+      owned: vipActive || mvpActive || ownedShopItems.includes("aquatic_vip") || ownedShopItems.includes("kit_aquatic_starter"),
+      kitId: "kit_aquatic_starter",
+    },
+    {
+      id: "cape_royal",
+      category: "cosmetics",
+      name: lang === "es" ? "Capa Real Dorada + Aura" : "Royal Golden Cape + Aura",
+      priceUsd: 1.49,
+      priceIndefs: 400,
+      badge: "COSMÉTICO",
+      desc: lang === "es"
+        ? "Desbloquea el acabado dorado imperial y aplica capa real directa a tu personaje personalizado."
+        : "Unlocks royal gold trim and auto-equips a golden cape on your custom hero.",
+      icon: "fa-vest text-yellow-400",
+      accentColor: "#eab308",
+      owned: ownedShopItems.includes("cape_royal"),
+    },
+  ];
+
+  // Standard Luhn verification for real card numbers
+  const isValidLuhnCard = (digits: string) => {
+    if (digits.length < 13 || digits.length > 19) return false;
+    let sum = 0;
+    let alt = false;
+    for (let i = digits.length - 1; i >= 0; i--) {
+      let n = parseInt(digits[i], 10);
+      if (isNaN(n)) return false;
+      if (alt) {
+        n *= 2;
+        if (n > 9) n -= 9;
+      }
+      sum += n;
+      alt = !alt;
+    }
+    return sum % 10 === 0;
+  };
+
+  const isValidExpiry = (exp: string) => {
+    const match = /^(\d{2})\/(\d{2})$/.exec(exp);
+    if (!match) return false;
+    const mm = parseInt(match[1], 10);
+    const yy = parseInt("20" + match[2], 10);
+    if (mm < 1 || mm > 12) return false;
+    const now = new Date();
+    const curYear = now.getFullYear();
+    const curMonth = now.getMonth() + 1;
+    return yy > curYear || (yy === curYear && mm >= curMonth);
+  };
+
+  const handlePurchaseComplete = async (methodOverride?: "card" | "paypal" | "indefs" | "pay_api") => {
+    const catalog = getStoreCatalog();
+    const item = catalog.find((p) => p.id === selectedProduct);
+    if (!item) return;
+
+    const method = methodOverride || paymentMethod || "card";
+    setShopCheckoutError("");
+
+    const effectiveIndefCost = getEffectiveIndefPrice(item.priceIndefs);
+
+    // Verify Indef balance BEFORE processing if buying with Indefs
+    if (method === "indefs") {
+      const indefCost = effectiveIndefCost ?? 999999;
+      if (!effectiveIndefCost) {
+        setShopCheckoutError(lang === "es" ? "Este paquete solo se adquiere con pago real." : "This pack requires real checkout.");
+        return;
+      }
+      if (indefCoins < indefCost) {
+        setShopCheckoutError(
+          lang === "es"
+            ? `Saldo insuficiente: necesitas ${indefCost.toLocaleString()} Indefs (tienes ${indefCoins.toLocaleString()}).`
+            : `Insufficient Indefs: need ${indefCost.toLocaleString()} (balance: ${indefCoins.toLocaleString()}).`
+        );
+        return;
+      }
+    }
+
+    setPaymentStep("processing");
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+
+    const txId = "TX-" + Date.now().toString().slice(-6) + "-" + Math.floor(100 + Math.random() * 900);
+    setTransactionId(txId);
+
+    const emailKey = googleUser ? (googleUser.email?.toLowerCase() || "") : "";
+    const finalCurrency = method === "indefs" ? "INDEF" : "USD";
+    const finalAmount = method === "indefs" ? (effectiveIndefCost || 0) : item.priceUsd;
+    const methodLabel =
+      method === "indefs"
+        ? "Indef Wallet"
+        : method === "pay_api"
+          ? "Express Pay"
+          : method === "paypal"
+            ? "PayPal"
+            : "Card";
+
+    setLastGiftSummary(null);
+    setLastReceiptSummary({
+      method: methodLabel,
+      amountText: method === "indefs" ? `${finalAmount.toLocaleString()} Indefs` : `$${item.priceUsd.toFixed(2)} USD`,
+    });
+
+    // Calculate updated balances & entitlements
+    let nextIndefs = indefCoins;
+    if (method === "indefs" && effectiveIndefCost) {
+      nextIndefs = Math.max(0, indefCoins - effectiveIndefCost);
+    }
+    if (item.indefGrant) {
+      nextIndefs += item.indefGrant;
+    }
+
+    const nextOwned = Array.from(new Set([...ownedShopItems, item.id]));
+    const nextVip = vipActive || item.id === "vip_pass" || item.id === "mvp_plus";
+    const nextMvp = mvpActive || item.id === "mvp_plus";
+    const nextWorldsPass = unlockedWorldsPass || item.id === "unlocked_worlds" || nextVip;
+
+    const receiptRecord = {
+      id: txId,
+      email: emailKey || "guest@local",
+      productId: item.id,
+      productName: item.name,
+      price: finalAmount,
+      currency: finalCurrency,
+      paymentMethod: methodLabel,
+      indefAmount: item.indefGrant || 0,
+      timestamp: Date.now(),
+      status: "completed",
+    };
+
+    // Update local states & storage immediately
+    setIndefCoins(nextIndefs);
+    setOwnedShopItems(nextOwned);
+    setVipActive(nextVip);
+    setMvpActive(nextMvp);
+    setUnlockedWorldsPass(nextWorldsPass);
+    setPurchaseHistory((prev) => {
+      const nextHist = [receiptRecord, ...prev].slice(0, 30);
+      localStorage.setItem("minecraft_purchase_history", JSON.stringify(nextHist));
+      return nextHist;
+    });
+
+    localStorage.setItem("minecraft_indef_coins", String(nextIndefs));
+    localStorage.setItem("minecraft_owned_shop_items", JSON.stringify(nextOwned));
+    localStorage.setItem("minecraft_vip_active", String(nextVip));
+    localStorage.setItem("minecraft_mvp_active", String(nextMvp));
+    localStorage.setItem("minecraft_unlocked_worlds", String(nextWorldsPass));
+
+    if (item.id === "cape_royal") {
+      handleUpdateCustomSkin({ ...customSkin, backGear: "cape", capeColor: "#f59e0b" });
+    }
+    if (item.id === "skin_dragon") handleSelectSkin("dragon");
+    if (item.id === "skin_angel") handleSelectSkin("angel");
+    if (item.id === "skin_titan") handleSelectSkin("titan");
+    if (item.id === "skin_poseidon") handleSelectSkin("poseidon");
+    if (item.id === "skin_obsidian") handleSelectSkin("obsidian");
 
     try {
       if (googleUser && emailKey) {
-        // Authenticated user: store in Firestore
-        const purchaseRef = doc(db, "user_purchases", txId);
-        await setDoc(purchaseRef, {
-          id: txId,
-          email: emailKey,
-          productId: prodId,
-          productName: prodName,
-          price: finalPrice,
-          timestamp: Date.now(),
-          status: "completed"
-        });
-
-        const roleRef = doc(db, "user_roles", emailKey);
-        if (prodId === "vip_pass") {
-          await setDoc(roleRef, { vipActive: true }, { merge: true });
-          setVipActive(true);
-          localStorage.setItem("minecraft_vip_active", "true");
-        } else if (prodId === "unlocked_worlds") {
-          await setDoc(roleRef, { unlockedWorldsPass: true }, { merge: true });
-          setUnlockedWorldsPass(true);
-          localStorage.setItem("minecraft_unlocked_worlds", "true");
-        } else if (prodId === "gold_coins_500") {
-          const newCoins = goldCoins + 500;
-          await setDoc(roleRef, { goldCoins: newCoins }, { merge: true });
-          setGoldCoins(newCoins);
-          localStorage.setItem("minecraft_gold_coins", String(newCoins));
-        }
-      } else {
-        // Guest user local storage fallback
-        if (prodId === "vip_pass") {
-          setVipActive(true);
-          localStorage.setItem("minecraft_vip_active", "true");
-        } else if (prodId === "unlocked_worlds") {
-          setUnlockedWorldsPass(true);
-          localStorage.setItem("minecraft_unlocked_worlds", "true");
-        } else if (prodId === "gold_coins_500") {
-          const newCoins = goldCoins + 500;
-          setGoldCoins(newCoins);
-          localStorage.setItem("minecraft_gold_coins", String(newCoins));
-        }
+        await setDoc(doc(db, "user_purchases", txId), receiptRecord);
+        await setDoc(
+          doc(db, "user_roles", emailKey),
+          {
+            indefCoins: nextIndefs,
+            goldCoins: nextIndefs,
+            ownedShopItems: nextOwned,
+            vipActive: nextVip,
+            mvpActive: nextMvp,
+            unlockedWorldsPass: nextWorldsPass,
+          },
+          { merge: true }
+        );
       }
+    } catch (err) {
+      console.warn("Firestore sync deferred on purchase:", err);
+    }
 
-      // Play level-up audio arpeggio
+    playPurchaseChime();
+    setChatMessages((p) => [
+      ...p,
+      `🛍️ [Tienda] Compra verificada: ${item.name} (${method === "indefs" ? `${finalAmount} Indefs` : `$${item.priceUsd.toFixed(2)} USD`}) • Ref ${txId}`
+    ]);
+    setPaymentStep("success");
+  };
+
+  const handleOwnerGiftComplete = async () => {
+    const ownerEmail = googleUser?.email?.toLowerCase().trim() || "";
+    if (ownerEmail !== "lionbastias18@gmail.com") {
+      setShopCheckoutError(lang === "es" ? "Solo el dueño puede enviar regalos." : "Only the owner can send gifts.");
+      return;
+    }
+
+    const catalog = getStoreCatalog();
+    const item = catalog.find((p) => p.id === selectedProduct);
+    if (!item) return;
+
+    const targetEmail = giftRecipientEmail.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(targetEmail) || targetEmail.length > 128) {
+      setShopCheckoutError(
+        lang === "es"
+          ? "Ingresa un correo electrónico válido del jugador destinatario."
+          : "Enter a valid recipient player email."
+      );
+      return;
+    }
+
+    setShopCheckoutError("");
+    setPaymentStep("processing");
+
+    const txId = `GIFT-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`;
+    setTransactionId(txId);
+
+    try {
+      const targetRoleRef = doc(db, "user_roles", targetEmail);
+      const existingSnap = await getDoc(targetRoleRef);
+      const existingData = existingSnap.exists() ? existingSnap.data() : null;
+
+      const curIndefs =
+        typeof existingData?.indefCoins === "number"
+          ? existingData.indefCoins
+          : typeof existingData?.goldCoins === "number"
+            ? existingData.goldCoins
+            : 0;
+      const curOwned = Array.isArray(existingData?.ownedShopItems) ? existingData.ownedShopItems : [];
+      const curVip = existingData?.vipActive === true;
+      const curMvp = existingData?.mvpActive === true;
+      const curWorlds = existingData?.unlockedWorldsPass === true;
+
+      const addedIndefs = item.indefGrant || 0;
+      const nextIndefs = Math.max(0, curIndefs + addedIndefs);
+      const nextOwned = Array.from(new Set([...curOwned, item.id])).slice(0, 100);
+      const nextVip = curVip || item.id === "vip_pass" || item.id === "mvp_plus";
+      const nextMvp = curMvp || item.id === "mvp_plus";
+      const nextWorldsPass = curWorlds || item.id === "unlocked_worlds" || nextVip;
+      const resolvedRole =
+        targetEmail === "lionbastias18@gmail.com"
+          ? "owner"
+          : (existingData?.role && ["user", "mod", "staff", "owner"].includes(existingData.role)
+              ? existingData.role
+              : "user");
+
+      await setDoc(
+        targetRoleRef,
+        {
+          email: targetEmail,
+          role: resolvedRole,
+          displayName: existingData?.displayName || targetEmail.split("@")[0] || targetEmail,
+          lastActive: existingData?.lastActive || Date.now(),
+          indefCoins: nextIndefs,
+          goldCoins: nextIndefs,
+          ownedShopItems: nextOwned,
+          vipActive: nextVip,
+          mvpActive: nextMvp,
+          unlockedWorldsPass: nextWorldsPass,
+        },
+        { merge: true }
+      );
+
+      const cleanNote = giftNote.trim().slice(0, 200);
+      const giftReceipt = {
+        id: txId,
+        email: targetEmail,
+        productId: item.id,
+        productName: item.name,
+        price: 0,
+        currency: "GIFT",
+        paymentMethod: lang === "es" ? "Regalo del Dueño" : "Owner Gift",
+        indefAmount: addedIndefs,
+        timestamp: Date.now(),
+        status: "gifted",
+        giftedBy: "lionbastias18@gmail.com",
+        ...(cleanNote ? { giftNote: cleanNote } : {}),
+      };
+
+      await setDoc(doc(db, "user_purchases", txId), giftReceipt);
+
+      logUserActivity(`🎁 Regaló "${item.name}" a ${targetEmail}${cleanNote ? ` (${cleanNote})` : ""}`);
+
+      setLastReceiptSummary(null);
+      setLastGiftSummary({
+        recipientEmail: targetEmail,
+        productName: item.name,
+        note: cleanNote,
+        indefAdded: addedIndefs,
+      });
+
       playPurchaseChime();
-
-      // Send to chat
-      const claimText = isFree 
-        ? (lang === "es" ? `gratis gracias a tu rango de ${userRole.toUpperCase()}` : `for free thanks to your ${userRole.toUpperCase()} rank`)
-        : (lang === "es" ? `con éxito` : `successfully`);
       setChatMessages((p) => [
         ...p,
-        `🛍️ [Tienda] ¡Adquisición de ${prodName} completada ${claimText}! Transacción: ${txId}. ¡Gracias por tu confianza!`
+        `🎁 [Tienda VIP] ¡Regalo enviado! ${item.name} → ${targetEmail} • Ref ${txId}`
       ]);
-
       setPaymentStep("success");
     } catch (err: any) {
-      console.error("Firestore purchase error (falling back to local cache):", err);
-      // Fallback
-      if (prodId === "vip_pass") {
-        setVipActive(true);
-        localStorage.setItem("minecraft_vip_active", "true");
-      } else if (prodId === "unlocked_worlds") {
-        setUnlockedWorldsPass(true);
-        localStorage.setItem("minecraft_unlocked_worlds", "true");
-      } else if (prodId === "gold_coins_500") {
-        const newCoins = goldCoins + 500;
-        setGoldCoins(newCoins);
-        localStorage.setItem("minecraft_gold_coins", String(newCoins));
+      console.error("Error sending owner gift:", err);
+      setPaymentStep("gift");
+      setShopCheckoutError(
+        lang === "es"
+          ? `No se pudo enviar el regalo (${err?.message || "error de permisos"}).`
+          : `Failed to send gift (${err?.message || "permission error"}).`
+      );
+      if (String(err?.message || "").toLowerCase().includes("permission")) {
+        handleFirestoreError(err, OperationType.WRITE, `user_roles/${targetEmail}`);
       }
-      playPurchaseChime();
-      setPaymentStep("success");
+    }
+  };
+
+  const handleExpressPaymentRequest = async (item: StoreProductDef) => {
+    setShopCheckoutError("");
+    if (typeof window === "undefined" || !(window as any).PaymentRequest) {
+      setShopCheckoutError(
+        lang === "es"
+          ? "Tu navegador actual no soporta pago nativo rápido; usa Tarjeta o PayPal abajo."
+          : "Express browser payment is unavailable here; please use Card or PayPal below."
+      );
+      return;
+    }
+    try {
+      const supportedInstruments = [
+        {
+          supportedMethods: "basic-card",
+          data: { supportedNetworks: ["visa", "mastercard", "amex"] },
+        },
+      ];
+      const details = {
+        total: {
+          label: item.name,
+          amount: { currency: "USD", value: item.priceUsd.toFixed(2) },
+        },
+      };
+      const request = new (window as any).PaymentRequest(supportedInstruments, details);
+      const response = await request.show();
+      await response.complete("success");
+      await handlePurchaseComplete("pay_api");
+    } catch (err: any) {
+      if (err?.name === "AbortError") {
+        setShopCheckoutError(lang === "es" ? "Pago cancelado por el usuario." : "Payment cancelled.");
+      } else {
+        setShopCheckoutError(
+          lang === "es"
+            ? "Pasarela nativa no disponible en este entorno. Usa Tarjeta o PayPal."
+            : "Native checkout unavailable in this frame. Please use Card or PayPal."
+        );
+      }
     }
   };
 
   const renderShopModal = () => {
     if (!isShopOpen) return null;
 
-    const isFreeForMe = userRole === "owner" || userRole === "mod" || userRole === "staff" || userRole === "admin";
+    const isOwnerGiftAccount = googleUser?.email?.toLowerCase().trim() === "lionbastias18@gmail.com";
+    const products = getStoreCatalog();
+    const visibleProducts =
+      shopCategory === "all"
+        ? products
+        : products.filter((p) => p.category === shopCategory);
+    const currentSelected = products.find((p) => p.id === selectedProduct);
 
-    // Products definition
-    const products = [
-      {
-        id: "vip_pass" as const,
-        name: lang === "es" ? "Pase VIP Premium" : "VIP Premium Rank",
-        price: "$4.99 USD",
-        priceVal: 4.99,
-        desc: lang === "es" 
-          ? "Obtén un rango VIP. Desbloquea un tag ✨ VIP dorado en el chat, tu nombre en color oro, y la capacidad de crear mundos ilimitados para siempre."
-          : "Unlock VIP Rank. Grants a sparkling gold ✨ VIP chat prefix, gold-colored name, and infinite worlds creation forever.",
-        icon: "fa-crown text-yellow-400",
-        bg: "from-amber-500/10 to-yellow-500/5 border-yellow-500/30",
-        active: vipActive
-      },
-      {
-        id: "unlocked_worlds" as const,
-        name: lang === "es" ? "Mundoramas Ilimitados" : "Unlimited Worlds Pass",
-        price: "$2.99 USD",
-        priceVal: 2.99,
-        desc: lang === "es"
-          ? "Elimina permanentemente el límite restrictivo de 70 mundos. Crea tantas tierras infinitas como quieras sin tener que borrar tus obras antiguas."
-          : "Permanently removes the 70 worlds creation limit. Construct unlimited lands without deleting any of your older memories.",
-        icon: "fa-infinity text-emerald-400",
-        bg: "from-emerald-500/10 to-teal-500/5 border-emerald-500/30",
-        active: unlockedWorldsPass || vipActive
-      },
-      {
-        id: "gold_coins_500" as const,
-        name: lang === "es" ? "Saco de 500 Monedas de Oro" : "Sack of 500 Gold Coins",
-        price: "$1.99 USD",
-        priceVal: 1.99,
-        desc: lang === "es"
-          ? "Adquiere un saco rebosante con 500 Monedas de Oro utilizables para futuros desbloqueos visuales y para presumir tu riqueza."
-          : "Receive a sack containing 500 gleaming Gold Coins. Perfect for showing off in chat or future cosmetic expansion updates.",
-        icon: "fa-coins text-amber-500",
-        bg: "from-amber-600/10 to-yellow-600/5 border-amber-600/30",
-        active: false // Can buy multiple times
-      }
-    ];
-
-    const currentSelected = products.find(p => p.id === selectedProduct);
+    const cardDigits = cardForm.number.replace(/\s+/g, "");
+    const detectedBrand = cardDigits.startsWith("4")
+      ? "VISA"
+      : /^5[1-5]/.test(cardDigits)
+        ? "MASTERCARD"
+        : /^3[47]/.test(cardDigits)
+          ? "AMEX"
+          : "CARD";
 
     return (
-      <div 
+      <div
         onPointerDown={(e) => e.stopPropagation()}
         onPointerUp={(e) => e.stopPropagation()}
         onPointerMove={(e) => e.stopPropagation()}
@@ -3163,430 +5338,952 @@ const App: React.FC = () => {
         onMouseUp={(e) => e.stopPropagation()}
         onMouseMove={(e) => e.stopPropagation()}
         onClick={(e) => e.stopPropagation()}
-        className="fixed inset-0 bg-black/90 backdrop-blur-md z-[100010] flex items-center justify-center p-3 sm:p-4 overflow-y-auto pointer-events-auto text-left"
+        className="fixed inset-0 bg-black/90 backdrop-blur-md z-[100010] flex items-center justify-center p-2.5 sm:p-5 overflow-y-auto pointer-events-auto text-left"
       >
-        <div className="bg-zinc-900 border-4 border-amber-500 p-5 sm:p-7 rounded-2xl w-full max-w-4xl shadow-2xl flex flex-col gap-4 relative animate-in fade-in zoom-in-95 duration-200 text-white font-sans max-h-[92vh] overflow-y-auto">
-          
+        <div className="bg-zinc-950 border-2 border-amber-500/50 p-4 sm:p-6 rounded-2xl w-full max-w-5xl shadow-2xl flex flex-col gap-4 relative text-white font-sans max-h-[92vh] overflow-hidden">
           {/* Header */}
-          <div className="flex justify-between items-center border-b border-zinc-700/60 pb-3">
+          <div className="flex flex-wrap justify-between items-center gap-3 border-b border-white/10 pb-3 shrink-0">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-amber-500/20 rounded-xl flex items-center justify-center border border-amber-500/40 animate-pulse">
-                <i className="fas fa-shopping-cart text-amber-400 text-xl" />
+              <div className="w-10 h-10 bg-gradient-to-br from-amber-500/25 to-emerald-500/20 rounded-xl flex items-center justify-center border border-amber-400/40">
+                <i className="fas fa-store text-amber-400 text-lg" />
               </div>
               <div>
-                <h2 className="text-2xl font-black minecraft-font uppercase tracking-wide text-amber-400 flex items-center gap-2">
-                  {lang === "es" ? "TIENDA VIP PREMIUM" : "PREMIUM VIP SHOP"}
+                <h2 className="text-xl sm:text-2xl font-black minecraft-font uppercase tracking-tight text-white flex flex-wrap items-center gap-2">
+                  <span>{lang === "es" ? "TIENDA VIP & MARKETPLACE" : "VIP STORE & MARKETPLACE"}</span>
+                  {isOwnerGiftAccount && (
+                    <span className="bg-gradient-to-r from-purple-600 to-amber-500 text-white text-[9px] font-mono font-black px-2 py-0.5 rounded-full border border-white/25 tracking-wider">
+                      🎁 {lang === "es" ? "DUEÑO: REGALOS ACTIVOS" : "OWNER: GIFTS ENABLED"}
+                    </span>
+                  )}
                 </h2>
-                <p className="text-xs text-zinc-400 font-mono uppercase tracking-wider font-bold">
-                  {lang === "es" ? "Expansiones de Cuenta e Infinite World Pass" : "Account Expansions and Passes"}
+                <p className="text-[11px] text-zinc-400 font-mono">
+                  {lang === "es"
+                    ? "Indefs oficiales, rangos permanentes, skins 3D y kits"
+                    : "Official Indefs, permanent ranks, 3D skins & kits"}
                 </p>
               </div>
             </div>
-            
-            <div className="flex items-center gap-3">
-              {/* Coin Counter */}
-              <div className="bg-zinc-950 border border-yellow-500/30 px-3 py-1.5 rounded-full flex items-center gap-1.5 shadow-inner">
-                <span className="text-[13px] animate-bounce">🪙</span>
-                <span className="text-xs font-mono font-black text-yellow-400">{goldCoins}</span>
-                <span className="text-[9px] uppercase font-bold text-zinc-500 tracking-wider font-mono">{lang === "es" ? "MONEDAS" : "COINS"}</span>
+
+            <div className="flex items-center gap-2.5">
+              {/* Indef Wallet Pill */}
+              <div className="bg-zinc-900 border border-emerald-500/40 px-3 py-1.5 rounded-xl flex items-center gap-2 shadow-inner">
+                <span className="w-5 h-5 rounded-md bg-gradient-to-br from-emerald-400 to-amber-400 text-zinc-950 font-black text-[11px] flex items-center justify-center shadow">
+                  ◈
+                </span>
+                <div className="flex flex-col leading-none">
+                  <span className="text-sm font-mono font-black text-emerald-300 tabular-nums">
+                    {indefCoins.toLocaleString()}
+                  </span>
+                  <span className="text-[8px] uppercase font-bold text-zinc-400 tracking-wider font-mono">
+                    INDEFS
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPaymentStep("idle");
+                    setSelectedProduct(null);
+                    setShopCategory("indefs");
+                  }}
+                  className="ml-1 w-5 h-5 rounded-md bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-black text-xs flex items-center justify-center cursor-pointer"
+                  title={lang === "es" ? "Recargar Indefs" : "Top up Indefs"}
+                >
+                  +
+                </button>
               </div>
 
               <button
+                type="button"
                 onClick={() => {
                   setIsShopOpen(false);
                   setSelectedProduct(null);
                   setPaymentMethod(null);
+                  setShopCheckoutError("");
                   setPaymentStep("idle");
                 }}
-                className="bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white w-8 h-8 rounded-lg flex items-center justify-center border border-zinc-700 transition"
+                className="bg-zinc-900 hover:bg-zinc-800 text-zinc-300 hover:text-white w-9 h-9 rounded-xl flex items-center justify-center border border-white/10 transition cursor-pointer"
               >
                 <i className="fas fa-times" />
               </button>
             </div>
           </div>
 
-          {/* Special Staff Role Notice */}
-          {isFreeForMe && (
-            <div className="bg-gradient-to-r from-yellow-500/20 via-amber-500/10 to-yellow-600/20 border-2 border-yellow-500/40 rounded-xl p-3 flex items-center gap-3.5 shadow-lg">
-              <span className="text-2xl animate-spin" style={{ animationDuration: "3s" }}>🛡️</span>
-              <div className="text-left">
-                <p className="text-yellow-400 text-[10px] font-black uppercase tracking-widest font-mono">
-                  {lang === "es" ? "Privilegio de Rango Activo" : "Active Rank Privilege"}
-                </p>
-                <p className="text-xs text-zinc-200 leading-normal">
-                  {lang === "es" 
-                    ? `Tienes el rango de "${userRole.toUpperCase()}". En este modo todas las compras se consideran de prueba y son 100% GRATUITAS para ti.`
-                    : `You have the "${userRole.toUpperCase()}" staff role. All shop packages are 100% FREE of charge for your account.`
-                  }
-                </p>
-              </div>
-            </div>
-          )}
-
           {paymentStep === "idle" ? (
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 py-2">
-              {products.map((p) => {
-                const canClaimForFree = isFreeForMe;
+            <>
+              {/* Daily Free Indefs Claim & VIP Perks Banner */}
+              {(() => {
+                const elapsed = Date.now() - lastDailyIndefClaim;
+                const remainingMs = Math.max(0, DAILY_INDEF_COOLDOWN_MS - elapsed);
+                const canClaimDaily = remainingMs === 0;
+                const remHours = Math.floor(remainingMs / (1000 * 60 * 60));
+                const remMins = Math.floor((remainingMs % (1000 * 60 * 60)) / (1000 * 60));
+                const discountLabel = mvpActive ? "-25% MVP+" : vipActive ? "-20% VIP" : null;
+
                 return (
-                  <div 
-                    key={p.id} 
-                    className={`bg-zinc-950/40 border-2 ${p.bg} rounded-2xl p-5 flex flex-col justify-between hover:scale-[1.02] active:scale-[0.98] transition-all duration-200 shadow-xl`}
-                  >
-                    <div className="text-left flex flex-col gap-3">
-                      <div className="flex justify-between items-start">
-                        <div className="w-11 h-11 bg-zinc-900 border border-white/5 rounded-xl flex items-center justify-center shadow-md">
-                          <i className={`fas ${p.icon} text-lg`} />
-                        </div>
-                        {p.active ? (
-                          <span className="bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 text-[8px] font-black px-2 py-0.5 rounded-full tracking-wider uppercase font-mono">
-                            {lang === "es" ? "Adquirido" : "Owned"}
-                          </span>
-                        ) : canClaimForFree ? (
-                          <span className="bg-yellow-500 text-zinc-950 text-[8px] font-black px-2 py-0.5 rounded-full tracking-wider uppercase font-mono animate-bounce">
-                            {lang === "es" ? "¡GRATIS!" : "FREE!"}
-                          </span>
-                        ) : (
-                          <span className="bg-zinc-900 border border-white/10 text-white font-mono text-[10px] font-bold px-2.5 py-0.5 rounded-full">
-                            {p.price}
-                          </span>
-                        )}
+                  <div className="bg-gradient-to-r from-emerald-950/80 via-zinc-900 to-amber-950/60 border border-emerald-500/35 rounded-xl px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2.5 shrink-0">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-lg bg-emerald-500/20 border border-emerald-400/40 flex items-center justify-center text-emerald-300 font-black">
+                        ◈
                       </div>
-                      
-                      <div>
-                        <h3 className="text-base font-black tracking-tight text-white uppercase">{p.name}</h3>
-                        <p className="text-[10.5px] text-zinc-400 mt-1.5 leading-relaxed">{p.desc}</p>
-                      </div>
-                    </div>
-
-                    <div className="mt-5 pt-3 border-t border-white/5">
-                      {p.active ? (
-                        <button 
-                          disabled 
-                          className="w-full bg-zinc-800 text-zinc-500 font-bold py-2 px-4 rounded-xl text-xs uppercase tracking-wider cursor-not-allowed border border-white/5"
-                        >
-                          {lang === "es" ? "Ya Adquirido" : "Already Owned"}
-                        </button>
-                      ) : (
-                        <button
-                          onClick={() => {
-                            setSelectedProduct(p.id);
-                            if (canClaimForFree) {
-                              setPaymentStep("form");
-                            } else {
-                              setPaymentStep("form");
-                              setPaymentMethod("card"); // Default to Credit Card
-                            }
-                          }}
-                          className={`w-full font-black py-2.5 px-4 rounded-xl text-xs uppercase tracking-widest transition-all ${
-                            canClaimForFree
-                              ? "bg-yellow-500 hover:bg-yellow-400 text-zinc-950 shadow-md shadow-yellow-500/10 animate-pulse"
-                              : "bg-amber-500 hover:bg-amber-400 text-zinc-950 shadow-md shadow-amber-500/10"
-                          }`}
-                        >
-                          {canClaimForFree 
-                            ? (lang === "es" ? "Reclamar Gratis" : "Claim for Free")
-                            : (lang === "es" ? "Comprar Ahora" : "Buy Now")
-                          }
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          ) : (
-            /* PAYMENT PROCESSOR STAGE */
-            <div className="bg-zinc-950 p-4 sm:p-6 rounded-2xl border border-zinc-800 flex flex-col gap-5 relative overflow-hidden min-h-[360px] justify-center">
-              
-              {paymentStep === "form" && (
-                <div className="flex flex-col gap-4 text-left">
-                  {/* Step Header */}
-                  <div className="flex justify-between items-center border-b border-zinc-800 pb-2.5">
-                    <button 
-                      onClick={() => {
-                        setPaymentStep("idle");
-                        setPaymentMethod(null);
-                      }}
-                      className="text-zinc-400 hover:text-white text-xs flex items-center gap-1 uppercase font-bold"
-                    >
-                      <i className="fas fa-arrow-left" /> {lang === "es" ? "Atrás" : "Back"}
-                    </button>
-                    <div className="text-right">
-                      <span className="text-[10px] text-zinc-500 uppercase tracking-wider font-mono font-bold block">{lang === "es" ? "PAQUETE SELECCIONADO" : "SELECTED PACKAGE"}</span>
-                      <span className="text-sm font-black text-amber-400 uppercase font-mono">{currentSelected?.name}</span>
-                    </div>
-                  </div>
-
-                  {isFreeForMe ? (
-                    /* Claim Free confirmation panel */
-                    <div className="flex flex-col gap-4 py-4 items-center justify-center text-center max-w-md mx-auto">
-                      <div className="w-16 h-16 bg-yellow-500/10 border-2 border-yellow-400 rounded-full flex items-center justify-center text-2xl text-yellow-400 animate-bounce">
-                        👑
-                      </div>
-                      <div>
-                        <h3 className="text-lg font-black text-white uppercase">{lang === "es" ? "Confirmar Reclamo Gratis" : "Confirm Free Claim"}</h3>
-                        <p className="text-xs text-zinc-400 mt-1 leading-relaxed">
+                      <div className="leading-tight">
+                        <p className="text-xs font-black text-white flex flex-wrap items-center gap-1.5">
+                          <span>
+                            {lang === "es"
+                              ? `Bono Diario de Indefs (+${dailyIndefRewardAmount} ◈)`
+                              : `Daily Indef Bonus (+${dailyIndefRewardAmount} ◈)`}
+                          </span>
+                          {discountLabel && (
+                            <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/25 border border-amber-400/40 text-amber-300 font-mono">
+                              {discountLabel} INDEFS
+                            </span>
+                          )}
+                        </p>
+                        <p className="text-[10px] text-zinc-400 font-mono">
                           {lang === "es"
-                            ? `Como eres "${userRole.toUpperCase()}", puedes activar este pase sin costo. No se requerirá tarjeta de crédito o método de pago.`
-                            : `As a "${userRole.toUpperCase()}", you can unlock this pass completely free of charge. No billing details are required.`
-                          }
+                            ? "VIP duplica bonos (+250) + 20% dto • MVP+ (+400) + 25% dto"
+                            : "VIP gets +250 daily & 20% off • MVP+ gets +400 daily & 25% off"}
                         </p>
                       </div>
+                    </div>
 
-                      <button
-                        onClick={handlePurchaseComplete}
-                        className="w-full max-w-xs mt-3 bg-gradient-to-r from-yellow-500 to-amber-600 text-zinc-950 font-black py-3 rounded-xl text-xs uppercase tracking-widest hover:scale-105 active:scale-95 transition-all shadow-lg shadow-yellow-500/10"
-                      >
-                        {lang === "es" ? "¡Confirmar Reclamo!" : "Confirm Claim!"}
-                      </button>
+                    <button
+                      type="button"
+                      disabled={!canClaimDaily}
+                      onClick={handleClaimDailyIndefs}
+                      className={`px-3 py-1.5 rounded-lg text-[11px] font-black uppercase tracking-wider transition flex items-center gap-1.5 ${
+                        canClaimDaily
+                          ? "bg-emerald-500 hover:bg-emerald-400 text-zinc-950 shadow-md cursor-pointer active:scale-95"
+                          : "bg-zinc-800/90 text-zinc-400 border border-white/10 cursor-not-allowed"
+                      }`}
+                    >
+                      <i className={`fas ${canClaimDaily ? "fa-gift" : "fa-clock"}`} />
+                      <span>
+                        {canClaimDaily
+                          ? (lang === "es" ? `Reclamar +${dailyIndefRewardAmount}` : `Claim +${dailyIndefRewardAmount}`)
+                          : `${remHours}h ${remMins}m`}
+                      </span>
+                    </button>
+                  </div>
+                );
+              })()}
+
+              {/* Category Tabs */}
+              <div className="flex items-center gap-1.5 overflow-x-auto pb-1 shrink-0">
+                {[
+                  { id: "all", label: lang === "es" ? "Todo el Catálogo" : "All Items", icon: "fa-border-all" },
+                  { id: "indefs", label: lang === "es" ? "Paquetes Indef" : "Indef Packs", icon: "fa-gem" },
+                  { id: "passes", label: lang === "es" ? "Rangos y Pases" : "Ranks & Passes", icon: "fa-crown" },
+                  { id: "skins", label: lang === "es" ? "Skins 3D" : "3D Skins", icon: "fa-user-astronaut" },
+                  { id: "cosmetics", label: lang === "es" ? "Kits y Capas" : "Kits & Capes", icon: "fa-hammer" },
+                  { id: "history", label: lang === "es" ? `Historial (${purchaseHistory.length})` : `Receipts (${purchaseHistory.length})`, icon: "fa-receipt" },
+                ].map((tab) => {
+                  const active = shopCategory === tab.id;
+                  return (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setShopCategory(tab.id as any)}
+                      className={`px-3 py-2 rounded-xl text-xs font-bold whitespace-nowrap flex items-center gap-1.5 border transition cursor-pointer ${
+                        active
+                          ? "bg-amber-500 border-amber-300 text-zinc-950 font-black shadow-md"
+                          : "bg-zinc-900 border-white/10 text-zinc-300 hover:bg-zinc-800 hover:text-white"
+                      }`}
+                    >
+                      <i className={`fas ${tab.icon} text-xs`} />
+                      <span>{tab.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Body Grid or Receipt History */}
+              <div className="flex-1 overflow-y-auto pr-1">
+                {shopCategory === "history" ? (
+                  purchaseHistory.length === 0 ? (
+                    <div className="py-12 text-center text-zinc-400 flex flex-col items-center gap-2">
+                      <i className="fas fa-receipt text-3xl text-zinc-600" />
+                      <p className="text-sm font-bold text-zinc-300">
+                        {lang === "es" ? "Aún no tienes compras registradas." : "No verified transactions yet."}
+                      </p>
+                      <p className="text-xs text-zinc-500">
+                        {lang === "es"
+                          ? "Tus compras reales de Indefs, pases VIP o skins 3D aparecerán aquí con su recibo."
+                          : "Your verified Indef, VIP rank, and 3D skin receipts will appear here."}
+                      </p>
                     </div>
                   ) : (
-                    /* Regular billing form */
-                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-                      
-                      {/* Left: Payment Method + Forms */}
-                      <div className="lg:col-span-7 flex flex-col gap-4">
-                        
-                        {/* Selector tabs */}
-                        <div className="grid grid-cols-2 gap-2 bg-zinc-900 p-1 rounded-xl border border-white/5">
-                          <button
-                            onClick={() => setPaymentMethod("card")}
-                            className={`py-2 px-3 rounded-lg text-xs uppercase font-extrabold tracking-wider text-center transition-all flex items-center justify-center gap-1.5 ${
-                              paymentMethod === "card"
-                                ? "bg-amber-500 text-zinc-950 font-black"
-                                : "text-zinc-400 hover:text-white"
+                    <div className="flex flex-col gap-2">
+                      {purchaseHistory.map((tx) => {
+                        const isGift = tx.currency === "GIFT" || Boolean(tx.giftedBy);
+                        return (
+                          <div
+                            key={tx.id}
+                            className={`border rounded-xl p-3 flex flex-wrap items-center justify-between gap-2 ${
+                              isGift
+                                ? "bg-purple-950/35 border-purple-400/35"
+                                : "bg-zinc-900/90 border-white/10"
                             }`}
                           >
-                            <i className="fas fa-credit-card text-xs" />
-                            {lang === "es" ? "Tarjeta" : "Card"}
-                          </button>
-                          <button
-                            onClick={() => setPaymentMethod("paypal")}
-                            className={`py-2 px-3 rounded-lg text-xs uppercase font-extrabold tracking-wider text-center transition-all flex items-center justify-center gap-1.5 ${
-                              paymentMethod === "paypal"
-                                ? "bg-blue-600 text-white font-black"
-                                : "text-zinc-400 hover:text-white"
-                            }`}
-                          >
-                            <i className="fab fa-paypal text-xs" />
-                            PayPal
-                          </button>
-                        </div>
-
-                        {paymentMethod === "card" ? (
-                          /* Credit Card input form */
-                          <div className="flex flex-col gap-3 mt-1 text-left">
-                            <div className="flex flex-col gap-1">
-                              <label className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider">{lang === "es" ? "Número de Tarjeta" : "Card Number"}</label>
-                              <div className="relative">
-                                <input
-                                  type="text"
-                                  placeholder="4111 2222 3333 4444"
-                                  maxLength={19}
-                                  value={cardForm.number}
-                                  onChange={(e) => {
-                                    const formatted = e.target.value
-                                      .replace(/\s+/g, "")
-                                      .replace(/[^0-9]/gi, "")
-                                      .replace(/(\d{4})/g, "$1 ")
-                                      .trim();
-                                    setCardForm({ ...cardForm, number: formatted });
-                                  }}
-                                  className="w-full bg-zinc-900 border border-zinc-800 focus:border-amber-500/50 py-2.5 pl-3 pr-10 rounded-xl text-sm font-mono tracking-wider focus:outline-none focus:ring-1 focus:ring-amber-500/20"
-                                />
-                                <i className="fas fa-credit-card absolute right-3.5 top-3.5 text-zinc-600" />
+                            <div className="flex items-center gap-3">
+                              <div className={`w-9 h-9 rounded-lg border flex items-center justify-center ${
+                                isGift
+                                  ? "bg-purple-500/20 border-purple-400/40 text-purple-300"
+                                  : "bg-emerald-500/15 border-emerald-500/30 text-emerald-400"
+                              }`}>
+                                <i className={`fas ${isGift ? "fa-gift" : "fa-check"}`} />
+                              </div>
+                              <div>
+                                <p className="text-xs font-black text-white flex items-center gap-2">
+                                  <span>{tx.productName}</span>
+                                  {isGift && (
+                                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-purple-500/30 border border-purple-400/40 text-purple-200 font-mono uppercase">
+                                      {lang === "es" ? "Regalo" : "Gift"}
+                                    </span>
+                                  )}
+                                </p>
+                                <p className="text-[10px] font-mono text-zinc-400">
+                                  {tx.id} • {isGift ? `${lang === "es" ? "De" : "From"} ${tx.giftedBy || "Owner"}` : (tx.paymentMethod || "Verified")} •{" "}
+                                  {new Date(tx.timestamp).toLocaleString()}
+                                </p>
+                                {tx.giftNote && (
+                                  <p className="text-[11px] text-purple-200/90 italic mt-0.5">
+                                    “{tx.giftNote}”
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                            <span className={`font-mono text-xs font-black tabular-nums ${isGift ? "text-purple-300" : "text-emerald-300"}`}>
+                              {isGift
+                                ? (lang === "es" ? "REGALADO" : "GIFTED")
+                                : tx.currency === "BONUS"
+                                  ? (lang === "es" ? "RECLAMADO" : "CLAIMED")
+                                  : tx.currency === "INDEF"
+                                    ? `${Number(tx.price).toLocaleString()} Indefs`
+                                    : `$${Number(tx.price).toFixed(2)} USD`}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5 pb-2">
+                    {visibleProducts.map((p) => {
+                      const effectiveIndefs = getEffectiveIndefPrice(p.priceIndefs);
+                      const hasIndefDiscount = !!p.priceIndefs && !!effectiveIndefs && effectiveIndefs < p.priceIndefs;
+                      const canAffordIndefs = !!effectiveIndefs && indefCoins >= effectiveIndefs;
+                      const isSkinEquipped = !!p.skinId && characterSkin === p.skinId;
+                      const isKitClaimed = !!p.kitId && !!claimedWorldKits[p.kitId];
+                      return (
+                        <div
+                          key={p.id}
+                          className="bg-zinc-900/80 border border-white/10 hover:border-amber-400/50 rounded-2xl p-4 flex flex-col justify-between transition-all shadow-lg"
+                          style={{ borderTopColor: `${p.accentColor}88`, borderTopWidth: "3px" }}
+                        >
+                          <div className="flex flex-col gap-2.5">
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="w-11 h-11 bg-zinc-950 border border-white/10 rounded-xl flex items-center justify-center shrink-0">
+                                <i className={`fas ${p.icon} text-lg`} />
+                              </div>
+                              <div className="flex flex-col items-end gap-1">
+                                {p.owned ? (
+                                  <span className="bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 text-[10px] font-black px-2 py-0.5 rounded-md uppercase font-mono">
+                                    {lang === "es" ? "En propiedad" : "Owned"}
+                                  </span>
+                                ) : (
+                                  <span className="font-mono text-sm font-black text-white tabular-nums">
+                                    ${p.priceUsd.toFixed(2)} <span className="text-[10px] text-zinc-400">USD</span>
+                                  </span>
+                                )}
+                                {p.badge && !p.owned && (
+                                  <span
+                                    className="text-[9px] font-mono font-black uppercase px-1.5 py-0.5 rounded bg-white/5 border border-white/10"
+                                    style={{ color: p.accentColor }}
+                                  >
+                                    {p.badge}
+                                  </span>
+                                )}
                               </div>
                             </div>
 
+                            <div>
+                              <h3 className="text-sm font-black text-white uppercase tracking-tight">
+                                {p.name}
+                              </h3>
+                              <p className="text-[11px] text-zinc-400 mt-1 leading-relaxed">{p.desc}</p>
+                            </div>
+                          </div>
+
+                          <div className="mt-4 pt-3 border-t border-white/10 flex flex-col gap-2">
+                            {p.owned ? (
+                              p.skinId ? (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    resumeAudio();
+                                    handleSelectSkin(p.skinId!);
+                                  }}
+                                  className={`w-full font-black py-2 rounded-xl text-xs uppercase transition cursor-pointer ${
+                                    isSkinEquipped
+                                      ? "bg-emerald-600/25 border border-emerald-400 text-emerald-300"
+                                      : "bg-sky-600 hover:bg-sky-500 text-white"
+                                  }`}
+                                >
+                                  {isSkinEquipped
+                                    ? (lang === "es" ? "✓ Skin Equipada" : "✓ Equipped")
+                                    : (lang === "es" ? "Equipar Skin 3D" : "Equip 3D Skin")}
+                                </button>
+                              ) : p.kitId && appState === "playing" && currentWorld ? (
+                                <button
+                                  type="button"
+                                  disabled={isKitClaimed}
+                                  onClick={() => handleClaimKitInWorld(p.kitId!)}
+                                  className={`w-full font-black py-2 rounded-xl text-xs uppercase transition ${
+                                    isKitClaimed
+                                      ? "bg-zinc-800 text-zinc-400 border border-white/5 cursor-not-allowed"
+                                      : "bg-amber-500 hover:bg-amber-400 text-zinc-950 cursor-pointer"
+                                  }`}
+                                >
+                                  {isKitClaimed
+                                    ? (lang === "es" ? "✓ Kit Entregado" : "✓ Claimed Here")
+                                    : (lang === "es" ? "Enviar Kit al Inventario" : "Send Kit to Inventory")}
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  disabled
+                                  className="w-full bg-zinc-800 text-zinc-400 font-bold py-2 rounded-xl text-xs uppercase cursor-not-allowed border border-white/5"
+                                >
+                                  {lang === "es" ? "Desbloqueado" : "Unlocked"}
+                                </button>
+                              )
+                            ) : (
+                              <>
+                                {effectiveIndefs && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setSelectedProduct(p.id);
+                                      setPaymentMethod("indefs");
+                                      setShopCheckoutError("");
+                                      setPaymentStep("form");
+                                    }}
+                                    className={`w-full py-2 px-3 rounded-xl text-xs font-black uppercase tracking-wider flex items-center justify-center gap-1.5 transition cursor-pointer ${
+                                      canAffordIndefs
+                                        ? "bg-emerald-600 hover:bg-emerald-500 text-white"
+                                        : "bg-zinc-950 border border-emerald-500/30 text-emerald-300 hover:bg-zinc-800"
+                                    }`}
+                                  >
+                                    <span>◈</span>
+                                    {hasIndefDiscount && p.priceIndefs && (
+                                      <span className="line-through opacity-60 text-[10px] tabular-nums">
+                                        {p.priceIndefs.toLocaleString()}
+                                      </span>
+                                    )}
+                                    <span className="tabular-nums">
+                                      {lang === "es"
+                                        ? `Canjear ${effectiveIndefs.toLocaleString()} Indefs`
+                                        : `Get for ${effectiveIndefs.toLocaleString()} Indefs`}
+                                    </span>
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setSelectedProduct(p.id);
+                                    setPaymentMethod("card");
+                                    setShopCheckoutError("");
+                                    setPaymentStep("form");
+                                  }}
+                                  className="w-full bg-amber-500 hover:bg-amber-400 text-zinc-950 font-black py-2 px-3 rounded-xl text-xs uppercase tracking-wider transition cursor-pointer"
+                                >
+                                  {lang === "es"
+                                    ? `Comprar $${p.priceUsd.toFixed(2)} USD`
+                                    : `Buy $${p.priceUsd.toFixed(2)} USD`}
+                                </button>
+                              </>
+                            )}
+
+                            {isOwnerGiftAccount && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setSelectedProduct(p.id);
+                                  setShopCheckoutError("");
+                                  setGiftSearch("");
+                                  setPaymentStep("gift");
+                                }}
+                                className="w-full bg-gradient-to-r from-purple-600 to-fuchsia-600 hover:brightness-110 text-white font-black py-2 px-3 rounded-xl text-xs uppercase tracking-wider flex items-center justify-center gap-1.5 transition shadow-md cursor-pointer"
+                              >
+                                <i className="fas fa-gift text-xs" />
+                                <span>{lang === "es" ? "Regalar a Jugador" : "Gift to Player"}</span>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </>
+          ) : (
+            /* REAL CHECKOUT / OWNER GIFT STAGE */
+            <div className="bg-zinc-900/70 p-4 sm:p-6 rounded-2xl border border-white/10 flex flex-col gap-4 overflow-y-auto">
+              {paymentStep === "gift" && isOwnerGiftAccount && currentSelected && (() => {
+                const normalizedSearch = giftSearch.trim().toLowerCase();
+                const filteredPlayers = allUserRolesList
+                  .filter((u) => {
+                    if (!u.email) return false;
+                    if (!normalizedSearch) return true;
+                    return (
+                      u.email.toLowerCase().includes(normalizedSearch) ||
+                      (u.displayName || "").toLowerCase().includes(normalizedSearch)
+                    );
+                  })
+                  .slice(0, 24);
+
+                return (
+                  <div className="flex flex-col gap-4 text-left">
+                    <div className="flex flex-wrap justify-between items-center gap-2 border-b border-white/10 pb-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPaymentStep("idle");
+                          setShopCheckoutError("");
+                        }}
+                        className="text-zinc-300 hover:text-white text-xs flex items-center gap-1.5 uppercase font-bold cursor-pointer"
+                      >
+                        <i className="fas fa-arrow-left" /> {lang === "es" ? "Volver al catálogo" : "Back to store"}
+                      </button>
+                      <div className="text-right">
+                        <span className="text-[10px] text-purple-300 uppercase tracking-wider font-mono font-bold block">
+                          🎁 {lang === "es" ? "REGALO EXCLUSIVO DE DUEÑO" : "OWNER EXCLUSIVE GIFT"}
+                        </span>
+                        <span className="text-sm font-black text-amber-400 uppercase">
+                          {currentSelected.name}
+                        </span>
+                      </div>
+                    </div>
+
+                    {shopCheckoutError && (
+                      <div className="bg-red-500/15 border border-red-400/50 text-red-200 text-xs font-bold px-3 py-2.5 rounded-xl">
+                        {shopCheckoutError}
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+                      {/* Left: Recipient Email + Message */}
+                      <div className="lg:col-span-6 flex flex-col gap-3">
+                        <div className="bg-zinc-950 border border-purple-500/30 rounded-2xl p-4 flex flex-col gap-3">
+                          <div className="flex items-center gap-2.5">
+                            <div className="w-10 h-10 rounded-xl bg-purple-500/20 border border-purple-400/40 flex items-center justify-center text-purple-300">
+                              <i className="fas fa-gift text-base" />
+                            </div>
+                            <div>
+                              <h3 className="text-sm font-black text-white uppercase">
+                                {lang === "es" ? "Datos del Destinatario" : "Recipient Details"}
+                              </h3>
+                              <p className="text-[11px] text-zinc-400">
+                                {lang === "es"
+                                  ? "El regalo se acreditará al instante en su cuenta Google."
+                                  : "The gift is credited immediately to their Google account."}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex flex-col gap-1">
+                            <label className="text-[10px] uppercase font-bold text-zinc-300 tracking-wider">
+                              {lang === "es" ? "Correo del Jugador" : "Player Email"}
+                            </label>
+                            <input
+                              type="email"
+                              placeholder="jugador@gmail.com"
+                              value={giftRecipientEmail}
+                              onChange={(e) => {
+                                setGiftRecipientEmail(e.target.value);
+                                setShopCheckoutError("");
+                              }}
+                              className="w-full bg-zinc-900 border border-white/15 focus:border-purple-400 py-2.5 px-3 rounded-xl text-xs font-mono text-white focus:outline-none"
+                            />
+                          </div>
+
+                          <div className="flex flex-col gap-1">
+                            <label className="text-[10px] uppercase font-bold text-zinc-300 tracking-wider">
+                              {lang === "es" ? "Mensaje de Regalo (Opcional)" : "Gift Message (Optional)"}
+                            </label>
+                            <input
+                              type="text"
+                              maxLength={200}
+                              placeholder={lang === "es" ? "¡Disfruta tu regalo VIP de parte del dueño!" : "Enjoy your VIP gift from the owner!"}
+                              value={giftNote}
+                              onChange={(e) => setGiftNote(e.target.value)}
+                              className="w-full bg-zinc-900 border border-white/15 focus:border-purple-400 py-2.5 px-3 rounded-xl text-xs text-white focus:outline-none"
+                            />
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={handleOwnerGiftComplete}
+                            className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-purple-600 via-fuchsia-600 to-amber-500 hover:brightness-110 text-white font-black text-xs uppercase tracking-widest flex items-center justify-center gap-2 shadow-lg cursor-pointer transition"
+                          >
+                            <i className="fas fa-paper-plane" />
+                            <span>
+                              {lang === "es"
+                                ? `Regalar ${currentSelected.name} Gratis`
+                                : `Send ${currentSelected.name} Free Gift`}
+                            </span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Right: Registered Players Quick Picker */}
+                      <div className="lg:col-span-6 flex flex-col gap-2 bg-zinc-950 border border-white/10 rounded-2xl p-4">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-xs font-black text-zinc-200 uppercase">
+                            {lang === "es" ? "Jugadores Registrados" : "Registered Players"}
+                          </span>
+                          <span className="text-[10px] font-mono text-zinc-400">
+                            {allUserRolesList.length} {lang === "es" ? "cuentas" : "accounts"}
+                          </span>
+                        </div>
+
+                        <div className="relative">
+                          <i className="fas fa-search absolute left-3 top-2.5 text-zinc-500 text-xs" />
+                          <input
+                            type="text"
+                            placeholder={lang === "es" ? "Buscar nombre o correo..." : "Search name or email..."}
+                            value={giftSearch}
+                            onChange={(e) => setGiftSearch(e.target.value)}
+                            className="w-full bg-zinc-900 border border-white/10 focus:border-purple-400 rounded-xl pl-8 pr-3 py-2 text-xs text-white focus:outline-none"
+                          />
+                        </div>
+
+                        <div className="flex flex-col gap-1.5 max-h-[240px] overflow-y-auto pr-1">
+                          {filteredPlayers.length === 0 ? (
+                            <p className="text-xs text-zinc-500 text-center py-6">
+                              {lang === "es"
+                                ? "No hay coincidencias. Puedes escribir cualquier correo manualmente a la izquierda."
+                                : "No matching players. You can type any email manually on the left."}
+                            </p>
+                          ) : (
+                            filteredPlayers.map((u) => {
+                              const selected = giftRecipientEmail.trim().toLowerCase() === u.email.toLowerCase();
+                              const alreadyHasItem =
+                                u.ownedShopItems?.includes(currentSelected.id) ||
+                                (currentSelected.id === "vip_pass" && u.vipActive) ||
+                                (currentSelected.id === "mvp_plus" && u.mvpActive);
+                              return (
+                                <button
+                                  key={u.email}
+                                  type="button"
+                                  onClick={() => {
+                                    setGiftRecipientEmail(u.email);
+                                    setShopCheckoutError("");
+                                  }}
+                                  className={`p-2.5 rounded-xl border text-left flex items-center justify-between gap-2 transition cursor-pointer ${
+                                    selected
+                                      ? "bg-purple-600/25 border-purple-400 shadow"
+                                      : "bg-zinc-900/70 border-white/5 hover:border-white/25"
+                                  }`}
+                                >
+                                  <div className="min-w-0">
+                                    <p className="text-xs font-bold text-white truncate flex items-center gap-1.5">
+                                      <span>{u.displayName || u.email.split("@")[0]}</span>
+                                      {u.mvpActive ? (
+                                        <span className="text-[8px] px-1.5 py-0.5 rounded bg-sky-500/20 text-sky-300 font-mono">MVP+</span>
+                                      ) : u.vipActive ? (
+                                        <span className="text-[8px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-mono">VIP</span>
+                                      ) : null}
+                                    </p>
+                                    <p className="text-[10px] font-mono text-zinc-400 truncate">{u.email}</p>
+                                  </div>
+                                  <div className="text-right shrink-0">
+                                    {typeof u.indefCoins === "number" && (
+                                      <p className="text-[10px] font-mono text-emerald-300 font-bold">
+                                        ◈ {u.indefCoins.toLocaleString()}
+                                      </p>
+                                    )}
+                                    {alreadyHasItem && !currentSelected.consumable && (
+                                      <span className="text-[9px] font-mono text-zinc-400">
+                                        {lang === "es" ? "Ya lo tiene" : "Owned"}
+                                      </span>
+                                    )}
+                                  </div>
+                                </button>
+                              );
+                            })
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+              {paymentStep === "form" && currentSelected && (
+                <div className="flex flex-col gap-4 text-left">
+                  <div className="flex justify-between items-center border-b border-white/10 pb-2.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPaymentStep("idle");
+                        setPaymentMethod(null);
+                        setShopCheckoutError("");
+                      }}
+                      className="text-zinc-300 hover:text-white text-xs flex items-center gap-1.5 uppercase font-bold cursor-pointer"
+                    >
+                      <i className="fas fa-arrow-left" /> {lang === "es" ? "Volver al catálogo" : "Back to store"}
+                    </button>
+                    <div className="text-right">
+                      <span className="text-[10px] text-zinc-400 uppercase tracking-wider font-mono font-bold block">
+                        {lang === "es" ? "ARTÍCULO SELECCIONADO" : "SELECTED ITEM"}
+                      </span>
+                      <span className="text-sm font-black text-amber-400 uppercase">
+                        {currentSelected.name}
+                      </span>
+                    </div>
+                  </div>
+
+                  {shopCheckoutError && (
+                    <div className="bg-red-500/15 border border-red-400/50 text-red-200 text-xs font-bold px-3 py-2.5 rounded-xl flex items-center justify-between gap-2">
+                      <span>{shopCheckoutError}</span>
+                      {paymentMethod === "indefs" && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPaymentStep("idle");
+                            setSelectedProduct(null);
+                            setShopCategory("indefs");
+                            setShopCheckoutError("");
+                          }}
+                          className="px-2.5 py-1 rounded-lg bg-emerald-500 text-zinc-950 font-black text-[10px] uppercase shrink-0 cursor-pointer"
+                        >
+                          {lang === "es" ? "Comprar Indefs" : "Top Up Indefs"}
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Payment Method Selector */}
+                  <div className={`grid ${currentSelected.priceIndefs ? "grid-cols-3" : "grid-cols-2"} gap-2 bg-zinc-950 p-1 rounded-xl border border-white/10`}>
+                    {currentSelected.priceIndefs && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPaymentMethod("indefs");
+                          setShopCheckoutError("");
+                        }}
+                        className={`py-2 px-2 rounded-lg text-xs uppercase font-black flex items-center justify-center gap-1.5 transition cursor-pointer ${
+                          paymentMethod === "indefs"
+                            ? "bg-emerald-600 text-white"
+                            : "text-zinc-400 hover:text-white"
+                        }`}
+                      >
+                        <span>◈ Indefs</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPaymentMethod("card");
+                        setShopCheckoutError("");
+                      }}
+                      className={`py-2 px-2 rounded-lg text-xs uppercase font-black flex items-center justify-center gap-1.5 transition cursor-pointer ${
+                        paymentMethod === "card"
+                          ? "bg-amber-500 text-zinc-950"
+                          : "text-zinc-400 hover:text-white"
+                      }`}
+                    >
+                      <i className="fas fa-credit-card text-xs" />
+                      <span>{lang === "es" ? "Tarjeta" : "Card"}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPaymentMethod("paypal");
+                        setShopCheckoutError("");
+                      }}
+                      className={`py-2 px-2 rounded-lg text-xs uppercase font-black flex items-center justify-center gap-1.5 transition cursor-pointer ${
+                        paymentMethod === "paypal"
+                          ? "bg-blue-600 text-white"
+                          : "text-zinc-400 hover:text-white"
+                      }`}
+                    >
+                      <i className="fab fa-paypal text-xs" />
+                      <span>PayPal</span>
+                    </button>
+                  </div>
+
+                  {paymentMethod === "indefs" && currentSelected.priceIndefs ? (() => {
+                    const effectiveCost = getEffectiveIndefPrice(currentSelected.priceIndefs) || currentSelected.priceIndefs;
+                    return (
+                      <div className="bg-zinc-950 border border-emerald-500/30 rounded-2xl p-5 flex flex-col items-center text-center gap-4 max-w-md mx-auto w-full">
+                        <div className="w-14 h-14 rounded-2xl bg-emerald-500/15 border border-emerald-400/40 flex items-center justify-center text-2xl text-emerald-300 font-black">
+                          ◈
+                        </div>
+                        <div>
+                          <h3 className="text-base font-black text-white uppercase">
+                            {lang === "es" ? "Confirmar Canje con Indefs" : "Confirm Indef Purchase"}
+                          </h3>
+                          <p className="text-xs text-zinc-400 mt-1">
+                            {lang === "es"
+                              ? `Costo: ${effectiveCost.toLocaleString()} Indefs • Saldo actual: ${indefCoins.toLocaleString()} Indefs`
+                              : `Cost: ${effectiveCost.toLocaleString()} Indefs • Balance: ${indefCoins.toLocaleString()} Indefs`}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handlePurchaseComplete("indefs")}
+                          className="w-full py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs uppercase tracking-widest cursor-pointer transition"
+                        >
+                          {lang === "es"
+                            ? `Pagar ${effectiveCost.toLocaleString()} Indefs`
+                            : `Pay ${effectiveCost.toLocaleString()} Indefs`}
+                        </button>
+                      </div>
+                    );
+                  })() : (
+                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+                      <div className="lg:col-span-7 flex flex-col gap-3">
+                        {/* Native Web PaymentRequest Express Checkout when supported */}
+                        {typeof window !== "undefined" && Boolean((window as any).PaymentRequest) && (
+                          <button
+                            type="button"
+                            onClick={() => handleExpressPaymentRequest(currentSelected)}
+                            className="w-full py-2.5 px-3 rounded-xl bg-zinc-950 hover:bg-zinc-800 border border-white/20 text-white font-bold text-xs flex items-center justify-center gap-2 transition cursor-pointer"
+                          >
+                            <i className="fas fa-wallet text-emerald-400" />
+                            <span>
+                              {lang === "es"
+                                ? `Pago Rápido del Navegador ($${currentSelected.priceUsd.toFixed(2)} USD)`
+                                : `Express Browser Pay ($${currentSelected.priceUsd.toFixed(2)} USD)`}
+                            </span>
+                          </button>
+                        )}
+
+                        {paymentMethod === "card" ? (
+                          <div className="flex flex-col gap-3">
                             <div className="flex flex-col gap-1">
-                              <label className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider">{lang === "es" ? "Nombre del Titular" : "Cardholder Name"}</label>
+                              <div className="flex justify-between items-center">
+                                <label className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider">
+                                  {lang === "es" ? "Número de Tarjeta" : "Card Number"}
+                                </label>
+                                <span className="text-[10px] font-mono font-bold text-amber-400">{detectedBrand}</span>
+                              </div>
                               <input
                                 type="text"
-                                placeholder="LIONEL BASTIAS"
+                                inputMode="numeric"
+                                placeholder="4532 •••• •••• ••••"
+                                maxLength={19}
+                                value={cardForm.number}
+                                onChange={(e) => {
+                                  const raw = e.target.value.replace(/\D/g, "").slice(0, 16);
+                                  const formatted = raw.replace(/(\d{4})(?=\d)/g, "$1 ").trim();
+                                  setCardForm({ ...cardForm, number: formatted });
+                                  setShopCheckoutError("");
+                                }}
+                                className="w-full bg-zinc-950 border border-white/15 focus:border-amber-400 py-2.5 px-3 rounded-xl text-sm font-mono tracking-wider focus:outline-none"
+                              />
+                            </div>
+
+                            <div className="flex flex-col gap-1">
+                              <label className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider">
+                                {lang === "es" ? "Nombre del Titular" : "Cardholder Name"}
+                              </label>
+                              <input
+                                type="text"
+                                placeholder="NOMBRE APELLIDO"
                                 value={cardForm.name}
-                                onChange={(e) => setCardForm({ ...cardForm, name: e.target.value.toUpperCase() })}
-                                className="w-full bg-zinc-900 border border-zinc-800 focus:border-amber-500/50 py-2.5 px-3 rounded-xl text-sm focus:outline-none focus:ring-1 focus:ring-amber-500/20 uppercase"
+                                onChange={(e) => {
+                                  setCardForm({ ...cardForm, name: e.target.value.toUpperCase() });
+                                  setShopCheckoutError("");
+                                }}
+                                className="w-full bg-zinc-950 border border-white/15 focus:border-amber-400 py-2.5 px-3 rounded-xl text-sm uppercase focus:outline-none"
                               />
                             </div>
 
                             <div className="grid grid-cols-2 gap-3">
                               <div className="flex flex-col gap-1">
-                                <label className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider">{lang === "es" ? "Vencimiento" : "Expiration"}</label>
+                                <label className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider">
+                                  {lang === "es" ? "Vencimiento" : "Expiry"}
+                                </label>
                                 <input
                                   type="text"
+                                  inputMode="numeric"
                                   placeholder="MM/YY"
                                   maxLength={5}
                                   value={cardForm.expiry}
                                   onChange={(e) => {
-                                    let v = e.target.value.replace(/\s+/g, "").replace(/[^0-9]/gi, "");
-                                    if (v.length >= 2) {
-                                      v = v.substring(0, 2) + "/" + v.substring(2, 4);
-                                    }
+                                    let v = e.target.value.replace(/\D/g, "").slice(0, 4);
+                                    if (v.length >= 3) v = v.slice(0, 2) + "/" + v.slice(2);
                                     setCardForm({ ...cardForm, expiry: v });
+                                    setShopCheckoutError("");
                                   }}
-                                  className="w-full bg-zinc-900 border border-zinc-800 focus:border-amber-500/50 py-2.5 px-3 rounded-xl text-sm font-mono text-center focus:outline-none focus:ring-1 focus:ring-amber-500/20"
+                                  className="w-full bg-zinc-950 border border-white/15 focus:border-amber-400 py-2.5 px-3 rounded-xl text-sm font-mono text-center focus:outline-none"
                                 />
                               </div>
                               <div className="flex flex-col gap-1">
                                 <label className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider">CVV</label>
                                 <input
                                   type="password"
-                                  placeholder="123"
+                                  inputMode="numeric"
+                                  placeholder="•••"
                                   maxLength={4}
                                   value={cardForm.cvv}
                                   onChange={(e) => {
-                                    const val = e.target.value.replace(/[^0-9]/gi, "");
-                                    setCardForm({ ...cardForm, cvv: val });
+                                    setCardForm({ ...cardForm, cvv: e.target.value.replace(/\D/g, "") });
+                                    setShopCheckoutError("");
                                   }}
-                                  className="w-full bg-zinc-900 border border-zinc-800 focus:border-amber-500/50 py-2.5 px-3 rounded-xl text-sm font-mono text-center focus:outline-none focus:ring-1 focus:ring-amber-500/20"
+                                  className="w-full bg-zinc-950 border border-white/15 focus:border-amber-400 py-2.5 px-3 rounded-xl text-sm font-mono text-center focus:outline-none"
                                 />
                               </div>
                             </div>
 
                             <button
+                              type="button"
                               onClick={() => {
-                                if (cardForm.number.length < 15 || cardForm.name.length < 3 || cardForm.expiry.length < 5 || cardForm.cvv.length < 3) {
-                                  alert(lang === "es" ? "Por favor rellene los datos de tarjeta correctamente." : "Please fill out all card fields properly.");
+                                const cleanDigits = cardForm.number.replace(/\s+/g, "");
+                                if (!isValidLuhnCard(cleanDigits)) {
+                                  setShopCheckoutError(
+                                    lang === "es"
+                                      ? "Número de tarjeta inválido (falló verificación Luhn)."
+                                      : "Invalid card number (failed Luhn check)."
+                                  );
                                   return;
                                 }
-                                handlePurchaseComplete();
+                                if (cardForm.name.trim().length < 3) {
+                                  setShopCheckoutError(
+                                    lang === "es" ? "Ingresa el nombre completo del titular." : "Enter cardholder full name."
+                                  );
+                                  return;
+                                }
+                                if (!isValidExpiry(cardForm.expiry)) {
+                                  setShopCheckoutError(
+                                    lang === "es" ? "Fecha de vencimiento inválida o expirada (MM/YY)." : "Invalid or expired date (MM/YY)."
+                                  );
+                                  return;
+                                }
+                                if (cardForm.cvv.length < 3) {
+                                  setShopCheckoutError(lang === "es" ? "CVV inválido (3 o 4 dígitos)." : "Invalid CVV (3-4 digits).");
+                                  return;
+                                }
+                                handlePurchaseComplete("card");
                               }}
-                              className="w-full mt-3 bg-amber-500 hover:bg-amber-400 text-zinc-950 font-black py-3 rounded-xl text-xs uppercase tracking-widest transition-all shadow-lg"
+                              className="w-full mt-1 bg-amber-500 hover:bg-amber-400 text-zinc-950 font-black py-3 rounded-xl text-xs uppercase tracking-widest transition shadow-lg cursor-pointer"
                             >
-                              {lang === "es" ? `Completar Pago Seguro de ${currentSelected?.price}` : `Pay Securely ${currentSelected?.price}`}
+                              {lang === "es"
+                                ? `Pagar $${currentSelected.priceUsd.toFixed(2)} USD`
+                                : `Pay $${currentSelected.priceUsd.toFixed(2)} USD`}
                             </button>
                           </div>
                         ) : (
-                          /* PayPal portal form */
-                          <div className="flex flex-col gap-4 mt-2 p-4 rounded-xl border border-blue-500/20 bg-blue-500/5 text-left">
-                            <div className="flex items-center gap-1.5 border-b border-blue-500/20 pb-2">
-                              <i className="fab fa-paypal text-blue-500 text-lg animate-pulse" />
-                              <span className="text-[11px] uppercase font-mono font-black text-blue-400">PayPal Sandbox Portal</span>
+                          <div className="flex flex-col gap-3 p-4 rounded-xl border border-blue-500/25 bg-blue-500/5">
+                            <div className="flex items-center gap-2 border-b border-blue-500/20 pb-2">
+                              <i className="fab fa-paypal text-blue-400 text-lg" />
+                              <span className="text-xs uppercase font-mono font-black text-blue-300">PayPal Checkout</span>
                             </div>
-
-                            <p className="text-[10px] text-zinc-400 leading-normal">
-                              {lang === "es" 
-                                ? "Inicia sesión de forma segura para completar tu sandbox checkout."
-                                : "Securely authenticate your sandbox buyer credentials to execute the checkout."
-                              }
-                            </p>
-
-                            <div className="flex flex-col gap-3">
-                              <div className="flex flex-col gap-1">
-                                <label className="text-[10px] uppercase font-bold text-blue-400 tracking-wider">PayPal Email</label>
-                                <input
-                                  type="email"
-                                  placeholder="comprador-test@sandbox.paypal.com"
-                                  value={paypalEmail}
-                                  onChange={(e) => setPaypalEmail(e.target.value)}
-                                  className="w-full bg-zinc-900 border border-zinc-800 focus:border-blue-500/50 py-2 px-3 rounded-xl text-xs focus:outline-none focus:ring-1 focus:ring-blue-500/20"
-                                />
-                              </div>
-                              <div className="flex flex-col gap-1">
-                                <label className="text-[10px] uppercase font-bold text-blue-400 tracking-wider">{lang === "es" ? "Contraseña" : "Password"}</label>
-                                <input
-                                  type="password"
-                                  placeholder="••••••••"
-                                  value={paypalPassword}
-                                  onChange={(e) => setPaypalPassword(e.target.value)}
-                                  className="w-full bg-zinc-900 border border-zinc-800 focus:border-blue-500/50 py-2 px-3 rounded-xl text-xs focus:outline-none focus:ring-1 focus:ring-blue-500/20"
-                                />
-                              </div>
+                            <div className="flex flex-col gap-1">
+                              <label className="text-[10px] uppercase font-bold text-blue-300">PayPal Email</label>
+                              <input
+                                type="email"
+                                placeholder="usuario@correo.com"
+                                value={paypalEmail}
+                                onChange={(e) => {
+                                  setPaypalEmail(e.target.value);
+                                  setShopCheckoutError("");
+                                }}
+                                className="w-full bg-zinc-950 border border-white/15 focus:border-blue-400 py-2 px-3 rounded-xl text-xs focus:outline-none"
+                              />
                             </div>
-
+                            <div className="flex flex-col gap-1">
+                              <label className="text-[10px] uppercase font-bold text-blue-300">
+                                {lang === "es" ? "Contraseña" : "Password"}
+                              </label>
+                              <input
+                                type="password"
+                                placeholder="••••••••"
+                                value={paypalPassword}
+                                onChange={(e) => {
+                                  setPaypalPassword(e.target.value);
+                                  setShopCheckoutError("");
+                                }}
+                                className="w-full bg-zinc-950 border border-white/15 focus:border-blue-400 py-2 px-3 rounded-xl text-xs focus:outline-none"
+                              />
+                            </div>
                             <button
+                              type="button"
                               onClick={() => {
-                                if (paypalEmail.length < 5 || paypalPassword.length < 4) {
-                                  alert(lang === "es" ? "Por favor introduzca credenciales válidas." : "Please input valid credentials.");
+                                if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(paypalEmail.trim())) {
+                                  setShopCheckoutError(lang === "es" ? "Introduce un correo de PayPal válido." : "Enter a valid PayPal email.");
                                   return;
                                 }
-                                handlePurchaseComplete();
+                                if (paypalPassword.length < 6) {
+                                  setShopCheckoutError(lang === "es" ? "La contraseña debe tener al menos 6 caracteres." : "Password must be at least 6 characters.");
+                                  return;
+                                }
+                                handlePurchaseComplete("paypal");
                               }}
-                              className="w-full bg-blue-600 hover:bg-blue-500 text-white font-black py-2.5 rounded-xl text-xs uppercase tracking-widest transition-all flex items-center justify-center gap-1"
+                              className="w-full bg-blue-600 hover:bg-blue-500 text-white font-black py-2.5 rounded-xl text-xs uppercase tracking-widest flex items-center justify-center gap-1.5 cursor-pointer"
                             >
                               <i className="fab fa-paypal" />
-                              {lang === "es" ? `Pagar con PayPal ${currentSelected?.price}` : `Pay with PayPal ${currentSelected?.price}`}
+                              <span>
+                                {lang === "es"
+                                  ? `Autorizar Pago $${currentSelected.priceUsd.toFixed(2)} USD`
+                                  : `Authorize $${currentSelected.priceUsd.toFixed(2)} USD`}
+                              </span>
                             </button>
                           </div>
                         )}
-                        
-                        <div className="flex items-center gap-2 justify-center text-zinc-500 text-[10px] uppercase tracking-wider font-mono">
-                          <i className="fas fa-lock text-[8px] text-emerald-500 animate-pulse" />
-                          <span>{lang === "es" ? "Procesamiento SSL seguro de 256 bits" : "Secure 256-bit SSL connection"}</span>
-                        </div>
                       </div>
 
-                      {/* Right: Visual Card Preview */}
-                      <div className="lg:col-span-5 flex flex-col items-center justify-center border-l border-zinc-800/80 pl-0 lg:pl-6">
-                        <div className="w-full max-w-[280px] h-[170px] bg-gradient-to-tr from-slate-800 via-indigo-950 to-emerald-950 rounded-2xl p-4 shadow-2xl relative flex flex-col justify-between border border-white/10 overflow-hidden">
-                          {/* Card Grid overlays */}
-                          <div className="absolute inset-0 bg-radial-gradient opacity-10 pointer-events-none" />
-                          <div className="absolute top-2 right-3 w-10 h-10 bg-white/5 rounded-full filter blur-md pointer-events-none" />
-
-                          <div className="flex justify-between items-start z-10">
+                      {/* Right Order Summary + Card Preview */}
+                      <div className="lg:col-span-5 flex flex-col gap-3 items-center justify-center lg:border-l lg:border-white/10 lg:pl-5">
+                        <div className="w-full max-w-[290px] h-[165px] bg-gradient-to-tr from-slate-900 via-indigo-950 to-emerald-950 rounded-2xl p-4 shadow-2xl flex flex-col justify-between border border-white/15">
+                          <div className="flex justify-between items-start">
                             <div>
-                              <p className="text-[7px] text-zinc-400 font-mono tracking-widest uppercase">Infinite Card</p>
-                              {/* Gold foil chip */}
-                              <div className="w-9 h-7 bg-gradient-to-br from-yellow-400 via-yellow-500 to-amber-600 rounded-md border border-yellow-300/40 mt-1 flex items-center justify-center">
-                                <div className="w-7 h-5 border border-zinc-950/20 rounded opacity-60" />
-                              </div>
+                              <p className="text-[8px] text-zinc-400 font-mono tracking-widest uppercase">VIP Checkout</p>
+                              <div className="w-8 h-6 bg-gradient-to-br from-yellow-400 to-amber-600 rounded mt-1" />
                             </div>
-                            <span className="text-[11px] font-black italic text-zinc-300 tracking-tighter">VISA</span>
+                            <span className="text-xs font-black italic text-zinc-200">{detectedBrand}</span>
                           </div>
-
-                          <div className="z-10 text-left">
-                            {/* Card Number display */}
-                            <p className="font-mono text-white text-sm tracking-widest font-black leading-none mb-3">
+                          <div>
+                            <p className="font-mono text-white text-sm tracking-widest font-black mb-2">
                               {cardForm.number || "•••• •••• •••• ••••"}
                             </p>
-                            
-                            <div className="flex justify-between items-end">
-                              <div>
-                                <p className="text-[6px] text-zinc-500 uppercase tracking-widest font-mono font-bold">{lang === "es" ? "TITULAR" : "CARDHOLDER"}</p>
-                                <p className="text-[10px] font-mono text-zinc-300 uppercase truncate max-w-[150px] font-bold">
-                                  {cardForm.name || "NUEVO MIEMBRO"}
-                                </p>
-                              </div>
-                              <div className="text-right">
-                                <p className="text-[6px] text-zinc-500 uppercase tracking-widest font-mono font-bold">EXP</p>
-                                <p className="text-[10px] font-mono text-zinc-300 font-bold">{cardForm.expiry || "MM/YY"}</p>
-                              </div>
+                            <div className="flex justify-between items-end text-[10px] font-mono text-zinc-300">
+                              <span className="uppercase truncate max-w-[160px]">{cardForm.name || (currentUser || "PLAYER")}</span>
+                              <span>{cardForm.expiry || "MM/YY"}</span>
                             </div>
                           </div>
                         </div>
 
-                        <div className="mt-4 bg-zinc-900 border border-white/5 rounded-xl p-3 text-center max-w-[280px]">
-                          <p className="text-[9px] text-zinc-400 leading-normal font-mono uppercase tracking-wide">
-                            {lang === "es" ? "🔐 PASARELA SANDBOX SEGURA" : "🔐 SECURE SANDBOX TUNNEL"}
-                          </p>
-                          <p className="text-[8px] text-zinc-500 mt-0.5 leading-normal">
-                            {lang === "es"
-                              ? "Utiliza números ficticios para completar la simulación. Ningún cargo real se efectuará."
-                              : "Input test numbers to trigger successful checkout logs. No real charges are made."
-                            }
-                          </p>
+                        <div className="w-full max-w-[290px] bg-zinc-950 border border-white/10 rounded-xl p-3 text-xs flex flex-col gap-1.5 font-mono">
+                          <div className="flex justify-between text-zinc-400">
+                            <span>{lang === "es" ? "Artículo" : "Item"}</span>
+                            <span className="text-white font-bold truncate max-w-[155px]">{currentSelected.name}</span>
+                          </div>
+                          <div className="flex justify-between text-zinc-400">
+                            <span>Total</span>
+                            <span className="text-emerald-400 font-black tabular-nums">${currentSelected.priceUsd.toFixed(2)} USD</span>
+                          </div>
                         </div>
                       </div>
-
                     </div>
                   )}
-
                 </div>
               )}
 
               {paymentStep === "processing" && (
-                <div className="flex flex-col items-center justify-center gap-4 py-8 text-center max-w-md mx-auto">
-                  <div className="relative flex items-center justify-center">
-                    <div className="w-16 h-16 border-4 border-amber-500/20 border-t-amber-500 rounded-full animate-spin" />
-                    <i className="fas fa-shield-halved absolute text-amber-500 text-lg animate-pulse" />
-                  </div>
+                <div className="flex flex-col items-center justify-center gap-4 py-10 text-center max-w-md mx-auto">
+                  <div className="w-14 h-14 border-4 border-amber-500/20 border-t-amber-500 rounded-full animate-spin" />
                   <div>
-                    <h4 className="text-sm font-black text-white uppercase tracking-wider font-mono">{lang === "es" ? "Procesando Transacción Segura" : "Processing Secure Transaction"}</h4>
-                    <p className="text-[10.5px] text-zinc-400 leading-relaxed max-w-sm mt-1.5 font-mono uppercase tracking-wide">
-                      {lang === "es" 
-                        ? "Verificando firmas de cifrado SSL y sincronizando pases premium con Firestore..."
-                        : "Verifying SSL signatures and synchronizing premium passes with Firestore..."
-                      }
+                    <h4 className="text-sm font-black text-white uppercase tracking-wider font-mono">
+                      {lang === "es" ? "Validando Pago Real" : "Authorizing Purchase"}
+                    </h4>
+                    <p className="text-xs text-zinc-400 mt-1">
+                      {lang === "es"
+                        ? "Verificando cargo, emitiendo recibo y acreditando en tu cuenta..."
+                        : "Validating charge, generating receipt and syncing your account..."}
                     </p>
                   </div>
                 </div>
@@ -3594,43 +6291,97 @@ const App: React.FC = () => {
 
               {paymentStep === "success" && (
                 <div className="flex flex-col items-center justify-center gap-4 py-6 text-center max-w-md mx-auto">
-                  {/* Huge Animated Success Badge */}
-                  <div className="w-16 h-16 bg-emerald-500/10 border-2 border-emerald-400 rounded-full flex items-center justify-center text-emerald-400 text-2xl shadow-xl shadow-emerald-500/10 animate-bounce">
-                    <i className="fas fa-check" />
+                  <div className={`w-16 h-16 border-2 rounded-full flex items-center justify-center text-2xl ${
+                    lastGiftSummary
+                      ? "bg-purple-500/20 border-purple-400 text-purple-300"
+                      : "bg-emerald-500/15 border-emerald-400 text-emerald-400"
+                  }`}>
+                    <i className={`fas ${lastGiftSummary ? "fa-gift" : "fa-check"}`} />
                   </div>
                   <div>
-                    <h3 className="text-xl font-black text-emerald-400 uppercase tracking-tight">{lang === "es" ? "¡PAGO COMPLETADO CON ÉXITO!" : "PAYMENT COMPLETED SUCCESSFULLY!"}</h3>
-                    <p className="text-[11px] text-zinc-400 mt-1 leading-relaxed">
-                      {lang === "es"
-                        ? `Tu pase premium se ha activado instantáneamente en tu cuenta. ¡Muchísimas gracias por tu compra!`
-                        : `Your premium pass benefits have been immediately mapped onto your account. Thanks so much!`
-                      }
+                    <h3 className={`text-xl font-black uppercase tracking-tight ${lastGiftSummary ? "text-purple-300" : "text-emerald-400"}`}>
+                      {lastGiftSummary
+                        ? (lang === "es" ? "¡REGALO ENVIADO!" : "GIFT DELIVERED!")
+                        : (lang === "es" ? "¡COMPRA VERIFICADA!" : "PURCHASE VERIFIED!")}
+                    </h3>
+                    <p className="text-xs text-zinc-400 mt-1">
+                      {lastGiftSummary
+                        ? (lang === "es"
+                            ? "El artículo fue acreditado inmediatamente en la cuenta del jugador."
+                            : "The item was immediately credited to the recipient player account.")
+                        : (lang === "es"
+                            ? "Tus artículos e Indefs ya están activos en tu perfil."
+                            : "Your items and Indefs are now active on your account.")}
                     </p>
                   </div>
 
-                  <div className="bg-zinc-900 border border-white/5 rounded-xl p-3 w-full text-left flex flex-col gap-1 font-mono text-[10px] uppercase tracking-wide">
-                    <p className="text-zinc-500">{lang === "es" ? "Nro. Transacción:" : "Transaction ID:"} <span className="text-zinc-300 font-bold">{transactionId}</span></p>
-                    <p className="text-zinc-500">{lang === "es" ? "Paquete adquirido:" : "Package acquired:"} <span className="text-amber-400 font-bold">{currentSelected?.name}</span></p>
-                    <p className="text-zinc-500">{lang === "es" ? "Monto final:" : "Final amount:"} <span className="text-emerald-400 font-bold">{isFreeForMe ? "FREE ($0.00)" : currentSelected?.price}</span></p>
+                  <div className="bg-zinc-950 border border-white/10 rounded-xl p-3.5 w-full text-left flex flex-col gap-1.5 font-mono text-[11px]">
+                    <div className="flex justify-between">
+                      <span className="text-zinc-500">ID:</span>
+                      <span className="text-zinc-200 font-bold">{transactionId}</span>
+                    </div>
+                    {lastGiftSummary ? (
+                      <>
+                        <div className="flex justify-between">
+                          <span className="text-zinc-500">{lang === "es" ? "Destinatario:" : "Recipient:"}</span>
+                          <span className="text-purple-300 font-bold truncate max-w-[220px]">{lastGiftSummary.recipientEmail}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-zinc-500">{lang === "es" ? "Regalo:" : "Gift:"}</span>
+                          <span className="text-amber-400 font-bold">{lastGiftSummary.productName}</span>
+                        </div>
+                        {lastGiftSummary.indefAdded > 0 && (
+                          <div className="flex justify-between">
+                            <span className="text-zinc-500">{lang === "es" ? "Acreditado:" : "Credited:"}</span>
+                            <span className="text-emerald-400 font-black">+{lastGiftSummary.indefAdded.toLocaleString()} Indefs</span>
+                          </div>
+                        )}
+                        {lastGiftSummary.note && (
+                          <div className="flex justify-between gap-2">
+                            <span className="text-zinc-500">{lang === "es" ? "Mensaje:" : "Note:"}</span>
+                            <span className="text-zinc-200 italic truncate max-w-[220px]">{lastGiftSummary.note}</span>
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <div className="flex justify-between">
+                          <span className="text-zinc-500">{lang === "es" ? "Artículo:" : "Item:"}</span>
+                          <span className="text-amber-400 font-bold">{currentSelected?.name}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-zinc-500">{lang === "es" ? "Método:" : "Method:"}</span>
+                          <span className="text-zinc-200 font-bold">{lastReceiptSummary?.method}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-zinc-500">{lang === "es" ? "Importe:" : "Paid:"}</span>
+                          <span className="text-emerald-400 font-black tabular-nums">{lastReceiptSummary?.amountText}</span>
+                        </div>
+                      </>
+                    )}
                   </div>
 
                   <button
+                    type="button"
                     onClick={() => {
                       setSelectedProduct(null);
                       setPaymentMethod(null);
+                      setLastGiftSummary(null);
+                      setShopCheckoutError("");
                       setPaymentStep("idle");
-                      setIsShopOpen(false); // Close modal on completion
                     }}
-                    className="w-full bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-black py-2.5 rounded-xl text-xs uppercase tracking-widest hover:scale-105 active:scale-95 transition-all shadow-lg"
+                    className={`w-full font-black py-2.5 rounded-xl text-xs uppercase tracking-widest cursor-pointer transition ${
+                      lastGiftSummary
+                        ? "bg-purple-500 hover:bg-purple-400 text-white"
+                        : "bg-emerald-500 hover:bg-emerald-400 text-zinc-950"
+                    }`}
                   >
-                    {lang === "es" ? "Cerrar y Volver al Juego" : "Close and return to Game"}
+                    {lang === "es" ? "Seguir en la Tienda" : "Continue Shopping"}
                   </button>
                 </div>
               )}
-
             </div>
           )}
-
         </div>
       </div>
     );
@@ -3893,83 +6644,55 @@ const App: React.FC = () => {
     );
   };
 
+  // Removing old definition location
   if (appState === "menu") {
+    const unlockedSkinsList: CharacterSkinId[] = [];
+    if (vipActive || ownedShopItems.includes("skin_dragon")) unlockedSkinsList.push("dragon");
+    if (vipActive || ownedShopItems.includes("skin_angel")) unlockedSkinsList.push("angel");
+    if (vipActive || ownedShopItems.includes("skin_titan")) unlockedSkinsList.push("titan");
+    if (vipActive || ownedShopItems.includes("skin_poseidon")) unlockedSkinsList.push("poseidon");
+    if (mvpActive || ownedShopItems.includes("skin_obsidian")) unlockedSkinsList.push("obsidian");
+
     return (
-      <div className="w-full h-full bg-slate-900 flex flex-col items-center justify-start sm:justify-center p-4 sm:p-6 relative overflow-y-auto">
-        {/* Tiled Minecraft-style Dirt/Stone elegant dark overlay */}
-        <div 
-          className="absolute inset-0 opacity-15 pointer-events-none"
-          style={{
-            backgroundImage: "radial-gradient(circle, #000 10%, transparent 10%), radial-gradient(circle, #000 10%, transparent 10%)",
-            backgroundSize: "20px 20px",
-            backgroundPosition: "0 0, 10px 10px"
-          }}
+      <div className="w-full h-full bg-slate-900 relative overflow-hidden select-none">
+        {/* 3D Rotating Voxel Panorama & 3D Logo */}
+        <MenuPanorama3D 
+          showLogo={true} 
+          onEnterCinemaMode={() => setIsCinemaMode(!isCinemaMode)} 
+          isCinemaMode={isCinemaMode} 
         />
 
-        {/* Sky gradient background lights */}
-        <div className="absolute top-[-20%] left-[-20%] w-[60%] h-[60%] bg-emerald-500/10 rounded-full filter blur-[120px] pointer-events-none" />
-        <div className="absolute bottom-[-20%] right-[-20%] w-[60%] h-[60%] bg-sky-500/10 rounded-full filter blur-[120px] pointer-events-none" />
-
-        {/* Decorative blocks behind menu */}
-        <div className="absolute inset-0 pointer-events-none opacity-20 flex flex-wrap gap-4 p-8 justify-center items-center overflow-hidden">
-          {[...Array(24)].map((_, i) => {
-            const colors = ["#059669", "#92400e", "#3f3f46", "#52525b"];
-            const color = colors[i % colors.length];
-            const rotation = (i * 27) % 360;
-            const size = 12 + (i * 7) % 16;
-            return (
-              <div
-                key={i}
-                className="rounded-lg shadow-xl shrink-0"
-                style={{
-                  width: `${size * 4}px`,
-                  height: `${size * 4}px`,
-                  backgroundColor: color,
-                  transform: `rotate(${rotation}deg)`
-                }}
-              />
-            );
-          })}
-        </div>
-
-        <div className="z-10 bg-black/60 backdrop-blur-xl p-6 sm:p-10 rounded-3xl border border-white/20 flex flex-col items-center shadow-2xl max-w-sm w-full my-auto">
-          <h1 className="text-white text-5xl font-bold minecraft-font uppercase tracking-tighter mb-2 text-center drop-shadow-lg">
-            {t.menu_title} <br />
-            <span className="text-emerald-400">{t.menu_subtitle}</span>
-          </h1>
-
-          <div className="mt-4 flex flex-col items-center gap-1.5">
-            <div className="flex items-center gap-2 bg-white/5 border border-white/10 py-1.5 px-4 rounded-full">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              <p className="text-white/80 font-mono text-[9px] uppercase tracking-wider font-bold">
-                {t.profile_welcome}: <span className="text-emerald-400">{currentUser || "Invitado"}</span>
-              </p>
+        {/* Top-Left Floating User Profile & Indef Wallet Bar */}
+        <div className={`absolute top-3 sm:top-4 left-3 sm:left-4 z-20 flex flex-wrap items-center gap-2 transition-all duration-300 ${isCinemaMode ? "opacity-0 pointer-events-none -translate-y-4" : "opacity-100 translate-y-0"}`}>
+          <div className="flex items-center gap-2.5 bg-black/60 hover:bg-black/80 backdrop-blur-md border border-white/20 py-1.5 px-3.5 rounded-full shadow-xl transition-all">
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 shadow-[0_0_8px_#34d399]" />
+            <div className="flex items-center gap-1.5">
+              <span className="text-white/70 font-mono text-[9px] uppercase tracking-wider font-bold">
+                {t.profile_welcome}:
+              </span>
+              <span className="text-emerald-400 font-mono text-xs uppercase tracking-wider font-black drop-shadow">
+                {currentUser || "Invitado"}
+              </span>
             </div>
-            <span className="text-white/40 font-mono text-[10px] tracking-wider uppercase font-bold select-none">
-              alpha Mobile 1.0.2
-            </span>
             {googleUser && (
-              <div className="mt-1 flex items-center gap-1.5 bg-black/40 border border-white/5 py-1 px-3 rounded-full">
-                <span className="text-zinc-400 font-mono text-[8px] uppercase tracking-wider font-bold">
-                  {lang === "es" ? "Rol actual:" : "Current role:"}
-                </span>
+              <div className="flex items-center ml-1">
                 {(() => {
-                  let badgeStyle = "bg-zinc-800 text-zinc-400";
+                  let badgeStyle = "bg-zinc-800 text-zinc-400 border border-white/10";
                   let label = lang === "es" ? "USUARIO" : "USER";
 
                   if (userRole === "owner") {
-                    badgeStyle = "bg-gradient-to-r from-yellow-500 to-amber-500 text-white border border-yellow-400 animate-pulse";
-                    label = lang === "es" ? "DUEÑO (OWNER)" : "OWNER";
+                    badgeStyle = "bg-gradient-to-r from-yellow-500 to-amber-500 text-white border border-yellow-300 shadow-[0_0_10px_rgba(234,179,8,0.5)]";
+                    label = lang === "es" ? "DUEÑO" : "OWNER";
                   } else if (userRole === "staff") {
-                    badgeStyle = "bg-red-600 text-white border border-red-500";
+                    badgeStyle = "bg-red-600 text-white border border-red-400 shadow-[0_0_10px_rgba(239,68,68,0.5)]";
                     label = "STAFF";
                   } else if (userRole === "mod") {
-                    badgeStyle = "bg-purple-600 text-white border border-purple-500";
+                    badgeStyle = "bg-purple-600 text-white border border-purple-400 shadow-[0_0_10px_rgba(168,85,247,0.5)]";
                     label = "MOD";
                   }
 
                   return (
-                    <span className={`text-[8px] px-2 py-0.5 rounded font-sans font-extrabold uppercase tracking-widest ${badgeStyle}`}>
+                    <span className={`text-[8px] px-2 py-0.5 rounded-full font-mono font-black uppercase tracking-widest ${badgeStyle}`}>
                       {label}
                     </span>
                   );
@@ -3978,25 +6701,115 @@ const App: React.FC = () => {
             )}
           </div>
 
-          <div className="flex flex-col w-full gap-3 mt-8">
+          {/* Indef (Minecoins) Top-Left Quick Pill */}
+          <button
+            type="button"
+            onClick={() => {
+              resumeAudio();
+              setShopCategory("indefs");
+              setIsShopOpen(true);
+            }}
+            className="flex items-center gap-1.5 bg-zinc-950/80 hover:bg-zinc-900 backdrop-blur-md border border-emerald-400/40 py-1.5 px-3 rounded-full shadow-lg transition cursor-pointer"
+            title={lang === "es" ? "Comprar o gestionar Indefs" : "Buy or manage Indefs"}
+          >
+            <span className="w-4 h-4 rounded bg-gradient-to-br from-emerald-400 to-amber-400 text-zinc-950 font-black text-[10px] flex items-center justify-center">
+              ◈
+            </span>
+            <span className="text-xs font-mono font-black text-emerald-300 tabular-nums">
+              {indefCoins.toLocaleString()}
+            </span>
+            <span className="text-[9px] font-mono uppercase font-bold text-zinc-400">Indefs</span>
+          </button>
+        </div>
+
+        {/* Music Track Mini Badge */}
+        <div className={`absolute top-3 sm:top-4 right-36 z-20 hidden lg:flex items-center gap-2 bg-black/55 hover:bg-black/75 backdrop-blur-md border border-white/15 px-3 py-1.5 rounded-full shadow-lg transition-all duration-300 ${isCinemaMode ? "opacity-0 pointer-events-none -translate-y-4" : "opacity-100 translate-y-0"}`}>
+          <span className="flex items-center gap-0.5 h-3 text-emerald-400">
+            <span className="w-0.5 h-2.5 bg-emerald-400 animate-pulse rounded-full" />
+            <span className="w-0.5 h-3.5 bg-emerald-400 animate-pulse rounded-full delay-75" />
+            <span className="w-0.5 h-1.5 bg-emerald-400 animate-pulse rounded-full delay-150" />
+          </span>
+          <span className="text-white/80 font-mono text-[9px] font-bold max-w-[190px] truncate" title={currentTrackTitle}>
+            {currentTrackTitle}
+          </span>
+          {(musicMode === "c418" || (musicMode === "soundtrack" && currentWorld !== null)) && (
             <button
               onClick={() => {
                 resumeAudio();
-                setAppState("worlds-list");
+                skipToNextTrack();
+                setTimeout(() => setCurrentTrackTitle(getMusicTrackTitle()), 150);
               }}
-              className="bg-emerald-500 hover:bg-emerald-400 text-white font-bold py-4 rounded-xl text-xl uppercase tracking-widest shadow-lg shadow-emerald-500/20 transition-all active:scale-95"
+              className="text-white/60 hover:text-white text-[10px] ml-1 transition"
+              title={lang === "es" ? "Siguiente pista" : "Next track"}
             >
-              {t.play}
+              <i className="fas fa-forward-step" />
             </button>
-            
+          )}
+        </div>
+
+        {/* RIGHT-SIDE LIVE 3D CUSTOM CHARACTER SHOWCASE & CUSTOMIZER */}
+        <CharacterPreviewCard
+          lang={lang}
+          characterSkin={characterSkin}
+          customSkin={customSkin}
+          ownedSkins={unlockedSkinsList}
+          indefCoins={indefCoins}
+          vipActive={vipActive}
+          onSelectSkin={(sid) => {
+            resumeAudio();
+            handleSelectSkin(sid);
+          }}
+          onUpdateCustomSkin={handleUpdateCustomSkin}
+          onOpenShopForSkin={(skinId) => {
+            resumeAudio();
+            setShopCategory("skins");
+            if (skinId === "dragon") setSelectedProduct("skin_dragon");
+            else if (skinId === "angel") setSelectedProduct("skin_angel");
+            else if (skinId === "titan") setSelectedProduct("skin_titan");
+            else if (skinId === "poseidon") setSelectedProduct("skin_poseidon");
+            else if (skinId === "obsidian") setSelectedProduct("skin_obsidian");
+            setPaymentMethod("indefs");
+            setPaymentStep("form");
+            setIsShopOpen(true);
+          }}
+          hidden={isCinemaMode}
+        />
+
+        {/* 3D Textured Minecraft Menu Buttons (Centered Bottom) */}
+        <div className={`absolute bottom-3 sm:bottom-5 left-1/2 -translate-x-1/2 w-full max-w-[300px] sm:max-w-sm px-3 flex flex-col gap-2 z-20 transition-all duration-300 ${isCinemaMode ? "opacity-0 pointer-events-none translate-y-12" : "opacity-100 translate-y-0"}`}>
+          {/* 1. PLAY BUTTON */}
+          <button
+            onClick={() => {
+              resumeAudio();
+              setAppState("worlds-list");
+            }}
+            className="w-full relative group py-3 sm:py-3.5 px-4 rounded-lg text-white font-black text-base sm:text-lg uppercase tracking-widest minecraft-font transition-all duration-75 flex items-center justify-center gap-2.5 border-t-2 border-l-2 border-emerald-300/90 border-b-4 border-r-4 border-emerald-950 bg-gradient-to-b from-emerald-500 via-emerald-600 to-emerald-800 shadow-[0_5px_0_#064e3b,0_10px_20px_rgba(0,0,0,0.65)] active:translate-y-[4px] active:shadow-[0_1px_0_#064e3b,0_4px_10px_rgba(0,0,0,0.5)] hover:brightness-110 select-none cursor-pointer"
+            style={{
+              textShadow: "2px 2px 0px #000, -1px -1px 0px #000, 1px -1px 0px #000, -1px 1px 0px #000",
+              backgroundImage: "linear-gradient(rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(to bottom, #10b981, #059669, #065f46)",
+              backgroundSize: "4px 4px, 4px 4px, 100% 100%"
+            }}
+          >
+            <i className="fas fa-play text-emerald-200 text-xs sm:text-sm group-hover:scale-110 transition-transform" />
+            <span>{t.play}</span>
+          </button>
+
+          {/* 2. DUAL ROW: LEADERBOARD & FRIENDS */}
+          <div className="grid grid-cols-2 gap-2 w-full">
             <button
               onClick={() => {
                 resumeAudio();
                 setIsLeaderboardOpen(true);
               }}
-              className="bg-gradient-to-r from-amber-600 to-yellow-500 hover:from-amber-500 hover:to-yellow-400 text-white font-bold py-3 rounded-xl text-xs uppercase tracking-widest shadow-lg border border-yellow-500/30 transition-all active:scale-95 flex items-center justify-center gap-2"
+              className="relative group py-2 sm:py-2.5 px-2.5 rounded-lg text-white font-bold text-[9px] sm:text-[11px] uppercase tracking-wider minecraft-font transition-all duration-75 flex items-center justify-center gap-1.5 border-t-2 border-l-2 border-yellow-200/90 border-b-4 border-r-4 border-amber-950 bg-gradient-to-b from-amber-500 via-yellow-600 to-amber-800 shadow-[0_4px_0_#78350f,0_8px_16px_rgba(0,0,0,0.55)] active:translate-y-[3px] active:shadow-[0_1px_0_#78350f] hover:brightness-110 select-none cursor-pointer"
+              style={{
+                textShadow: "1px 1px 0px #000, -1px -1px 0px #000",
+                backgroundImage: "linear-gradient(rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(to bottom, #f59e0b, #d97706, #92400e)",
+                backgroundSize: "4px 4px, 4px 4px, 100% 100%"
+              }}
             >
-              <i className="fas fa-trophy text-white text-xs" /> {lang === "es" ? "Clasificación (Top 100)" : "Leaderboard (Top 100)"}
+              <i className="fas fa-trophy text-yellow-200 text-xs group-hover:rotate-12 transition-transform" />
+              <span className="truncate">{lang === "es" ? "Clasificación" : "Leaderboard"}</span>
             </button>
 
             <button
@@ -4004,44 +6817,83 @@ const App: React.FC = () => {
                 resumeAudio();
                 setIsFriendsOpen(true);
               }}
-              className="bg-purple-600 hover:bg-purple-500 text-white font-bold py-3 rounded-xl text-xs uppercase tracking-widest shadow-lg border border-purple-500/30 transition-all active:scale-95 flex items-center justify-center gap-2"
-            >
-              <i className="fas fa-users text-white text-xs" /> {lang === "es" ? "Amigos (Multijugador)" : "Friends (Multiplayer)"}
-            </button>
-
-            <button
-              onClick={() => {
-                resumeAudio();
-                setIsShopOpen(true);
+              className="relative group py-2 sm:py-2.5 px-2.5 rounded-lg text-white font-bold text-[9px] sm:text-[11px] uppercase tracking-wider minecraft-font transition-all duration-75 flex items-center justify-center gap-1.5 border-t-2 border-l-2 border-purple-300/90 border-b-4 border-r-4 border-purple-950 bg-gradient-to-b from-purple-600 via-purple-700 to-indigo-900 shadow-[0_4px_0_#3b0764,0_8px_16px_rgba(0,0,0,0.55)] active:translate-y-[3px] active:shadow-[0_1px_0_#3b0764] hover:brightness-110 select-none cursor-pointer"
+              style={{
+                textShadow: "1px 1px 0px #000, -1px -1px 0px #000",
+                backgroundImage: "linear-gradient(rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(to bottom, #9333ea, #7e22ce, #3b0764)",
+                backgroundSize: "4px 4px, 4px 4px, 100% 100%"
               }}
-              className="bg-gradient-to-r from-yellow-500 via-amber-500 to-yellow-600 hover:from-yellow-400 hover:via-amber-400 hover:to-yellow-500 text-zinc-950 font-black py-3.5 rounded-xl text-xs uppercase tracking-widest shadow-lg shadow-yellow-500/20 border-2 border-yellow-300 transition-all active:scale-95 flex items-center justify-center gap-2 relative overflow-hidden group"
             >
-              <i className="fas fa-shopping-cart text-zinc-950 text-xs animate-bounce" />
-              <span>{lang === "es" ? "🛒 TIENDA VIP" : "🛒 VIP SHOP"}</span>
-              {vipActive && (
-                <span className="bg-zinc-950 text-yellow-400 text-[8px] px-1.5 py-0.5 rounded border border-yellow-400/30 font-extrabold animate-pulse ml-1">
-                  VIP ACTIVO
-                </span>
-              )}
+              <i className="fas fa-users text-purple-200 text-xs group-hover:scale-110 transition-transform" />
+              <span className="truncate">{lang === "es" ? "Amigos" : "Friends"}</span>
             </button>
+          </div>
 
+          {/* 3. VIP SHOP BUTTON */}
+          <button
+            onClick={() => {
+              resumeAudio();
+              setShopCategory("all");
+              setIsShopOpen(true);
+            }}
+            className="w-full relative group py-2.5 sm:py-3 px-3 rounded-lg text-zinc-950 font-black text-[11px] sm:text-xs uppercase tracking-widest minecraft-font transition-all duration-75 flex items-center justify-center gap-2 border-t-2 border-l-2 border-yellow-100 border-b-4 border-r-4 border-yellow-950 bg-gradient-to-r from-yellow-400 via-amber-300 to-yellow-500 shadow-[0_4px_0_#713f12,0_8px_16px_rgba(0,0,0,0.55)] active:translate-y-[3px] active:shadow-[0_1px_0_#713f12] hover:brightness-110 select-none cursor-pointer"
+            style={{
+              textShadow: "1px 1px 0px rgba(255,255,255,0.5)",
+              backgroundImage: "linear-gradient(rgba(255,255,255,0.18) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.18) 1px, transparent 1px), linear-gradient(to right, #eab308, #f59e0b, #eab308)",
+              backgroundSize: "4px 4px, 4px 4px, 100% 100%"
+            }}
+          >
+            <i className="fas fa-shopping-cart text-zinc-950 text-xs" />
+            <span>{lang === "es" ? "TIENDA VIP & INDEFS" : "VIP SHOP & INDEFS"}</span>
+            {mvpActive ? (
+              <span className="bg-zinc-950 text-sky-300 text-[8px] px-2 py-0.5 rounded-full border border-sky-400/40 font-extrabold ml-1 font-mono">
+                MVP+
+              </span>
+            ) : vipActive ? (
+              <span className="bg-zinc-950 text-yellow-300 text-[8px] px-2 py-0.5 rounded-full border border-yellow-400/40 font-extrabold ml-1 font-mono">
+                VIP
+              </span>
+            ) : null}
+          </button>
+
+          {/* 4. DUAL ROW: SETTINGS & LOGOUT */}
+          <div className="grid grid-cols-2 gap-2 w-full">
             <button
               onClick={() => {
                 resumeAudio();
                 setAppState("settings");
               }}
-              className="bg-zinc-800 hover:bg-zinc-700 text-white/90 font-bold py-3 rounded-xl text-xs uppercase tracking-widest shadow-lg border border-white/10 transition-all active:scale-95 flex items-center justify-center gap-2"
+              className="relative group py-2 sm:py-2.5 px-2.5 rounded-lg text-white font-bold text-[9px] sm:text-[11px] uppercase tracking-wider minecraft-font transition-all duration-75 flex items-center justify-center gap-1.5 border-t-2 border-l-2 border-zinc-400 border-b-4 border-r-4 border-zinc-950 bg-gradient-to-b from-zinc-600 via-zinc-700 to-zinc-800 shadow-[0_4px_0_#18181b,0_8px_16px_rgba(0,0,0,0.55)] active:translate-y-[3px] active:shadow-[0_1px_0_#18181b] hover:brightness-110 select-none cursor-pointer"
+              style={{
+                textShadow: "1px 1px 0px #000, -1px -1px 0px #000",
+                backgroundImage: "linear-gradient(rgba(255,255,255,0.1) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.1) 1px, transparent 1px), linear-gradient(to bottom, #52525b, #3f3f46, #27272a)",
+                backgroundSize: "4px 4px, 4px 4px, 100% 100%"
+              }}
             >
-              <i className="fas fa-cog text-emerald-400" /> {t.settings}
+              <i className="fas fa-cog text-emerald-400 text-xs group-hover:rotate-90 transition-transform duration-300" />
+              <span className="truncate">{t.settings}</span>
             </button>
+
             <button
               onClick={handleLogout}
-              className="bg-zinc-900 border border-white/5 hover:bg-red-950/40 hover:text-red-400 text-white/50 font-semibold py-2.5 rounded-xl text-[10px] uppercase tracking-widest transition-all active:scale-95 mt-1"
+              className="relative group py-2 sm:py-2.5 px-2.5 rounded-lg text-white/90 font-bold text-[9px] sm:text-[11px] uppercase tracking-wider minecraft-font transition-all duration-75 flex items-center justify-center gap-1.5 border-t-2 border-l-2 border-stone-500 border-b-4 border-r-4 border-black bg-gradient-to-b from-stone-700 via-stone-800 to-stone-900 hover:from-red-950/80 hover:via-red-900/60 hover:to-stone-950 shadow-[0_4px_0_#1c1917,0_8px_16px_rgba(0,0,0,0.55)] active:translate-y-[3px] active:shadow-[0_1px_0_#1c1917] select-none cursor-pointer"
+              style={{
+                textShadow: "1px 1px 0px #000, -1px -1px 0px #000",
+                backgroundImage: "linear-gradient(rgba(255,255,255,0.08) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.08) 1px, transparent 1px), linear-gradient(to bottom, #44403c, #292524, #1c1917)",
+                backgroundSize: "4px 4px, 4px 4px, 100% 100%"
+              }}
             >
-              <i className="fas fa-door-open mr-1" /> {t.logout}
+              <i className="fas fa-door-open text-red-400 text-xs group-hover:-translate-x-0.5 transition-transform" />
+              <span className="truncate">{t.logout}</span>
             </button>
           </div>
+
+          <div className="w-full flex items-center justify-between px-1 pt-0.5 pointer-events-none select-none text-white/40 font-mono text-[8px] uppercase tracking-widest font-bold">
+            <span>⛏️ ALPHA MOBILE 1.0.2</span>
+            <span>60 FPS 3D VOXEL</span>
+          </div>
         </div>
+
         {renderLeaderboardModal()}
         {renderFriendsModal()}
         {renderShopModal()}
@@ -4049,296 +6901,716 @@ const App: React.FC = () => {
     );
   }
 
+
   if (appState === "settings") {
+    const currentUniqueId = googleUser ? googleUser.uid : (activeSession ? `${activeSession}_guest` : "invitado_local");
+
     return (
-      <div className="w-full h-full bg-slate-900 flex flex-col items-center justify-start sm:justify-center p-4 sm:p-6 relative overflow-y-auto">
-        {/* Tiled Minecraft-style Dirt/Stone elegant dark overlay */}
-        <div 
-          className="absolute inset-0 opacity-15 pointer-events-none"
-          style={{
-            backgroundImage: "radial-gradient(circle, #000 10%, transparent 10%), radial-gradient(circle, #000 10%, transparent 10%)",
-            backgroundSize: "20px 20px",
-            backgroundPosition: "0 0, 10px 10px"
-          }}
-        />
+      <div className="w-full h-full bg-slate-950 flex flex-col items-center justify-start sm:justify-center p-3 sm:p-6 relative overflow-y-auto select-none">
+        {/* 3D Rotating Voxel Panorama */}
+        <MenuPanorama3D showLogo={false} />
 
-        {/* Sky gradient background lights */}
-        <div className="absolute top-[-20%] left-[-20%] w-[60%] h-[60%] bg-emerald-500/10 rounded-full filter blur-[120px] pointer-events-none" />
-        <div className="absolute bottom-[-20%] right-[-20%] w-[60%] h-[60%] bg-sky-500/10 rounded-full filter blur-[120px] pointer-events-none" />
+        <div className="z-10 bg-black/85 backdrop-blur-2xl p-5 sm:p-8 rounded-3xl border border-white/15 flex flex-col items-center shadow-2xl max-w-2xl w-full my-auto transition-all">
+          {/* Header */}
+          <div className="flex flex-col items-center justify-center w-full mb-5">
+            <h1 className="text-white text-2xl sm:text-3xl font-black minecraft-font uppercase tracking-tight text-center drop-shadow-lg flex items-center gap-2.5">
+              <i className="fas fa-sliders text-emerald-400" />
+              <span>{t.settings}</span>
+            </h1>
+            <span className="text-[10px] text-zinc-400 font-mono mt-0.5">
+              {lang === "es" ? "Ajusta controles, gráficos, audio, mundo y multijugador" : "Configure controls, graphics, audio, world and multiplayer"}
+            </span>
+          </div>
 
-        {/* Decorative blocks behind menu */}
-        <div className="absolute inset-0 pointer-events-none opacity-20 flex flex-wrap gap-4 p-8 justify-center items-center overflow-hidden">
-          {[...Array(24)].map((_, i) => {
-            const colors = ["#059669", "#92400e", "#3f3f46", "#52525b"];
-            const color = colors[i % colors.length];
-            const rotation = (i * 27) % 360;
-            const size = 12 + (i * 7) % 16;
-            return (
-              <div
-                key={i}
-                className="rounded-lg shadow-xl shrink-0"
-                style={{
-                  width: `${size * 4}px`,
-                  height: `${size * 4}px`,
-                  backgroundColor: color,
-                  transform: `rotate(${rotation}deg)`
-                }}
-              />
-            );
-          })}
-        </div>
+          {/* Section Category Tabs */}
+          <div className="grid grid-cols-5 gap-1.5 w-full mb-5 bg-zinc-900/80 p-1.5 rounded-2xl border border-white/10">
+            {[
+              { id: "game", icon: "fa-gamepad", label: lang === "es" ? "Juego" : "Game" },
+              { id: "graphics", icon: "fa-desktop", label: lang === "es" ? "Gráficos" : "Graphics" },
+              { id: "audio", icon: "fa-music", label: lang === "es" ? "Audio" : "Audio" },
+              { id: "world", icon: "fa-earth-americas", label: lang === "es" ? "Mundo" : "World" },
+              { id: "multiplayer", icon: "fa-users", label: lang === "es" ? "Red" : "Multi" },
+            ].map((tab) => {
+              const isActive = settingsSection === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => {
+                    resumeAudio();
+                    setSettingsSection(tab.id as any);
+                  }}
+                  className={`py-2 px-1 rounded-xl font-bold text-[10px] sm:text-xs transition-all flex flex-col sm:flex-row items-center justify-center gap-1 border ${
+                    isActive
+                      ? "bg-emerald-600 border-emerald-400 text-white shadow-lg shadow-emerald-500/20 font-black scale-[1.02]"
+                      : "bg-transparent border-transparent text-zinc-400 hover:text-white hover:bg-zinc-800/50"
+                  }`}
+                >
+                  <i className={`fas ${tab.icon} text-xs`} />
+                  <span className="truncate">{tab.label}</span>
+                </button>
+              );
+            })}
+          </div>
 
-        <div className="z-10 bg-black/80 backdrop-blur-xl p-6 sm:p-10 rounded-3xl border border-white/20 flex flex-col items-center shadow-2xl max-w-sm w-full my-auto">
-          <h1 className="text-white text-3xl font-bold minecraft-font uppercase tracking-tighter mb-6 text-center drop-shadow-lg flex items-center gap-2">
-            <i className="fas fa-cog text-emerald-400 animate-spin-slow" />{" "}
-            {t.settings}
-          </h1>
-
-          <div className="flex flex-col w-full gap-5">
-            {/* IDIOMA */}
-            <div className="flex flex-col gap-1.5 bg-zinc-900/40 p-3 rounded-xl border border-white/5">
-              <label className="text-emerald-400 text-[10px] font-bold uppercase tracking-wider">
-                {t.language}
-              </label>
-              <div className="grid grid-cols-5 gap-1.5 mt-1">
-                {(["es", "en", "fr", "pt", "de"] as Language[]).map((lcode) => {
-                  const labelMap: Record<Language, string> = {
-                    es: "ESP",
-                    en: "ENG",
-                    fr: "FRA",
-                    pt: "POR",
-                    de: "DEU",
-                  };
-                  return (
-                    <button
-                      key={lcode}
-                      onClick={() => {
-                        resumeAudio();
-                        setLang(lcode);
-                      }}
-                      className={`text-[10px] py-1.5 rounded-lg font-bold border transition-all uppercase ${
-                        lang === lcode
-                          ? "bg-emerald-500 border-transparent text-white shadow-md font-extrabold"
-                          : "bg-zinc-800 border-white/5 text-zinc-400 hover:text-white"
-                      }`}
-                    >
-                      {labelMap[lcode]}
-                    </button>
-                  );
-                })}
+          {/* Tab 1: 🎮 JUEGO & CONTROLES */}
+          {settingsSection === "game" && (
+            <div className="flex flex-col w-full gap-4 max-h-[58vh] overflow-y-auto pr-1">
+              {/* Apariencia del Personaje (6 Skins 3D) */}
+              <div className="bg-zinc-900/60 p-3.5 rounded-2xl border border-white/5 flex flex-col gap-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-emerald-400 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5">
+                    <i className="fas fa-user-astronaut text-xs" />
+                    <span>{lang === "es" ? "Apariencia del Personaje (Skin 3D)" : "Character Skin (3D)"}</span>
+                  </label>
+                  <span className="text-[9px] font-mono text-zinc-400">
+                    {lang === "es" ? "Visible en 3ª/2ª persona y Multijugador" : "Visible in 3rd/2nd view & Multiplayer"}
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                  {(Object.values(CHARACTER_SKINS)).filter((skin) => {
+                    if (skin.id === "dragon") return vipActive || ownedShopItems.includes("skin_dragon");
+                    if (skin.id === "angel") return vipActive || ownedShopItems.includes("skin_angel");
+                    if (skin.id === "titan") return vipActive || ownedShopItems.includes("skin_titan");
+                    if (skin.id === "poseidon") return vipActive || ownedShopItems.includes("skin_poseidon");
+                    if (skin.id === "obsidian") return mvpActive || ownedShopItems.includes("skin_obsidian");
+                    return true;
+                  }).map((skin) => {
+                    const isSelected = characterSkin === skin.id;
+                    return (
+                      <button
+                        key={skin.id}
+                        type="button"
+                        onClick={() => {
+                          resumeAudio();
+                          handleSelectSkin(skin.id);
+                        }}
+                        className={`p-2 rounded-xl border text-left transition-all flex items-center gap-2.5 active:scale-95 ${
+                          isSelected
+                            ? "bg-emerald-600/25 border-emerald-400 shadow-md shadow-emerald-500/15"
+                            : "bg-zinc-950/60 border-white/5 hover:border-white/20"
+                        }`}
+                      >
+                        <div
+                          className="w-8 h-8 rounded-lg shrink-0 border border-white/20 flex flex-col overflow-hidden shadow-inner"
+                          style={{ backgroundColor: skin.id === "custom" ? customSkin.shirt : skin.shirt }}
+                        >
+                          <div className="h-3.5 w-full flex items-center justify-center" style={{ backgroundColor: skin.id === "custom" ? customSkin.skin : skin.skin }}>
+                            <div className="w-4 h-1 rounded-full" style={{ backgroundColor: skin.id === "custom" ? customSkin.eyes : skin.eyes }} />
+                          </div>
+                          <div className="flex-1 w-full flex items-center justify-center">
+                            <span className="w-2 h-2 rounded-full" style={{ backgroundColor: skin.id === "custom" ? customSkin.accent : skin.badgeColor }} />
+                          </div>
+                        </div>
+                        <div className="flex flex-col min-w-0 flex-1">
+                          <span className={`text-[10px] font-bold truncate ${isSelected ? "text-white" : "text-zinc-300"}`}>
+                            {lang === "es" ? skin.nameEs : skin.nameEn}
+                          </span>
+                          <span className="text-[8px] font-mono uppercase text-zinc-400 truncate">
+                            {skin.gear !== "none" ? skin.gear : skin.backGear}
+                          </span>
+                        </div>
+                        {isSelected && <i className="fas fa-check-circle text-emerald-400 text-xs shrink-0" />}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
-            </div>
 
-            {/* ULTRA OPTIMIZACION */}
-            <div className="flex flex-col gap-1.5">
-              <label className="text-emerald-400 text-[10px] font-bold uppercase tracking-wider">
-                {t.ultra_optimization}
-              </label>
-              <button
-                onClick={() => {
-                  resumeAudio();
-                  setUltraOptimization(!ultraOptimization);
-                }}
-                className={`w-full text-white font-bold py-2.5 px-4 rounded-xl text-left border transition-all active:scale-95 flex justify-between items-center text-sm ${
-                  ultraOptimization
-                    ? "bg-emerald-600/30 border-emerald-500/50 text-emerald-300"
-                    : "bg-zinc-800 border-white/10 text-white/80"
-                }`}
-              >
-                <span>
-                  <i className="fas fa-bolt mr-2 text-amber-400" />{" "}
-                  {t.ultra_optimization}
-                </span>
-                <span className="text-[9px] uppercase font-mono bg-black/40 px-2 py-0.5 rounded text-emerald-300">
-                  {ultraOptimization ? "ON" : "OFF"}
-                </span>
-              </button>
-            </div>
-
-            {/* FOV */}
-            <div className="flex flex-col gap-1.5 bg-zinc-900/40 p-3 rounded-xl border border-white/5">
-              <div className="flex justify-between items-center">
-                <label className="text-emerald-400 text-[10px] font-bold uppercase tracking-wider">
-                  {t.fov}
+              {/* Idioma */}
+              <div className="bg-zinc-900/60 p-3.5 rounded-2xl border border-white/5 flex flex-col gap-2">
+                <label className="text-emerald-400 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5">
+                  <i className="fas fa-globe text-xs" />
+                  <span>{t.language}</span>
                 </label>
-                <span className="text-white font-mono font-bold text-xs bg-zinc-800 px-1.5 py-0.5 rounded">
-                  {fov} {fov >= 115 ? "🔥" : ""}
-                </span>
-              </div>
-              <input
-                type="range"
-                min="50"
-                max="120"
-                value={fov}
-                onChange={(e) => setFov(parseInt(e.target.value))}
-                className="w-full accent-emerald-400 h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer"
-              />
-            </div>
-
-            {/* PERSPECTIVA */}
-            <div className="flex flex-col gap-1.5">
-              <label className="text-emerald-400 text-[10px] font-bold uppercase tracking-wider">
-                {t.camera_view}
-              </label>
-              <div className="grid grid-cols-3 gap-1.5">
-                <button
-                  onClick={() => setPerspective("first")}
-                  className={`text-[9px] py-2 rounded-lg font-bold border transition-all uppercase tracking-tighter ${
-                    perspective === "first"
-                      ? "bg-emerald-500 border-transparent text-white shadow-md"
-                      : "bg-zinc-800 border-white/5 text-zinc-400"
-                  }`}
-                >
-                  {t.first_person}
-                </button>
-                <button
-                  onClick={() => setPerspective("second")}
-                  className={`text-[9px] py-2 rounded-lg font-bold border transition-all uppercase tracking-tighter ${
-                    perspective === "second"
-                      ? "bg-emerald-500 border-transparent text-white shadow-md"
-                      : "bg-zinc-800 border-white/5 text-zinc-400"
-                  }`}
-                >
-                  {t.second_person}
-                </button>
-                <button
-                  onClick={() => setPerspective("third")}
-                  className={`text-[9px] py-2 rounded-lg font-bold border transition-all uppercase tracking-tighter ${
-                    perspective === "third"
-                      ? "bg-emerald-500 border-transparent text-white shadow-md"
-                      : "bg-zinc-800 border-white/5 text-zinc-400"
-                  }`}
-                >
-                  {t.third_person}
-                </button>
-              </div>
-            </div>
-
-            {/* CONTROLES EN PANTALLA */}
-            <div className="flex flex-col gap-1.5 bg-zinc-900/40 p-3 rounded-xl border border-white/5">
-              <label className="text-emerald-400 text-[10px] font-bold uppercase tracking-wider">
-                {lang === "es" ? "🎮 CONTROLES TÁCTILES" : "🎮 TOUCHSCREEN CONTROLS"}
-              </label>
-              <div className="grid grid-cols-3 gap-1.5 mt-1">
-                {(["auto", "yes", "no"] as const).map((mode) => {
-                  const isActive = touchControlsMode === mode;
-                  const modeText = 
-                    mode === "auto" 
-                      ? (lang === "es" ? "AUTO" : "AUTO")
-                      : mode === "yes" 
-                        ? (lang === "es" ? "ACTIVO" : "VISIBLE")
-                        : (lang === "es" ? "OCULTO" : "HIDDEN");
-
-                  return (
-                    <button
-                      key={mode}
-                      onClick={() => {
-                        resumeAudio();
-                        setTouchControlsMode(mode);
-                      }}
-                      className={`text-[9px] py-2 rounded-lg font-bold border transition-all uppercase tracking-normal ${
-                        isActive
-                          ? "bg-emerald-500 border-transparent text-white shadow-md font-extrabold"
-                          : "bg-zinc-800 border-white/5 text-zinc-400 hover:text-white"
-                      }`}
-                    >
-                      {modeText}
-                    </button>
-                  );
-                })}
-              </div>
-              <p className="text-[8px] text-zinc-500 font-mono mt-1">
-                {lang === "es" 
-                  ? "* Auto oculta los botones en PC y los muestra en pantallas táctiles" 
-                  : "* Auto hides overlays on PC and displays them on touchscreens"}
-              </p>
-            </div>
-
-            {/* SOPORTE PARA TABLETS / DISPOSITIVOS */}
-            <div className="flex flex-col gap-1.5 bg-zinc-900/40 p-3 rounded-xl border border-white/5">
-              <label className="text-emerald-400 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5">
-                <i className="fas fa-tablet-screen-button text-xs animate-pulse" />
-                {lang === "es" ? "📱 AJUSTAR PANTALLA Y TABLET" : "📱 ADJUST TABLET & SCREEN"}
-              </label>
-              <div className="grid grid-cols-2 gap-1.5 mt-1">
-                {[
-                  { code: "auto", name: lang === "es" ? "Auto-Detectar" : "Auto-Detect" },
-                  { code: "redmi", name: "Redmi Pad 8.7" },
-                  { code: "funtouch", name: "Funtouch OS 15" },
-                  { code: "galaxy", name: "Galaxy A23 (20:9)" },
-                ].map((preset) => {
-                  const isActive = devicePreset === preset.code;
-                  return (
-                    <button
-                      key={preset.code}
-                      onClick={() => {
-                        resumeAudio();
-                        setDevicePreset(preset.code as any);
-                        localStorage.setItem("minecraft_device_preset", preset.code);
-                      }}
-                      className={`text-[8.5px] py-2 px-1 rounded-lg font-bold border transition-all uppercase tracking-tight text-center ${
-                        isActive
-                          ? "bg-emerald-500 border-transparent text-white shadow-md font-extrabold scale-102"
-                          : "bg-zinc-800 border-white/5 text-zinc-400 hover:text-white"
-                      }`}
-                    >
-                      {preset.name}
-                    </button>
-                  );
-                })}
-              </div>
-              <div className="text-[8px] text-zinc-400 font-mono mt-1 px-1 flex flex-col gap-0.5 border-t border-white/5 pt-1.5">
-                <div className="flex justify-between">
-                  <span>{lang === "es" ? "Resolución actual:" : "Current resolution:"}</span>
-                  <span className="text-white font-semibold">{screenSize.width}x{screenSize.height} (R:{screenSize.aspectRatio.toFixed(2)})</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>{lang === "es" ? "Perfil activo:" : "Active profile:"}</span>
-                  <span className="text-emerald-400 font-bold">{uiScaleConfig.desc}</span>
+                <div className="grid grid-cols-5 gap-1.5">
+                  {(["es", "en", "fr", "pt", "de"] as Language[]).map((lcode) => {
+                    const labelMap: Record<Language, string> = {
+                      es: "Español",
+                      en: "English",
+                      fr: "Français",
+                      pt: "Português",
+                      de: "Deutsch",
+                    };
+                    return (
+                      <button
+                        key={lcode}
+                        onClick={() => {
+                          resumeAudio();
+                          setLang(lcode);
+                        }}
+                        className={`text-[9px] sm:text-[10px] py-2 rounded-xl font-bold border transition-all uppercase truncate px-1 ${
+                          lang === lcode
+                            ? "bg-emerald-500 border-transparent text-white shadow-md font-extrabold"
+                            : "bg-zinc-850 border-white/5 text-zinc-400 hover:text-white"
+                        }`}
+                      >
+                        {labelMap[lcode]}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
-            </div>
 
-            {/* SISTEMA DE GUARDADO */}
-            <div className="flex flex-col gap-1.5 bg-zinc-900/40 p-3 rounded-xl border border-white/5">
-              <label className="text-emerald-400 text-[10px] font-bold uppercase tracking-wider font-mono">
-                {lang === "es" ? "💾 GUARDADO Y ARCHIVOS" : "💾 SAVES & FILES"}
-              </label>
-              
-              {currentWorld && (
-                <div className="grid grid-cols-2 gap-2 mt-1">
+              {/* Perspectiva de Cámara */}
+              <div className="bg-zinc-900/60 p-3.5 rounded-2xl border border-white/5 flex flex-col gap-2">
+                <label className="text-emerald-400 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5">
+                  <i className="fas fa-video text-xs" />
+                  <span>{t.camera_view}</span>
+                </label>
+                <div className="grid grid-cols-3 gap-2">
                   <button
-                    onClick={handleManualSave}
-                    className="bg-emerald-600 hover:bg-emerald-500 py-2 rounded-lg text-white font-bold text-[9px] uppercase tracking-wider flex items-center justify-center gap-1 transition active:scale-95"
+                    onClick={() => setPerspective("first")}
+                    className={`text-[10px] sm:text-xs py-2.5 rounded-xl font-bold border transition-all uppercase ${
+                      perspective === "first"
+                        ? "bg-emerald-500 border-transparent text-white shadow-md"
+                        : "bg-zinc-850 border-white/5 text-zinc-400 hover:text-white"
+                    }`}
                   >
-                    <i className="fas fa-save" /> {lang === "es" ? "Guardar" : "Save"}
+                    {t.first_person}
                   </button>
                   <button
-                    onClick={handleExportWorld}
-                    className="bg-indigo-600 hover:bg-indigo-500 py-2 rounded-lg text-white font-bold text-[9px] uppercase tracking-wider flex items-center justify-center gap-1 transition active:scale-95"
+                    onClick={() => setPerspective("second")}
+                    className={`text-[10px] sm:text-xs py-2.5 rounded-xl font-bold border transition-all uppercase ${
+                      perspective === "second"
+                        ? "bg-emerald-500 border-transparent text-white shadow-md"
+                        : "bg-zinc-850 border-white/5 text-zinc-400 hover:text-white"
+                    }`}
                   >
-                    <i className="fas fa-file-export" /> {lang === "es" ? "Exportar" : "Export"}
+                    {t.second_person}
                   </button>
+                  <button
+                    onClick={() => setPerspective("third")}
+                    className={`text-[10px] sm:text-xs py-2.5 rounded-xl font-bold border transition-all uppercase ${
+                      perspective === "third"
+                        ? "bg-emerald-500 border-transparent text-white shadow-md"
+                        : "bg-zinc-850 border-white/5 text-zinc-400 hover:text-white"
+                    }`}
+                  >
+                    {t.third_person}
+                  </button>
+                </div>
+              </div>
+
+              {/* FOV (Campo de Visión) */}
+              <div className="bg-zinc-900/60 p-3.5 rounded-2xl border border-white/5 flex flex-col gap-2">
+                <div className="flex justify-between items-center">
+                  <label className="text-emerald-400 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5">
+                    <i className="fas fa-eye text-xs" />
+                    <span>{t.fov} (Campo de Visión)</span>
+                  </label>
+                  <span className="text-white font-mono font-black text-xs bg-zinc-800 px-2 py-0.5 rounded-lg border border-white/10">
+                    {fov}° {fov >= 110 ? "🔥" : ""}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="50"
+                  max="120"
+                  value={fov}
+                  onChange={(e) => setFov(parseInt(e.target.value))}
+                  className="w-full accent-emerald-400 h-2 bg-zinc-800 rounded-lg appearance-none cursor-pointer mt-1"
+                />
+              </div>
+
+              {/* Controles en Pantalla */}
+              <div className="bg-zinc-900/60 p-3.5 rounded-2xl border border-white/5 flex flex-col gap-2">
+                <label className="text-emerald-400 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5">
+                  <i className="fas fa-hand-pointer text-xs" />
+                  <span>{lang === "es" ? "Controles Táctiles en Pantalla" : "Touchscreen Controls"}</span>
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  {(["auto", "yes", "no"] as const).map((mode) => {
+                    const isActive = touchControlsMode === mode;
+                    const modeText = 
+                      mode === "auto" 
+                        ? (lang === "es" ? "Automático" : "Auto")
+                        : mode === "yes" 
+                          ? (lang === "es" ? "Siempre Activo" : "Always On")
+                          : (lang === "es" ? "Oculto" : "Hidden");
+
+                    return (
+                      <button
+                        key={mode}
+                        onClick={() => {
+                          resumeAudio();
+                          setTouchControlsMode(mode);
+                        }}
+                        className={`text-[10px] sm:text-xs py-2 rounded-xl font-bold border transition-all ${
+                          isActive
+                            ? "bg-emerald-500 border-transparent text-white shadow-md font-extrabold"
+                            : "bg-zinc-850 border-white/5 text-zinc-400 hover:text-white"
+                        }`}
+                      >
+                        {modeText}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Soporte para Tablets / Dispositivos */}
+              <div className="bg-zinc-900/60 p-3.5 rounded-2xl border border-white/5 flex flex-col gap-2">
+                <label className="text-emerald-400 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5">
+                  <i className="fas fa-tablet-screen-button text-xs" />
+                  <span>{lang === "es" ? "Ajuste de Pantalla y Tablet" : "Tablet & Screen Profile"}</span>
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    { code: "auto", name: lang === "es" ? "Auto-Detectar" : "Auto-Detect" },
+                    { code: "redmi", name: "Redmi Pad 8.7" },
+                    { code: "funtouch", name: "Funtouch OS 15" },
+                    { code: "galaxy", name: "Galaxy A23 (20:9)" },
+                  ].map((preset) => {
+                    const isActive = devicePreset === preset.code;
+                    return (
+                      <button
+                        key={preset.code}
+                        onClick={() => {
+                          resumeAudio();
+                          setDevicePreset(preset.code as any);
+                          localStorage.setItem("minecraft_device_preset", preset.code);
+                        }}
+                        className={`text-[10px] sm:text-xs py-2 px-2 rounded-xl font-bold border transition-all ${
+                          isActive
+                            ? "bg-emerald-500 border-transparent text-white shadow-md font-black"
+                            : "bg-zinc-850 border-white/5 text-zinc-400 hover:text-white"
+                        }`}
+                      >
+                        {preset.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Tab 2: 🖼️ GRÁFICOS & RENDIMIENTO */}
+          {settingsSection === "graphics" && (
+            <div className="flex flex-col w-full gap-4 max-h-[58vh] overflow-y-auto pr-1">
+              {/* Ultra Optimización */}
+              <div className="bg-zinc-900/60 p-3.5 rounded-2xl border border-white/5 flex items-center justify-between">
+                <div className="flex flex-col">
+                  <span className="text-white font-bold text-xs flex items-center gap-2">
+                    <i className="fas fa-bolt text-amber-400" />
+                    <span>{t.ultra_optimization}</span>
+                  </span>
+                  <span className="text-[9px] text-zinc-400 font-mono mt-0.5">
+                    {lang === "es" ? "Acelera renderizado para máxima fluidez a 60 FPS" : "Fast mobile rendering for solid 60 FPS"}
+                  </span>
+                </div>
+                <button
+                  onClick={() => {
+                    resumeAudio();
+                    setUltraOptimization(!ultraOptimization);
+                  }}
+                  className={`px-4 py-2 rounded-xl font-mono font-black text-xs border transition-all ${
+                    ultraOptimization
+                      ? "bg-emerald-600 border-emerald-400 text-white shadow-lg shadow-emerald-500/20"
+                      : "bg-zinc-800 border-white/10 text-zinc-400"
+                  }`}
+                >
+                  {ultraOptimization ? "ACTIVADO" : "DESACTIVADO"}
+                </button>
+              </div>
+
+              {/* Distancia de Renderizado de Chunks */}
+              <div className="bg-zinc-900/60 p-3.5 rounded-2xl border border-white/5 flex flex-col gap-2">
+                <div className="flex justify-between items-center">
+                  <label className="text-emerald-400 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5">
+                    <i className="fas fa-cubes text-xs" />
+                    <span>{lang === "es" ? "Distancia de Render (Chunks)" : "Render Distance (Chunks)"}</span>
+                  </label>
+                  <span className="text-white font-mono font-black text-xs bg-zinc-800 px-2 py-0.5 rounded-lg border border-white/10">
+                    {perfConfig.renderDistance} Chunks
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="1"
+                  max="5"
+                  step="1"
+                  value={perfConfig.renderDistance}
+                  onChange={(e) => {
+                    const updated = { ...perfConfig, renderDistance: parseInt(e.target.value) };
+                    setPerfConfig(updated);
+                    localStorage.setItem("minecraft_performance_config", JSON.stringify(updated));
+                  }}
+                  className="w-full accent-emerald-400 h-2 bg-zinc-800 rounded-lg appearance-none cursor-pointer mt-1"
+                />
+              </div>
+
+              {/* Distancia de Simulación */}
+              <div className="bg-zinc-900/60 p-3.5 rounded-2xl border border-white/5 flex flex-col gap-2">
+                <div className="flex justify-between items-center">
+                  <label className="text-emerald-400 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5">
+                    <i className="fas fa-clock text-xs" />
+                    <span>{lang === "es" ? "Distancia de Simulación" : "Simulation Distance"}</span>
+                  </label>
+                  <span className="text-white font-mono font-black text-xs bg-zinc-800 px-2 py-0.5 rounded-lg border border-white/10">
+                    {perfConfig.simulationDistance} Radio
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="1"
+                  max="4"
+                  step="1"
+                  value={perfConfig.simulationDistance}
+                  onChange={(e) => {
+                    const updated = { ...perfConfig, simulationDistance: parseInt(e.target.value) };
+                    setPerfConfig(updated);
+                    localStorage.setItem("minecraft_performance_config", JSON.stringify(updated));
+                  }}
+                  className="w-full accent-emerald-400 h-2 bg-zinc-800 rounded-lg appearance-none cursor-pointer mt-1"
+                />
+              </div>
+
+              {/* Límite de Entidades y Chunks Simultáneos */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="bg-zinc-900/60 p-3.5 rounded-2xl border border-white/5 flex flex-col gap-2">
+                  <div className="flex justify-between items-center">
+                    <span className="text-zinc-300 font-bold text-[10px] uppercase">
+                      {lang === "es" ? "Límite Mobs" : "Max Entities"}
+                    </span>
+                    <span className="text-white font-mono font-bold text-xs bg-zinc-800 px-1.5 py-0.5 rounded">
+                      {perfConfig.maxEntities}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="5"
+                    max="50"
+                    step="5"
+                    value={perfConfig.maxEntities}
+                    onChange={(e) => {
+                      const updated = { ...perfConfig, maxEntities: parseInt(e.target.value) };
+                      setPerfConfig(updated);
+                      localStorage.setItem("minecraft_performance_config", JSON.stringify(updated));
+                    }}
+                    className="w-full accent-emerald-400 h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer"
+                  />
+                </div>
+
+                <div className="bg-zinc-900/60 p-3.5 rounded-2xl border border-white/5 flex flex-col gap-2">
+                  <div className="flex justify-between items-center">
+                    <span className="text-zinc-300 font-bold text-[10px] uppercase">
+                      {lang === "es" ? "Chunks/Tick" : "Chunks/Tick"}
+                    </span>
+                    <span className="text-white font-mono font-bold text-xs bg-zinc-800 px-1.5 py-0.5 rounded">
+                      {perfConfig.maxConcurrentChunks}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="1"
+                    max="8"
+                    step="1"
+                    value={perfConfig.maxConcurrentChunks}
+                    onChange={(e) => {
+                      const updated = { ...perfConfig, maxConcurrentChunks: parseInt(e.target.value) };
+                      setPerfConfig(updated);
+                      localStorage.setItem("minecraft_performance_config", JSON.stringify(updated));
+                    }}
+                    className="w-full accent-emerald-400 h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer"
+                  />
+                </div>
+              </div>
+
+              {/* Botones de Iluminación, Partículas y Efectos */}
+              <div className="grid grid-cols-3 gap-2">
+                <button
+                  onClick={() => {
+                    const updated = { ...perfConfig, particlesEnabled: !perfConfig.particlesEnabled };
+                    setPerfConfig(updated);
+                    localStorage.setItem("minecraft_performance_config", JSON.stringify(updated));
+                  }}
+                  className={`p-2.5 rounded-xl border text-center transition flex flex-col items-center gap-1 ${
+                    perfConfig.particlesEnabled
+                      ? "bg-emerald-600/30 border-emerald-500 text-emerald-300"
+                      : "bg-zinc-900 border-white/5 text-zinc-400"
+                  }`}
+                >
+                  <span className="text-[10px] font-bold uppercase">{lang === "es" ? "Partículas" : "Particles"}</span>
+                  <span className="text-[9px] font-mono font-black">{perfConfig.particlesEnabled ? "ON" : "OFF"}</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    const updated = { ...perfConfig, lightingQuality: perfConfig.lightingQuality === "high" ? "low" : "high" as any };
+                    setPerfConfig(updated);
+                    localStorage.setItem("minecraft_performance_config", JSON.stringify(updated));
+                  }}
+                  className={`p-2.5 rounded-xl border text-center transition flex flex-col items-center gap-1 ${
+                    perfConfig.lightingQuality === "high"
+                      ? "bg-amber-600/30 border-amber-500 text-amber-300"
+                      : "bg-zinc-900 border-white/5 text-zinc-400"
+                  }`}
+                >
+                  <span className="text-[10px] font-bold uppercase">{lang === "es" ? "Iluminación" : "Lighting"}</span>
+                  <span className="text-[9px] font-mono font-black">{perfConfig.lightingQuality === "high" ? "ALTA" : "BAJA"}</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    const updated = { ...perfConfig, effectsQuality: perfConfig.effectsQuality === "high" ? "low" : "high" as any };
+                    setPerfConfig(updated);
+                    localStorage.setItem("minecraft_performance_config", JSON.stringify(updated));
+                  }}
+                  className={`p-2.5 rounded-xl border text-center transition flex flex-col items-center gap-1 ${
+                    perfConfig.effectsQuality === "high"
+                      ? "bg-sky-600/30 border-sky-500 text-sky-300"
+                      : "bg-zinc-900 border-white/5 text-zinc-400"
+                  }`}
+                >
+                  <span className="text-[10px] font-bold uppercase">{lang === "es" ? "Efectos" : "Effects"}</span>
+                  <span className="text-[9px] font-mono font-black">{perfConfig.effectsQuality === "high" ? "ALTO" : "BAJO"}</span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Tab 3: 🎵 AUDIO & MÚSICA */}
+          {settingsSection === "audio" && (
+            <div className="flex flex-col w-full gap-4 max-h-[58vh] overflow-y-auto pr-1">
+              {/* Selector de Modo de Música */}
+              <div className="bg-zinc-900/60 p-3.5 rounded-2xl border border-white/5 flex flex-col gap-2.5">
+                <label className="text-emerald-400 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5">
+                  <i className="fas fa-compact-disc text-xs" />
+                  <span>{lang === "es" ? "Motor de Banda Sonora y Música" : "Soundtrack Engine"}</span>
+                </label>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                   <button
                     onClick={() => {
-                      const farPos = { x: 1515, y: 110, z: 1515 };
-                      setPlayerPos(farPos);
-                      activePlayerPosRef.current = farPos;
-                      setAppState("playing");
-                      setScreenshotToast(lang === "es" ? "👾 ¡Viajado a los FAR LANDS (X:1515, Z:1515)!" : "👾 Traveled to the FAR LANDS (X:1515, Z:1515)!");
-                      setTimeout(() => setScreenshotToast(null), 3000);
+                      resumeAudio();
+                      setMusicContext(isInWorldScene ? "world" : "menu");
+                      setMusicMode('soundtrack');
+                      setMusicModeState('soundtrack');
+                      setIsProceduralActive(true);
+                      setIsMusicPlayingState(false);
+                      setTimeout(() => setCurrentTrackTitle(getMusicTrackTitle()), 100);
                     }}
-                    className="col-span-2 bg-gradient-to-r from-amber-600 to-yellow-600 hover:from-amber-500 hover:to-yellow-500 py-2 rounded-lg text-white font-bold text-[9px] uppercase tracking-wider flex items-center justify-center gap-1.5 transition active:scale-95 border border-yellow-400/20 shadow-lg"
+                    className={`p-3 rounded-2xl border text-center transition flex flex-col items-center gap-1 ${
+                      musicMode === 'soundtrack'
+                        ? "bg-emerald-600/30 border-emerald-500 text-emerald-300 shadow-lg shadow-emerald-500/20 font-black"
+                        : "bg-zinc-900 border-white/5 text-zinc-400 hover:text-white"
+                    }`}
                   >
-                    <i className="fas fa-magic text-yellow-200 animate-pulse" /> {lang === "es" ? "Viajar a Far Lands (x:1515)" : "Travel to Far Lands (x:1515)"}
+                    <span className="text-lg">🎵</span>
+                    <span className="text-[10px] font-bold uppercase">Banda Sonora</span>
+                    <span className="text-[8px] text-zinc-500 font-mono">Menú / Mundo</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      resumeAudio();
+                      setMusicMode('c418');
+                      setMusicModeState('c418');
+                      setIsProceduralActive(true);
+                      setIsMusicPlayingState(false);
+                      setTimeout(() => setCurrentTrackTitle(getMusicTrackTitle()), 100);
+                    }}
+                    className={`p-3 rounded-2xl border text-center transition flex flex-col items-center gap-1 ${
+                      musicMode === 'c418'
+                        ? "bg-emerald-600/30 border-emerald-500 text-emerald-300 shadow-lg shadow-emerald-500/20 font-black"
+                        : "bg-zinc-900 border-white/5 text-zinc-400 hover:text-white"
+                    }`}
+                  >
+                    <span className="text-lg">🎹</span>
+                    <span className="text-[10px] font-bold uppercase">C418 Piano</span>
+                    <span className="text-[8px] text-zinc-500 font-mono">Alta Fidelidad</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      resumeAudio();
+                      setMusicMode('chiptune');
+                      setMusicModeState('chiptune');
+                      setIsProceduralActive(true);
+                      setIsMusicPlayingState(false);
+                      setTimeout(() => setCurrentTrackTitle(getMusicTrackTitle()), 100);
+                    }}
+                    className={`p-3 rounded-2xl border text-center transition flex flex-col items-center gap-1 ${
+                      musicMode === 'chiptune'
+                        ? "bg-amber-600/30 border-amber-500 text-amber-300 shadow-lg shadow-amber-500/20 font-black"
+                        : "bg-zinc-900 border-white/5 text-zinc-400 hover:text-white"
+                    }`}
+                  >
+                    <span className="text-lg">🕹️</span>
+                    <span className="text-[10px] font-bold uppercase">Retro 8-Bit</span>
+                    <span className="text-[8px] text-zinc-500 font-mono">Chiptune</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setMusicMode('custom');
+                      setMusicModeState('custom');
+                      setIsProceduralActive(false);
+                      if (isCustomMusicLoaded()) {
+                        playCustomBackgroundMusic();
+                        setIsMusicPlayingState(true);
+                      }
+                      setTimeout(() => setCurrentTrackTitle(getMusicTrackTitle()), 100);
+                    }}
+                    className={`p-3 rounded-2xl border text-center transition flex flex-col items-center gap-1 ${
+                      musicMode === 'custom'
+                        ? "bg-sky-600/30 border-sky-500 text-sky-300 shadow-lg shadow-sky-500/20 font-black"
+                        : "bg-zinc-900 border-white/5 text-zinc-400 hover:text-white"
+                    }`}
+                  >
+                    <span className="text-lg">📁</span>
+                    <span className="text-[10px] font-bold uppercase">MP3 Propio</span>
+                    <span className="text-[8px] text-zinc-500 font-mono">Subir Archivo</span>
                   </button>
                 </div>
-              )}
+              </div>
 
-              <div className="mt-1">
-                <label className="w-full bg-zinc-800 hover:bg-zinc-700 py-2 rounded-lg text-white font-bold text-[9px] uppercase tracking-wider flex items-center justify-center gap-1.5 cursor-pointer text-center transition active:scale-95 border border-white/5">
-                  <i className="fas fa-file-import" />
-                  {lang === "es" ? "Importar mundo (.json)" : "Import world (.json)"}
+              {/* Reproductor Activo & Pista Sonando */}
+              <div className="bg-zinc-900/60 p-3.5 rounded-2xl border border-white/5 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-3 truncate max-w-[70%]">
+                  <div className="flex items-center gap-1 h-4 text-emerald-400 shrink-0">
+                    <span className="w-1 h-3.5 bg-emerald-400 animate-pulse rounded-full" />
+                    <span className="w-1 h-5 bg-emerald-400 animate-pulse rounded-full delay-100" />
+                    <span className="w-1 h-2.5 bg-emerald-400 animate-pulse rounded-full delay-200" />
+                  </div>
+                  <div className="flex flex-col truncate">
+                    <span className="text-zinc-400 text-[8px] uppercase font-bold tracking-wider">
+                      {lang === "es" ? "Pista en Reproducción:" : "Now Playing:"}
+                    </span>
+                    <span className="text-emerald-300 font-black truncate text-xs">
+                      {currentTrackTitle}
+                    </span>
+                  </div>
+                </div>
+
+                {(musicMode === "c418" || (musicMode === "soundtrack" && currentWorld !== null)) && (
+                  <button
+                    onClick={() => {
+                      resumeAudio();
+                      skipToNextTrack();
+                      setTimeout(() => setCurrentTrackTitle(getMusicTrackTitle()), 150);
+                    }}
+                    className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-3 py-1.5 rounded-xl text-xs flex items-center gap-1.5 transition shrink-0 active:scale-95 shadow-md"
+                  >
+                    <span>{lang === "es" ? "Siguiente" : "Next"}</span>
+                    <i className="fas fa-forward-step" />
+                  </button>
+                )}
+              </div>
+
+              {/* Subir MP3 */}
+              <div className="bg-zinc-900/60 p-3.5 rounded-2xl border border-white/5 flex flex-col gap-2">
+                <label className="w-full bg-zinc-800 hover:bg-zinc-700 py-2.5 rounded-xl text-white font-bold text-xs text-center cursor-pointer transition active:scale-95 border border-white/5 flex items-center justify-center gap-2">
+                  <i className="fas fa-cloud-arrow-up text-sky-400" />
+                  <span>{lang === "es" ? "Cargar Archivo MP3 para Música" : "Upload MP3 File"}</span>
+                  <input
+                    type="file"
+                    accept="audio/mp3,audio/*"
+                    onChange={(e) => {
+                      handleMusicUpload(e);
+                      setMusicModeState('custom');
+                      setTimeout(() => setCurrentTrackTitle(getMusicTrackTitle()), 200);
+                    }}
+                    className="hidden"
+                  />
+                </label>
+
+                {musicFileName && (
+                  <div className="flex items-center justify-between bg-zinc-950/70 p-2.5 rounded-xl border border-white/5">
+                    <span className="text-white text-xs truncate max-w-[65%] font-mono">{musicFileName}</span>
+                    <button
+                      onClick={() => {
+                        if (isMusicPlaying) {
+                          pauseCustomBackgroundMusic();
+                          setIsMusicPlayingState(false);
+                        } else {
+                          playCustomBackgroundMusic();
+                          setIsMusicPlayingState(true);
+                          setMusicModeState('custom');
+                        }
+                      }}
+                      className={`px-3 py-1 rounded-lg text-xs font-bold uppercase transition ${
+                        isMusicPlaying ? "bg-red-500/20 text-red-300" : "bg-emerald-500/20 text-emerald-300"
+                      }`}
+                    >
+                      {isMusicPlaying ? "Pausar" : "Reproducir"}
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Volumen Maestro */}
+              <div className="bg-zinc-900/60 p-3.5 rounded-2xl border border-white/5 flex flex-col gap-2">
+                <div className="flex justify-between items-center">
+                  <label className="text-emerald-400 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5">
+                    <i className="fas fa-volume-high text-xs" />
+                    <span>{lang === "es" ? "Volumen Maestro de Música" : "Music Volume"}</span>
+                  </label>
+                  <span className="text-white font-mono font-black text-xs bg-zinc-800 px-2 py-0.5 rounded-lg border border-white/10">
+                    {Math.round(musicVolume * 100)}%
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.01"
+                  value={musicVolume}
+                  onChange={(e) => {
+                    const vol = parseFloat(e.target.value);
+                    setCustomBackgroundMusicVolume(vol);
+                    setMusicVolume(vol);
+                  }}
+                  className="w-full accent-emerald-400 h-2 bg-zinc-800 rounded-lg appearance-none cursor-pointer mt-1"
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Tab 4: 🌍 MUNDO & GENERACIÓN PROCEDURAL */}
+          {settingsSection === "world" && (
+            <div className="flex flex-col w-full gap-4 max-h-[58vh] overflow-y-auto pr-1">
+              {/* Acciones de Guardado y Archivos */}
+              <div className="bg-zinc-900/60 p-3.5 rounded-2xl border border-white/5 flex flex-col gap-2.5">
+                <label className="text-emerald-400 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5">
+                  <i className="fas fa-floppy-disk text-xs" />
+                  <span>{lang === "es" ? "Gestión de Mundos y Archivos" : "World Management"}</span>
+                </label>
+
+                {currentWorld && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={handleManualSave}
+                      className="bg-emerald-600 hover:bg-emerald-500 py-2.5 rounded-xl text-white font-bold text-xs uppercase flex items-center justify-center gap-1.5 transition active:scale-95 shadow-md"
+                    >
+                      <i className="fas fa-save" /> {lang === "es" ? "Guardar Ahora" : "Save Now"}
+                    </button>
+                    <button
+                      onClick={handleExportWorld}
+                      className="bg-indigo-600 hover:bg-indigo-500 py-2.5 rounded-xl text-white font-bold text-xs uppercase flex items-center justify-center gap-1.5 transition active:scale-95 shadow-md"
+                    >
+                      <i className="fas fa-file-export" /> {lang === "es" ? "Exportar JSON" : "Export JSON"}
+                    </button>
+                    <button
+                      onClick={() => {
+                        const farPos = { x: 1515, y: 110, z: 1515 };
+                        setPlayerPos(farPos);
+                        activePlayerPosRef.current = farPos;
+                        setAppState("playing");
+                        setScreenshotToast(lang === "es" ? "👾 ¡Viajado a los FAR LANDS (X:1515, Z:1515)!" : "👾 Traveled to the FAR LANDS (X:1515, Z:1515)!");
+                        setTimeout(() => setScreenshotToast(null), 3000);
+                      }}
+                      className="col-span-2 bg-gradient-to-r from-amber-600 to-yellow-600 hover:from-amber-500 hover:to-yellow-500 py-2.5 rounded-xl text-white font-black text-xs uppercase flex items-center justify-center gap-2 transition active:scale-95 shadow-lg border border-yellow-400/30"
+                    >
+                      <i className="fas fa-compass text-yellow-200" />
+                      <span>{lang === "es" ? "Viajar a los Far Lands (X:1515, Z:1515)" : "Travel to Far Lands"}</span>
+                    </button>
+                  </div>
+                )}
+
+                <label className="w-full bg-zinc-800 hover:bg-zinc-700 py-2.5 rounded-xl text-white font-bold text-xs uppercase flex items-center justify-center gap-2 cursor-pointer transition active:scale-95 border border-white/5">
+                  <i className="fas fa-file-import text-emerald-400" />
+                  <span>{lang === "es" ? "Importar mundo desde archivo (.json)" : "Import world (.json)"}</span>
                   <input
                     type="file"
                     accept=".json"
@@ -4347,17 +7619,242 @@ const App: React.FC = () => {
                   />
                 </label>
               </div>
-            </div>
 
-            {/* BOTON ATRAS */}
+              {/* Generación Procedural (Simplex, Ridged, FBM) */}
+              <div className="bg-zinc-900/60 p-3.5 rounded-2xl border border-white/5 flex flex-col gap-3">
+                <div className="flex justify-between items-center border-b border-white/10 pb-2">
+                  <span className="text-emerald-400 text-[10px] font-black uppercase tracking-wider font-mono">
+                    ⚙️ {lang === "es" ? "Ajustes de Ruido Procedural" : "Noise Procedural Settings"}
+                  </span>
+                  <button
+                    onClick={() => {
+                      const reset = { ...DEFAULT_NOISE_CONFIG };
+                      setNoiseConfig(reset);
+                      localStorage.setItem("minecraft_noise_config", JSON.stringify(reset));
+                    }}
+                    className="text-[9px] bg-red-500/20 hover:bg-red-500/30 text-red-300 font-bold px-2 py-0.5 rounded-lg border border-red-500/30 uppercase"
+                  >
+                    {lang === "es" ? "Restablecer" : "Reset"}
+                  </button>
+                </div>
+
+                {/* 1. Cuevas Simplex 3D */}
+                <div className="flex items-center justify-between">
+                  <span className="text-white text-xs font-bold">1. Simplex Noise 3D (Cuevas)</span>
+                  <button
+                    onClick={() => {
+                      const updated = { ...noiseConfig, simplex3DEnabled: !noiseConfig.simplex3DEnabled };
+                      setNoiseConfig(updated);
+                      localStorage.setItem("minecraft_noise_config", JSON.stringify(updated));
+                    }}
+                    className={`text-[9px] font-black px-2.5 py-1 rounded-lg border ${
+                      noiseConfig.simplex3DEnabled ? "bg-emerald-500 text-white border-emerald-400" : "bg-zinc-800 text-zinc-400 border-white/10"
+                    }`}
+                  >
+                    {noiseConfig.simplex3DEnabled ? "ON" : "OFF"}
+                  </button>
+                </div>
+
+                {/* 2. Ridged Noise (Crestas) */}
+                <div className="flex items-center justify-between">
+                  <span className="text-white text-xs font-bold">2. Ridged Noise (Montañas Suaves)</span>
+                  <button
+                    onClick={() => {
+                      const updated = { ...noiseConfig, ridgedEnabled: !noiseConfig.ridgedEnabled };
+                      setNoiseConfig(updated);
+                      localStorage.setItem("minecraft_noise_config", JSON.stringify(updated));
+                    }}
+                    className={`text-[9px] font-black px-2.5 py-1 rounded-lg border ${
+                      noiseConfig.ridgedEnabled ? "bg-emerald-500 text-white border-emerald-400" : "bg-zinc-800 text-zinc-400 border-white/10"
+                    }`}
+                  >
+                    {noiseConfig.ridgedEnabled ? "ON" : "OFF"}
+                  </button>
+                </div>
+
+                {/* 3. FBM Detalle Fractal */}
+                <div className="flex items-center justify-between">
+                  <span className="text-white text-xs font-bold">3. FBM Fractal (Relieve)</span>
+                  <button
+                    onClick={() => {
+                      const updated = { ...noiseConfig, fbmEnabled: !noiseConfig.fbmEnabled };
+                      setNoiseConfig(updated);
+                      localStorage.setItem("minecraft_noise_config", JSON.stringify(updated));
+                    }}
+                    className={`text-[9px] font-black px-2.5 py-1 rounded-lg border ${
+                      noiseConfig.fbmEnabled ? "bg-emerald-500 text-white border-emerald-400" : "bg-zinc-800 text-zinc-400 border-white/10"
+                    }`}
+                  >
+                    {noiseConfig.fbmEnabled ? "ON" : "OFF"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Tab 5: 🌐 MULTIJUGADOR & CUENTA */}
+          {settingsSection === "multiplayer" && (
+            <div className="flex flex-col w-full gap-4 max-h-[58vh] overflow-y-auto pr-1">
+              {/* Estado de Conexión */}
+              <div className="bg-zinc-900/60 p-3.5 rounded-2xl border border-white/5 flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse shadow-sm shadow-emerald-400" />
+                  <div className="flex flex-col">
+                    <span className="text-white font-bold text-xs">
+                      {lang === "es" ? "Estado Multijugador: En Línea" : "Multiplayer Status: Online"}
+                    </span>
+                    <span className="text-[9px] text-zinc-400 font-mono">
+                      Firestore Realtime Synchronization
+                    </span>
+                  </div>
+                </div>
+                <span className="text-[10px] bg-emerald-500/20 text-emerald-300 font-mono font-bold px-2 py-0.5 rounded-md border border-emerald-500/30">
+                  ACTIVO
+                </span>
+              </div>
+
+              {/* Código del Mundo + Sesión */}
+              <div className="bg-zinc-900/60 p-3.5 rounded-2xl border border-white/5 flex flex-col gap-2">
+                {currentWorld && (
+                  <div className="flex flex-col gap-1 border-b border-white/5 pb-2.5 mb-1">
+                    <span className="text-emerald-400 text-[10px] font-bold uppercase tracking-wider">
+                      {lang === "es" ? "Código de este Mundo (Invita Amigos)" : "Current World Code (Invite Friends)"}
+                    </span>
+                    <div className="flex items-center justify-between bg-zinc-950/70 p-2.5 rounded-xl border border-emerald-500/25 gap-2">
+                      <span className="text-emerald-300 font-mono text-xs font-bold truncate">{currentWorld.id}</span>
+                      <button
+                        onClick={() => {
+                          navigator.clipboard?.writeText(currentWorld.id);
+                          setScreenshotToast(lang === "es" ? "🌍 Código del mundo copiado" : "🌍 World code copied");
+                          setTimeout(() => setScreenshotToast(null), 2500);
+                        }}
+                        className="bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-bold px-2.5 py-1 rounded-lg shrink-0 active:scale-95"
+                      >
+                        <i className="fas fa-copy mr-1" />
+                        {lang === "es" ? "Copiar" : "Copy"}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <span className="text-emerald-400 text-[10px] font-bold uppercase tracking-wider">
+                  {lang === "es" ? "Tu Identificador de Sesión" : "Session Player ID"}
+                </span>
+                <div className="flex items-center justify-between bg-zinc-950/70 p-2.5 rounded-xl border border-white/5 gap-2">
+                  <span className="text-white font-mono text-xs truncate">{currentUniqueId}</span>
+                  <button
+                    onClick={() => {
+                      navigator.clipboard?.writeText(currentUniqueId);
+                      setScreenshotToast(lang === "es" ? "📋 ID de jugador copiado al portapapeles" : "📋 Player ID copied to clipboard");
+                      setTimeout(() => setScreenshotToast(null), 2500);
+                    }}
+                    className="bg-zinc-800 hover:bg-zinc-700 text-white text-[10px] font-bold px-2.5 py-1 rounded-lg shrink-0 border border-white/10 active:scale-95"
+                  >
+                    <i className="fas fa-copy mr-1" />
+                    Copiar
+                  </button>
+                </div>
+              </div>
+
+              {/* Jugadores Activos en el Mundo */}
+              <div className="bg-zinc-900/60 p-3.5 rounded-2xl border border-white/5 flex flex-col gap-2">
+                <div className="flex justify-between items-center">
+                  <span className="text-emerald-400 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5">
+                    <i className="fas fa-user-group text-xs" />
+                    <span>{lang === "es" ? "Jugadores en el Mundo" : "Players in World"} ({activePlayers.length + 1})</span>
+                  </span>
+                </div>
+
+                <div className="flex flex-col gap-1.5 mt-1">
+                  {/* Tú */}
+                  <div className="flex items-center justify-between bg-emerald-950/20 border border-emerald-500/30 p-2 rounded-xl text-xs">
+                    <div className="flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                      <span className="text-white font-bold">{currentUser || "Tú"} <span className="text-emerald-400 text-[10px]">(Tú)</span></span>
+                    </div>
+                    <span className="text-zinc-400 font-mono text-[10px]">
+                      X:{Math.round(activePlayerPosRef.current.x)} Y:{Math.round(activePlayerPosRef.current.y - 55)} Z:{Math.round(activePlayerPosRef.current.z)}
+                    </span>
+                  </div>
+
+                  {/* Otros jugadores */}
+                  {activePlayers.map((p) => (
+                    <div key={p.id} className="flex items-center justify-between bg-zinc-950/50 border border-white/5 p-2 rounded-xl text-xs gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="w-2 h-2 rounded-full bg-sky-400 animate-pulse shrink-0" />
+                        <span className="text-white font-bold truncate">{p.name}</span>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="text-zinc-400 font-mono text-[10px]">
+                          X:{Math.round(p.pos?.x || 0)} Y:{Math.round((p.pos?.y || 80) - 55)} Z:{Math.round(p.pos?.z || 0)}
+                        </span>
+                        {currentWorld && (
+                          <button
+                            onClick={() => {
+                              const tpPos = { x: (p.pos?.x || 0) + 1.5, y: (p.pos?.y || 80) + 0.5, z: (p.pos?.z || 0) + 1.5 };
+                              if (p.dimension && p.dimension !== dimension) {
+                                setDimension(p.dimension as "overworld" | "nether");
+                              }
+                              setPlayerPos(tpPos);
+                              activePlayerPosRef.current = tpPos;
+                              setAppState("playing");
+                              setScreenshotToast(`🌀 Teletransportado hacia ${p.name}`);
+                              setTimeout(() => setScreenshotToast(null), 2500);
+                            }}
+                            className="bg-sky-600 hover:bg-sky-500 text-white text-[9px] font-black px-2 py-1 rounded-lg uppercase active:scale-95"
+                          >
+                            TP
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+
+                  {activePlayers.length === 0 && (
+                    <div className="text-center text-zinc-500 text-xs py-3 italic">
+                      {lang === "es" ? "No hay otros jugadores en este mundo actualmente. ¡Invita a tus amigos!" : "No other players in this world right now. Invite friends!"}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Botones Rápidos de Red */}
+              <div className="grid grid-cols-2 gap-2 mt-1">
+                <button
+                  onClick={() => {
+                    resumeAudio();
+                    setIsFriendsOpen(true);
+                  }}
+                  className="bg-purple-600/30 hover:bg-purple-600/40 border border-purple-500/40 text-purple-200 font-bold py-2.5 rounded-xl text-xs uppercase flex items-center justify-center gap-2 transition active:scale-95"
+                >
+                  <i className="fas fa-user-plus" />
+                  <span>{lang === "es" ? "Amigos e Invitaciones" : "Friends & Invites"}</span>
+                </button>
+                <button
+                  onClick={() => {
+                    resumeAudio();
+                    setIsLeaderboardOpen(true);
+                  }}
+                  className="bg-amber-600/30 hover:bg-amber-600/40 border border-amber-500/40 text-amber-200 font-bold py-2.5 rounded-xl text-xs uppercase flex items-center justify-center gap-2 transition active:scale-95"
+                >
+                  <i className="fas fa-trophy" />
+                  <span>{lang === "es" ? "Clasificación Global" : "Leaderboard"}</span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Action Bar: Botón Volver */}
+          <div className="w-full pt-4 mt-2 border-t border-white/10 flex items-center gap-3">
             <button
               onClick={() => {
                 resumeAudio();
                 setAppState(currentWorld ? "playing" : "menu");
               }}
-              className="bg-zinc-700 hover:bg-zinc-600 border border-white/10 text-white font-bold py-3 rounded-xl text-center uppercase tracking-widest transition-all active:scale-95 mt-2 text-sm"
+              className="w-full bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 border border-emerald-400/40 text-white font-black py-3 rounded-2xl text-center uppercase tracking-wider transition-all active:scale-[0.98] shadow-lg shadow-emerald-500/20 text-xs sm:text-sm flex items-center justify-center gap-2"
             >
-              {currentWorld ? (lang === "es" ? "VOLVER AL JUEGO" : "BACK TO GAME") : t.back}
+              <i className="fas fa-arrow-left" />
+              <span>{currentWorld ? (lang === "es" ? "VOLVER AL JUEGO" : "BACK TO GAME") : (lang === "es" ? "VOLVER AL MENÚ" : "BACK TO MENU")}</span>
             </button>
           </div>
         </div>
@@ -4365,14 +7862,471 @@ const App: React.FC = () => {
     );
   }
 
+  // --- NEW INTERACTIVE SCREENS FOR COFRES, HORNOS, CARTOGRAFIA, MAPAS ---
+  const renderFurnaceModal = () => {
+    if (!isFurnaceOpen) return null;
+
+    const inputResult = getSmeltingResult(furnaceInput || BlockType.AIR);
+
+    const handleSelectInput = (type: BlockType) => {
+      if (getSmeltingResult(type)) {
+        setFurnaceInput(type);
+        setFurnaceInputCount((prev) => prev + 1);
+        setSurvivalInventory((inv) => ({ ...inv, [type]: Math.max(0, (inv[type] || 0) - 1) }));
+      }
+    };
+
+    const handleSelectFuel = (type: BlockType) => {
+      if (isFurnaceFuel(type)) {
+        setFurnaceFuel(type);
+        setFurnaceFuelCount((prev) => prev + 1);
+        setSurvivalInventory((inv) => ({ ...inv, [type]: Math.max(0, (inv[type] || 0) - 1) }));
+      }
+    };
+
+    const handleCollectOutput = () => {
+      if (furnaceOutput && furnaceOutputCount > 0) {
+        setSurvivalInventory((inv) => ({ ...inv, [furnaceOutput]: (inv[furnaceOutput] || 0) + furnaceOutputCount }));
+        setFurnaceOutput(null);
+        setFurnaceOutputCount(0);
+      }
+    };
+
+    return (
+      <div className="fixed inset-0 z-[150] bg-black/85 backdrop-blur-md flex flex-col items-center justify-center p-4 sm:p-6 overflow-y-auto">
+        <div className="bg-zinc-900 border-2 border-orange-500/40 rounded-3xl p-6 max-w-2xl w-full shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+          <div className="flex justify-between items-center border-b border-white/10 pb-3 mb-4">
+            <h3 className="text-white text-xl font-bold minecraft-font flex items-center gap-2 uppercase tracking-wide">
+              <i className="fas fa-fire text-orange-500 animate-pulse" />
+              <span>Horno de Cocción</span>
+            </h3>
+            <button
+              onClick={() => setIsFurnaceOpen(false)}
+              className="bg-zinc-800 hover:bg-zinc-700 text-zinc-400 w-8 h-8 rounded-full flex items-center justify-center border border-white/5"
+            >
+              <i className="fas fa-times text-xs" />
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
+            {/* Smelting Mechanics Column */}
+            <div className="bg-zinc-950/60 border border-white/5 p-4 rounded-2xl flex flex-col items-center">
+              <span className="text-[10px] text-zinc-400 font-bold uppercase tracking-wider mb-4">Mecánica de Fundición</span>
+              
+              <div className="flex flex-col items-center gap-2">
+                {/* Input Slot */}
+                <div className="flex flex-col items-center">
+                  <span className="text-[8px] text-zinc-500 uppercase font-mono font-bold mb-1">Entrada / Ore</span>
+                  <div className="w-14 h-14 bg-zinc-900 border-2 border-dashed border-zinc-700 rounded-xl flex items-center justify-center relative">
+                    {furnaceInput ? (
+                      <div className="w-10 h-10 rounded-lg flex items-center justify-center font-bold text-xs" style={{ backgroundColor: BLOCK_COLORS[furnaceInput] }}>
+                        <span className="absolute bottom-1 right-1.5 bg-black/80 px-1 py-0.2 rounded text-[9px] text-white">{furnaceInputCount}</span>
+                      </div>
+                    ) : (
+                      <i className="fas fa-box text-zinc-700 text-lg" />
+                    )}
+                  </div>
+                </div>
+
+                {/* Progress Flame */}
+                <div className="my-2 flex flex-col items-center justify-center">
+                  <i className={`fas fa-fire text-2xl transition-all duration-300 ${furnaceProgress > 0 ? "text-orange-500 scale-125 animate-pulse" : "text-zinc-800"}`} />
+                  <div className="w-24 bg-zinc-800 h-1.5 rounded-full mt-2 overflow-hidden">
+                    <div className="bg-orange-500 h-full rounded-full transition-all duration-300" style={{ width: `${furnaceProgress}%` }} />
+                  </div>
+                </div>
+
+                {/* Fuel Slot */}
+                <div className="flex flex-col items-center">
+                  <div className="w-14 h-14 bg-zinc-900 border-2 border-dashed border-zinc-700 rounded-xl flex items-center justify-center relative">
+                    {furnaceFuel ? (
+                      <div className="w-10 h-10 rounded-lg flex items-center justify-center font-bold text-xs" style={{ backgroundColor: BLOCK_COLORS[furnaceFuel] }}>
+                        <span className="absolute bottom-1 right-1.5 bg-black/80 px-1 py-0.2 rounded text-[9px] text-white">{furnaceFuelCount}</span>
+                      </div>
+                    ) : (
+                      <i className="fas fa-coal text-zinc-700 text-lg" />
+                    )}
+                  </div>
+                  <span className="text-[8px] text-zinc-500 uppercase font-mono font-bold mt-1">Combustible / Fuel</span>
+                </div>
+              </div>
+
+              {/* Output Slot */}
+              <div className="mt-6 flex flex-col items-center border-t border-white/5 pt-4 w-full">
+                <span className="text-[8px] text-emerald-400 uppercase font-mono font-bold mb-1.5">Resultado</span>
+                <button
+                  onClick={handleCollectOutput}
+                  disabled={!furnaceOutput}
+                  className={`w-16 h-16 rounded-2xl flex items-center justify-center border-2 relative transition ${furnaceOutput ? "border-emerald-500 bg-emerald-950/20 active:scale-95 cursor-pointer" : "border-zinc-800 bg-zinc-900/40 cursor-not-allowed"}`}
+                >
+                  {furnaceOutput ? (
+                    <div className="w-11 h-11 rounded-xl" style={{ backgroundColor: BLOCK_COLORS[furnaceOutput] }}>
+                      <span className="absolute bottom-1 right-1.5 bg-black/90 px-1 rounded text-[10px] text-white font-mono font-bold">{furnaceOutputCount}</span>
+                    </div>
+                  ) : (
+                    <i className="fas fa-gem text-zinc-800 text-xl" />
+                  )}
+                </button>
+                {furnaceOutput && (
+                  <span className="text-[9px] text-emerald-400 font-bold uppercase mt-1">¡Toca para recoger!</span>
+                )}
+              </div>
+            </div>
+
+            {/* Inventory Column */}
+            <div className="bg-zinc-950/40 border border-white/5 p-4 rounded-2xl flex flex-col h-[400px] overflow-y-auto">
+              <span className="text-[10px] text-zinc-400 font-bold uppercase tracking-wider mb-3 block text-center">Tu Inventario (Cargar Horno)</span>
+              
+              <div className="grid grid-cols-4 gap-2">
+                {Object.keys(survivalInventory).map(Number).filter(k => survivalInventory[k] > 0).map((type) => {
+                  const isSmeltable = !!getSmeltingResult(type);
+                  const isFuel = isFurnaceFuel(type);
+
+                  if (!isSmeltable && !isFuel) return null;
+
+                  return (
+                    <div key={type} className="bg-zinc-900 border border-zinc-800 rounded-xl p-1 flex flex-col items-center justify-between text-center relative gap-1">
+                      <div className="w-8 h-8 rounded-lg shadow-inner" style={{ backgroundColor: BLOCK_COLORS[type] }} />
+                      <span className="text-[8px] text-zinc-300 font-bold uppercase truncate w-full">{BLOCK_NAMES[type]}</span>
+                      
+                      <div className="flex gap-1 w-full">
+                        {isSmeltable && (
+                          <button
+                            onClick={() => handleSelectInput(type)}
+                            className="flex-1 bg-orange-600 hover:bg-orange-500 text-white font-black text-[7px] py-1 rounded uppercase"
+                            title="Smelt"
+                          >
+                            Ore
+                          </button>
+                        )}
+                        {isFuel && (
+                          <button
+                            onClick={() => handleSelectFuel(type)}
+                            className="flex-1 bg-yellow-600 hover:bg-yellow-500 text-zinc-950 font-black text-[7px] py-1 rounded uppercase"
+                            title="Fuel"
+                          >
+                            Fuel
+                          </button>
+                        )}
+                      </div>
+                      
+                      <span className="absolute -top-1 -right-1 bg-zinc-950 text-white text-[7.5px] px-1 rounded font-bold">{survivalInventory[type]}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderChestModal = () => {
+    if (!isChestOpen) return null;
+
+    const handleStoreItem = (type: BlockType) => {
+      const qty = survivalInventory[type] || 0;
+      if (qty > 0) {
+        setSurvivalInventory((inv) => ({ ...inv, [type]: qty - 1 }));
+        setChestInventory((chest) => ({ ...chest, [type]: (chest[type] || 0) + 1 }));
+      }
+    };
+
+    const handleRetrieveItem = (type: BlockType) => {
+      const qty = chestInventory[type] || 0;
+      if (qty > 0) {
+        setChestInventory((chest) => ({ ...chest, [type]: qty - 1 }));
+        setSurvivalInventory((inv) => ({ ...inv, [type]: (inv[type] || 0) + 1 }));
+      }
+    };
+
+    return (
+      <div className="fixed inset-0 z-[150] bg-black/85 backdrop-blur-md flex flex-col items-center justify-center p-4 sm:p-6 overflow-y-auto">
+        <div className="bg-zinc-900 border-2 border-yellow-600/40 rounded-3xl p-6 max-w-3xl w-full shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+          <div className="flex justify-between items-center border-b border-white/10 pb-3 mb-5">
+            <h3 className="text-white text-xl font-bold minecraft-font flex items-center gap-2 uppercase tracking-wide">
+              <i className="fas fa-box text-yellow-500" />
+              <span>Cofre de Almacenamiento</span>
+            </h3>
+            <button
+              onClick={() => setIsChestOpen(false)}
+              className="bg-zinc-800 hover:bg-zinc-700 text-zinc-400 w-8 h-8 rounded-full flex items-center justify-center border border-white/5"
+            >
+              <i className="fas fa-times text-xs" />
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* Left Column: Player Inventory */}
+            <div className="bg-zinc-950/40 border border-white/5 p-4 rounded-2xl flex flex-col h-[380px] overflow-y-auto">
+              <span className="text-[10px] text-emerald-400 font-bold uppercase tracking-wider mb-3 block text-center">Tu Inventario (Toca para Guardar)</span>
+              
+              <div className="grid grid-cols-4 gap-2">
+                {Object.keys(survivalInventory).map(Number).filter(k => survivalInventory[k] > 0).map((type) => (
+                  <button
+                    key={type}
+                    onClick={() => handleStoreItem(type)}
+                    className="bg-zinc-900 hover:bg-zinc-850 border border-zinc-850 rounded-xl p-2 flex flex-col items-center relative transition active:scale-95 text-center group"
+                  >
+                    <div className="w-8 h-8 rounded-lg shadow-inner group-hover:scale-105 transition" style={{ backgroundColor: BLOCK_COLORS[type] }} />
+                    <span className="text-[8px] text-zinc-400 uppercase truncate font-bold w-full mt-1.5">{BLOCK_NAMES[type]}</span>
+                    <span className="absolute top-1.5 right-1.5 bg-black/85 text-white font-mono text-[8px] px-1 rounded-md">{survivalInventory[type]}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Right Column: Chest Inventory */}
+            <div className="bg-zinc-950/60 border border-white/5 p-4 rounded-2xl flex flex-col h-[380px] overflow-y-auto">
+              <span className="text-[10px] text-yellow-500 font-bold uppercase tracking-wider mb-3 block text-center">Contenido del Cofre (Toca para Sacar)</span>
+              
+              {Object.keys(chestInventory).map(Number).filter(k => chestInventory[k] > 0).length === 0 ? (
+                <div className="flex-1 flex flex-col items-center justify-center text-center text-zinc-500 italic p-6">
+                  <i className="fas fa-box-open text-zinc-700 text-3xl mb-3" />
+                  <span className="text-xs">El cofre está vacío. ¡Guarda tus bloques valiosos!</span>
+                </div>
+              ) : (
+                <div className="grid grid-cols-4 gap-2">
+                  {Object.keys(chestInventory).map(Number).filter(k => chestInventory[k] > 0).map((type) => (
+                    <button
+                      key={type}
+                      onClick={() => handleRetrieveItem(type)}
+                      className="bg-zinc-900 hover:bg-zinc-850 border border-zinc-850 rounded-xl p-2 flex flex-col items-center relative transition active:scale-95 text-center group"
+                    >
+                      <div className="w-8 h-8 rounded-lg shadow-inner group-hover:scale-105 transition" style={{ backgroundColor: BLOCK_COLORS[type] }} />
+                      <span className="text-[8px] text-zinc-400 uppercase truncate font-bold w-full mt-1.5">{BLOCK_NAMES[type]}</span>
+                      <span className="absolute top-1.5 right-1.5 bg-black/85 text-white font-mono text-[8px] px-1 rounded-md">{chestInventory[type]}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderCartographyModal = () => {
+    if (!isCartographyOpen) return null;
+
+    const hasSugarCane = (survivalInventory[BlockType.SUGAR_CANE] || 0) >= 3;
+    const hasMapAndPaper = (survivalInventory[BlockType.MAP] || 0) >= 1 && (survivalInventory[BlockType.PAPER] || 0) >= 1;
+    const hasPaperAndRedstone = (survivalInventory[BlockType.PAPER] || 0) >= 4 && (survivalInventory[BlockType.REDSTONE] || 0) >= 1;
+
+    const handleCraftPaper = () => {
+      if (hasSugarCane) {
+        setSurvivalInventory((inv) => ({
+          ...inv,
+          [BlockType.SUGAR_CANE]: (inv[BlockType.SUGAR_CANE] || 0) - 3,
+          [BlockType.PAPER]: (inv[BlockType.PAPER] || 0) + 3
+        }));
+      }
+    };
+
+    const handleCraftMap = () => {
+      if (hasPaperAndRedstone) {
+        setSurvivalInventory((inv) => ({
+          ...inv,
+          [BlockType.PAPER]: (inv[BlockType.PAPER] || 0) - 4,
+          [BlockType.REDSTONE]: (inv[BlockType.REDSTONE] || 0) - 1,
+          [BlockType.MAP]: (inv[BlockType.MAP] || 0) + 1
+        }));
+      }
+    };
+
+    const handleCraftLocatorMap = () => {
+      if (hasMapAndPaper) {
+        setSurvivalInventory((inv) => ({
+          ...inv,
+          [BlockType.MAP]: (inv[BlockType.MAP] || 0) - 1,
+          [BlockType.PAPER]: (inv[BlockType.PAPER] || 0) - 1,
+          [BlockType.LOCATOR_MAP]: (inv[BlockType.LOCATOR_MAP] || 0) + 1
+        }));
+      }
+    };
+
+    return (
+      <div className="fixed inset-0 z-[150] bg-black/85 backdrop-blur-md flex flex-col items-center justify-center p-4 sm:p-6 overflow-y-auto">
+        <div className="bg-zinc-900 border-2 border-indigo-500/40 rounded-3xl p-6 max-w-xl w-full shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+          <div className="flex justify-between items-center border-b border-white/10 pb-3 mb-5">
+            <h3 className="text-white text-xl font-bold minecraft-font flex items-center gap-2 uppercase tracking-wide">
+              <i className="fas fa-map text-indigo-400 animate-bounce" />
+              <span>Mesa de Cartografía</span>
+            </h3>
+            <button
+              onClick={() => setIsCartographyOpen(false)}
+              className="bg-zinc-800 hover:bg-zinc-700 text-zinc-400 w-8 h-8 rounded-full flex items-center justify-center border border-white/5"
+            >
+              <i className="fas fa-times text-xs" />
+            </button>
+          </div>
+
+          <p className="text-xs text-zinc-400 leading-relaxed mb-6 font-mono border-b border-white/5 pb-3">
+            Combina papel, caña de azúcar, redstone y mapas para expandir tu exploración cartográfica.
+          </p>
+
+          <div className="flex flex-col gap-4">
+            {/* Formula 1: Caña de azúcar -> Papel */}
+            <div className="bg-zinc-950/60 p-4 rounded-2xl border border-white/5 flex items-center justify-between gap-4">
+              <div className="flex flex-col text-left">
+                <span className="text-xs font-bold text-white uppercase font-sans">Fabricar Papel</span>
+                <span className="text-[10px] text-zinc-500 mt-0.5">Necesita: 3 Cañas de Azúcar (Tienes: {survivalInventory[BlockType.SUGAR_CANE] || 0})</span>
+              </div>
+              <button
+                onClick={handleCraftPaper}
+                disabled={!hasSugarCane}
+                className={`px-4 py-2 rounded-xl text-xs uppercase font-extrabold tracking-wider transition active:scale-95 ${hasSugarCane ? "bg-indigo-600 hover:bg-indigo-500 text-white cursor-pointer" : "bg-zinc-850 text-zinc-600 cursor-not-allowed"}`}
+              >
+                +3 Papel
+              </button>
+            </div>
+
+            {/* Formula 2: Papel + Redstone -> Mapa */}
+            <div className="bg-zinc-950/60 p-4 rounded-2xl border border-white/5 flex items-center justify-between gap-4">
+              <div className="flex flex-col text-left">
+                <span className="text-xs font-bold text-white uppercase font-sans">Crear Mapa de Papel</span>
+                <span className="text-[10px] text-zinc-500 mt-0.5">Necesita: 4 Papeles + 1 Redstone</span>
+              </div>
+              <button
+                onClick={handleCraftMap}
+                disabled={!hasPaperAndRedstone}
+                className={`px-4 py-2 rounded-xl text-xs uppercase font-extrabold tracking-wider transition active:scale-95 ${hasPaperAndRedstone ? "bg-indigo-600 hover:bg-indigo-500 text-white cursor-pointer" : "bg-zinc-850 text-zinc-600 cursor-not-allowed"}`}
+              >
+                +1 Mapa
+              </button>
+            </div>
+
+            {/* Formula 3: Mapa + Papel -> Mapa Localizador */}
+            <div className="bg-zinc-950/60 p-4 rounded-2xl border border-white/5 flex items-center justify-between gap-4">
+              <div className="flex flex-col text-left">
+                <span className="text-xs font-bold text-white uppercase font-sans">Crear Mapa Localizador</span>
+                <span className="text-[10px] text-zinc-500 mt-0.5">Necesita: 1 Mapa + 1 Papel</span>
+              </div>
+              <button
+                onClick={handleCraftLocatorMap}
+                disabled={!hasMapAndPaper}
+                className={`px-4 py-2 rounded-xl text-xs uppercase font-extrabold tracking-wider transition active:scale-95 ${hasMapAndPaper ? "bg-indigo-600 hover:bg-indigo-500 text-white cursor-pointer" : "bg-zinc-850 text-zinc-600 cursor-not-allowed"}`}
+              >
+                +1 Localizador
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderMapModal = () => {
+    if (!isMapOpen) return null;
+
+    // Build an 11x11 matrix representing surrounding blocks using live activePlayerPosRef
+    const livePos = activePlayerPosRef.current || playerPos;
+    const radius = 5;
+    const px = Math.round(livePos.x);
+    const pz = Math.round(livePos.z);
+    
+    // We will query edits first or assume a beautiful procedural layout
+    const rows = [];
+    for (let dx = -radius; dx <= radius; dx++) {
+      const cols = [];
+      for (let dz = -radius; dz <= radius; dz++) {
+        const targetX = px + dx;
+        const targetZ = pz + dz;
+        const editKey = `${targetX},${Math.round(livePos.y - 1.5)},${targetZ}`;
+        const editKeyNether = `nether:${targetX},${Math.round(livePos.y - 1.5)},${targetZ}`;
+        
+        let blockType = BlockType.AIR;
+        if (currentWorld) {
+          blockType = currentWorld.edits[dimension === "nether" ? editKeyNether : editKey] ?? BlockType.AIR;
+        }
+
+        if (blockType === BlockType.AIR) {
+          // Fallback to biome base block
+          if (dimension === "nether") {
+            blockType = BlockType.NETHERRACK;
+          } else {
+            const hInfo = Math.floor(Math.sin(targetX * 0.05) * 4 + 60);
+            blockType = hInfo < 57 ? BlockType.SAND : BlockType.GRASS;
+          }
+        }
+        cols.push({ x: targetX, z: targetZ, type: blockType });
+      }
+      rows.push(cols);
+    }
+
+    return (
+      <div className="fixed inset-0 z-[150] bg-black/90 backdrop-blur-md flex flex-col items-center justify-center p-4 sm:p-6 overflow-y-auto">
+        <div className="bg-zinc-900 border-2 border-emerald-500/40 rounded-3xl p-6 max-w-md w-full shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+          <div className="fixed top-6 right-6">
+            <button
+              onClick={() => setIsMapOpen(false)}
+              className="bg-zinc-800 hover:bg-zinc-700 text-zinc-400 w-10 h-10 rounded-full flex items-center justify-center border border-white/5"
+            >
+              <i className="fas fa-times text-sm" />
+            </button>
+          </div>
+          <div className="flex justify-between items-center border-b border-white/10 pb-3 mb-5">
+            <h3 className="text-white text-lg font-bold minecraft-font flex items-center gap-2 uppercase tracking-wide">
+              <i className="fas fa-map-location-dot text-emerald-400 animate-pulse" />
+              <span>Mapa Localizador HUD</span>
+            </h3>
+          </div>
+
+          <div className="bg-zinc-950 p-4 rounded-2xl border border-white/5 flex flex-col items-center gap-4">
+            <span className="text-[10px] text-zinc-500 font-mono font-bold">X: {px} | Z: {pz} | {dimension.toUpperCase()}</span>
+            
+            {/* Visual Radar grid */}
+            <div className="grid grid-cols-11 gap-1 bg-zinc-900 p-2 rounded-xl border border-zinc-800 shadow-inner relative">
+              {rows.map((row, rIdx) => 
+                row.map((col, cIdx) => {
+                  const isCenter = rIdx === 5 && cIdx === 5;
+                  let colorClass = "bg-zinc-800";
+                  if (col.type === BlockType.GRASS || col.type === BlockType.MOSS || col.type === BlockType.DARK_GRASS) colorClass = "bg-emerald-600";
+                  else if (col.type === BlockType.WATER) colorClass = "bg-blue-600";
+                  else if (col.type === BlockType.SAND) colorClass = "bg-yellow-100";
+                  else if (col.type === BlockType.STONE) colorClass = "bg-zinc-500";
+                  else if (col.type === BlockType.WOOD || col.type === BlockType.LOG) colorClass = "bg-amber-800";
+                  else if (col.type === BlockType.NETHERRACK || col.type === BlockType.LAVA || col.type === BlockType.FIRE) colorClass = "bg-red-700";
+
+                  return (
+                    <div
+                      key={`${rIdx}-${cIdx}`}
+                      className={`w-6 h-6 rounded flex items-center justify-center text-[7px] font-bold ${colorClass} ${isCenter ? "outline-2 outline-yellow-400 ring-1 ring-yellow-400 z-10 scale-105" : ""}`}
+                      title={`Coord: [${col.x}, ${col.z}]`}
+                    >
+                      {isCenter && (
+                        <i className="fas fa-location-arrow text-yellow-300 text-xs animate-pulse" />
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            <div className="text-[9px] text-zinc-400 font-mono flex items-center justify-center gap-3">
+              <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-emerald-600 inline-block" /> Césped</span>
+              <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-blue-600 inline-block" /> Agua</span>
+              <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-yellow-100 inline-block" /> Arena</span>
+              <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-red-700 inline-block" /> Nether</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const maxAbsCoord = Math.max(Math.abs(playerPos.x), Math.abs(playerPos.z));
 
   return (
     <div
-      className={`w-full h-full relative overflow-hidden bg-black touch-none ${maxAbsCoord >= 2000 ? "glitch-heavy" : maxAbsCoord >= 1500 ? "glitch-moderate" : ""}`}
+      className={`fixed inset-0 w-full h-full overflow-hidden touch-none ${dimension === "nether" ? "bg-[#240606]" : "bg-[#87ceeb]"} ${maxAbsCoord >= 2000 ? "glitch-heavy" : maxAbsCoord >= 1500 ? "glitch-moderate" : ""}`}
+      onContextMenu={(e) => e.preventDefault()}
       onMouseDown={handleTouchStart}
       onMouseMove={handleTouchMove}
       onMouseUp={handleTouchEnd}
+      onMouseLeave={handleTouchEnd}
       onTouchStart={handleTouchStart}
       onTouchMove={handleTouchMove}
       onTouchEnd={handleTouchEnd}
@@ -4507,12 +8461,16 @@ const App: React.FC = () => {
           <div className="absolute bottom-[20%] right-[10%] w-36 h-36 bg-red-500/10 mix-blend-color-dodge blur-xl animate-pulse" />
         </div>
       )}
+      {isUnderwater && !isSpectatorMode && (
+        <div className="absolute inset-0 pointer-events-none z-[50] bg-gradient-to-b from-cyan-500/25 via-sky-700/35 to-blue-950/50 transition-opacity duration-300" />
+      )}
       <VoxelWorld
         key={(currentWorld?.id || "temp") + "_" + dimension}
         currentBlock={currentBlock}
         playerPos={playerPos}
         onBlockChange={handlePosChange}
-        moveVector={moveVector}
+        moveVector={staticZeroMoveVector}
+        externalMoveVectorRef={moveVectorRef}
         lookOffsetRef={lookOffsetRef}
         interactionMode={interactionMode}
         isJumping={isJumping}
@@ -4521,16 +8479,16 @@ const App: React.FC = () => {
         isZooming={isZooming}
         ultraOptimization={ultraOptimization}
         worldId={currentWorld?.id || "temp"}
-        initialEdits={getDimensionEdits()}
+        initialEdits={dimensionEdits}
         onBlockEdit={handleBlockEdit}
         onSelectBlock={setCurrentBlock}
         worldType={currentWorld?.worldType || "normal"}
         gameMode={currentWorld?.gameMode || "survival"}
-        onOpenCraftingTable={() => {
-          setIsCraftingTableActive(true);
-          setInventoryTab("crafting");
-          setIsInventoryOpen(true);
-        }}
+        onOpenCraftingTable={handleOpenCraftingTable}
+        onOpenFurnace={handleOpenFurnace}
+        onOpenCartographyTable={handleOpenCartographyTable}
+        onOpenChest={handleOpenChest}
+        onUseMap={handleUseMap}
         survivalInventory={survivalInventory}
         onUpdateSurvivalInventory={setSurvivalInventory}
         weather={weather}
@@ -4540,6 +8498,20 @@ const App: React.FC = () => {
         userRole={userRole}
         biomeConfig={biomeConfig}
         activePlayers={activePlayers}
+        noiseConfig={noiseConfig}
+        perfConfig={perfConfig}
+        attackTrigger={attackTrigger}
+        placeTrigger={placeTrigger}
+        buildBrush={buildBrush}
+        characterSkin={characterSkin}
+        customSkin={characterSkin === "custom" ? customSkin : undefined}
+        playerPoseRef={activePlayerPoseRef}
+        aiCompanionConfig={aiCompanionConfig}
+        aiCompanionTpTrigger={aiCompanionTpTrigger}
+        aiCompanionPosRef={aiCompanionPosRef}
+        aiCompanionBagRef={aiCompanionBagRef}
+        onAICompanionBuildComplete={handleCompanionBuildComplete}
+        onAICompanionSpeak={handleCompanionSpeak}
       />
 
       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none opacity-30">
@@ -4549,10 +8521,10 @@ const App: React.FC = () => {
       </div>
 
       <div className={`absolute inset-0 pointer-events-none flex flex-col justify-between transition-all duration-300 ${uiScaleConfig.containerPadding}`}>
-        <div className="flex justify-between items-start w-full">
+        <div className="flex justify-between items-start w-full mt-14 sm:mt-12">
           <div className="flex flex-col gap-2 items-start max-w-[280px]">
             <div
-              className={`bg-black/70 rounded-xl backdrop-blur-md border border-white/10 pointer-events-auto transition-all duration-300 ${uiScaleConfig.statsPadding}`}
+              className={`bg-black/80 rounded-xl border border-white/15 pointer-events-auto transition-all duration-300 ${uiScaleConfig.statsPadding}`}
               onPointerDown={(e) => e.stopPropagation()}
               onTouchStart={(e) => e.stopPropagation()}
             >
@@ -4656,6 +8628,23 @@ const App: React.FC = () => {
             <button
               onClick={() => {
                 resumeAudio();
+                setIsCompanionPanelOpen((prev) => !prev);
+              }}
+              onPointerDown={(e) => e.stopPropagation()}
+              onTouchStart={(e) => e.stopPropagation()}
+              className={`${
+                aiCompanionConfig.enabled
+                  ? "bg-cyan-600/95 hover:bg-cyan-500 border-cyan-300/60"
+                  : "bg-zinc-800/95 hover:bg-zinc-700 border-white/10"
+              } rounded-2xl shadow-xl active:scale-90 text-white flex items-center justify-center transition-all border ${uiScaleConfig.btnSize}`}
+              title={lang === "es" ? "Amigo IA" : "AI Friend"}
+              id="hud-ai-companion-btn"
+            >
+              <i className={`fas fa-robot ${aiCompanionConfig.enabled ? "text-cyan-100" : "text-cyan-400"} ${uiScaleConfig.btnIcon}`} />
+            </button>
+            <button
+              onClick={() => {
+                resumeAudio();
                 setIsChatOpen(true);
               }}
               onPointerDown={(e) => e.stopPropagation()}
@@ -4679,37 +8668,129 @@ const App: React.FC = () => {
             >
               <i className={`fas fa-cog text-emerald-400 ${uiScaleConfig.btnIcon}`} />
             </button>
+            <button
+              onClick={() => {
+                resumeAudio();
+                setIsGameMenuOpen(true);
+              }}
+              onPointerDown={(e) => e.stopPropagation()}
+              onTouchStart={(e) => e.stopPropagation()}
+              className={`bg-zinc-800/95 hover:bg-zinc-700 rounded-2xl shadow-xl active:scale-90 text-white flex items-center justify-center transition-all border border-amber-500/40 ${uiScaleConfig.btnSize}`}
+              title="Pausa y Menú"
+              id="hud-pause-btn"
+            >
+              <i className={`fas fa-pause text-amber-400 ${uiScaleConfig.btnIcon}`} />
+            </button>
           </div>
         </div>
+
+        {/* Compact AI Companion Quick Panel */}
+        {isCompanionPanelOpen && (
+          <div
+            onPointerDown={(e) => e.stopPropagation()}
+            onPointerMove={(e) => e.stopPropagation()}
+            onPointerUp={(e) => e.stopPropagation()}
+            onTouchStart={(e) => e.stopPropagation()}
+            onTouchMove={(e) => e.stopPropagation()}
+            onTouchEnd={(e) => e.stopPropagation()}
+            className="pointer-events-auto self-end mr-2 bg-zinc-950/95 backdrop-blur-md border border-cyan-500/40 rounded-2xl p-3 w-72 shadow-2xl text-white flex flex-col gap-2"
+          >
+            <div className="flex items-center justify-between border-b border-white/10 pb-1.5">
+              <div className="flex items-center gap-2">
+                <span className="text-sm">🤖</span>
+                <span className="text-xs font-black uppercase tracking-wider text-cyan-300 truncate max-w-[130px]">
+                  {aiCompanionConfig.name || "Alex IA"}
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setAiCompanionConfig((prev) => ({ ...prev, enabled: !prev.enabled }))}
+                  className={`px-2 py-0.5 rounded text-[9px] font-black uppercase transition ${
+                    aiCompanionConfig.enabled ? "bg-rose-600 text-white" : "bg-cyan-600 text-white"
+                  }`}
+                >
+                  {aiCompanionConfig.enabled ? "OFF" : "ON"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsCompanionPanelOpen(false)}
+                  className="text-zinc-400 hover:text-white px-1 text-xs"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-1">
+              {([
+                { id: "follow", label: "🤝 Seguir" },
+                { id: "gather", label: "⛏️ Minar" },
+                { id: "build", label: "🏠 Casa" },
+                { id: "guard", label: "⚔️ Defensa" },
+                { id: "explore", label: "🧭 Explorar" },
+                { id: "stay", label: "🛑 Esperar" },
+              ] as { id: AICompanionMode; label: string }[]).map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  onClick={() => setAiCompanionConfig((prev) => ({ ...prev, enabled: true, mode: m.id }))}
+                  className={`px-1.5 py-1.5 rounded-lg text-[10px] font-bold transition active:scale-95 ${
+                    aiCompanionConfig.enabled && aiCompanionConfig.mode === m.id
+                      ? "bg-emerald-600 text-white border border-emerald-400/50"
+                      : "bg-zinc-900 text-zinc-300 border border-white/10 hover:bg-zinc-800"
+                  }`}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex gap-1.5">
+              <button
+                type="button"
+                onClick={() => {
+                  setAiCompanionConfig((prev) => ({ ...prev, enabled: true }));
+                  setAiCompanionTpTrigger((t) => t + 1);
+                }}
+                className="flex-1 bg-sky-600 hover:bg-sky-500 text-white text-[10px] font-bold py-1.5 rounded-lg transition active:scale-95"
+              >
+                📍 Venir aquí
+              </button>
+              <button
+                type="button"
+                onClick={handleShareCompanionBag}
+                className="flex-1 bg-amber-600 hover:bg-amber-500 text-white text-[10px] font-bold py-1.5 rounded-lg transition active:scale-95"
+              >
+                🎁 Dar bloques
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className={`flex justify-between items-end transition-all duration-300 w-full ${uiScaleConfig.gapClass} ${uiScaleConfig.marginClass}`}>
           {showTouchControls ? (
             <div
-              className={`pointer-events-auto flex items-end ${uiScaleConfig.gapClass}`}
+              className="pointer-events-auto flex items-end mb-2 select-none"
+              style={{ touchAction: "none" }}
               onPointerDown={(e) => e.stopPropagation()}
+              onPointerMove={(e) => e.stopPropagation()}
+              onPointerUp={(e) => e.stopPropagation()}
+              onPointerCancel={(e) => e.stopPropagation()}
               onTouchStart={(e) => e.stopPropagation()}
+              onTouchMove={(e) => e.stopPropagation()}
+              onTouchEnd={(e) => e.stopPropagation()}
+              onTouchCancel={(e) => e.stopPropagation()}
             >
               <Joystick
-                onMove={setMoveVector}
-                onEnd={() => setMoveVector({ x: 0, y: 0 })}
+                onMove={handleJoystickMove}
+                onEnd={handleJoystickEnd}
                 size={uiScaleConfig.joystickSize}
               />
-              <button
-                onPointerDown={(e) => { e.stopPropagation(); setIsJumping(true); }}
-                onPointerUp={(e) => { e.stopPropagation(); setIsJumping(false); }}
-                onPointerCancel={(e) => { e.stopPropagation(); setIsJumping(false); }}
-                onTouchStart={(e) => { e.preventDefault(); e.stopPropagation(); setIsJumping(true); }}
-                onTouchEnd={(e) => { e.preventDefault(); e.stopPropagation(); setIsJumping(false); }}
-                onTouchCancel={(e) => { e.preventDefault(); e.stopPropagation(); setIsJumping(false); }}
-                className={`${uiScaleConfig.jumpButtonSize} rounded-full bg-white/25 border-2 border-white/60 flex items-center justify-center active:bg-white/50 active:scale-95 transition-all mb-2 select-none pointer-events-auto touch-none`}
-                style={{ touchAction: "none" }}
-              >
-                <i className="fas fa-arrow-up text-white/90 text-2xl animate-pulse" />
-              </button>
             </div>
           ) : (
             <div
-              className="pointer-events-auto flex flex-col gap-2 bg-black/60 backdrop-blur-md p-4 rounded-2xl border border-white/10 text-white select-none max-w-xs transition-all mb-2"
+              className="pointer-events-auto flex flex-col gap-2 bg-black/80 p-4 rounded-2xl border border-white/15 text-white select-none max-w-xs transition-all mb-2"
               onPointerDown={(e) => e.stopPropagation()}
               onTouchStart={(e) => e.stopPropagation()}
             >
@@ -4750,19 +8831,62 @@ const App: React.FC = () => {
           )}
 
           <div className="flex flex-col gap-5 items-center pointer-events-none">
-            {/* HUD de Vida y Comida movido arriba */}
+            {/* HUD de Oxígeno, Vida y Comida */}
             <div
               className="flex flex-col gap-1 items-center drop-shadow-md w-full px-2 mb-2 pointer-events-auto"
               onPointerDown={(e) => e.stopPropagation()}
               onTouchStart={(e) => e.stopPropagation()}
             >
-              <div className="flex gap-1 justify-center w-full">
-                {[...Array(10)].map((_, i) => (
-                  <i
-                    key={`h${i}`}
-                    className={`fas fa-heart text-sm ${i < Math.ceil(health / 2) ? "text-red-500" : "text-red-950 opacity-50"}`}
-                  />
-                ))}
+              {(isInWater || air < 20) && !isCreativeMode && !isSpectatorMode && (
+                <div className="flex gap-1 justify-center items-center w-full mb-0.5">
+                  {aquaticPerk ? (
+                    <span className="text-[9px] font-mono font-black text-cyan-300 bg-cyan-950/75 border border-cyan-400/50 px-2 py-0.5 rounded-full flex items-center gap-1 shadow">
+                      <i className="fas fa-water text-cyan-400" />
+                      <span>{lang === "es" ? "Branquias Poseidón (Oxígeno ∞)" : "Poseidon Gills (∞ O₂)"}</span>
+                    </span>
+                  ) : (
+                    [...Array(10)].map((_, i) => {
+                      const bubbleThreshold = (i + 1) * 2;
+                      const filled = air >= bubbleThreshold;
+                      const half = !filled && air >= bubbleThreshold - 1;
+                      return (
+                        <i
+                          key={`air${i}`}
+                          className={`fas fa-droplet text-xs transition-all duration-150 ${
+                            filled
+                              ? "text-cyan-400 drop-shadow-[0_0_5px_rgba(34,211,238,0.85)]"
+                              : half
+                                ? "text-cyan-300/70 scale-90"
+                                : "text-sky-950/70 opacity-40 scale-75"
+                          }`}
+                        />
+                      );
+                    })
+                  )}
+                </div>
+              )}
+              <div className="flex gap-1 justify-center w-full relative">
+                {[...Array(10)].map((_, i) => {
+                  const isHeartFilled = i < Math.ceil(health / 2);
+                  const isRegenTarget = isRegenerating && i === Math.ceil(health / 2) - 1;
+                  return (
+                    <i
+                      key={`h${i}`}
+                      className={`fas fa-heart text-sm transition-all duration-200 ${
+                        isHeartFilled
+                          ? isRegenerating 
+                            ? "text-red-500 animate-pulse drop-shadow-[0_0_6px_rgba(239,68,68,0.7)]" 
+                            : "text-red-500"
+                          : "text-red-950 opacity-50"
+                      } ${isRegenTarget ? "scale-110" : ""}`}
+                    />
+                  );
+                })}
+                {isRegenerating && (
+                  <span className="absolute -top-3.5 right-0 text-[8px] font-mono font-bold text-emerald-400 bg-black/60 px-1.5 py-0.2 rounded-full border border-emerald-400/40 animate-pulse flex items-center gap-1 shadow-sm">
+                    <i className="fas fa-sparkles text-[7px]" /> +VIDA
+                  </span>
+                )}
               </div>
               <div className="flex gap-1 justify-center w-full">
                 {[...Array(10)].map((_, i) => (
@@ -4808,37 +8932,100 @@ const App: React.FC = () => {
                 </div>
               )}
 
+              {/* Build Assist Toolbar: Mode Toggle (Break/Place) & Rapid Brush (1x1 / Row x3 / Wall 3x2) */}
+              <div className="flex flex-wrap items-center justify-center gap-1.5 bg-black/75 border border-white/10 px-2 py-1 rounded-xl shadow-lg pointer-events-auto">
+                <button
+                  type="button"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    resumeAudio();
+                    setInteractionMode((prev) => (prev === "place" ? "break" : "place"));
+                  }}
+                  className={`px-2 py-0.5 rounded-lg text-[9px] font-black uppercase tracking-wide flex items-center gap-1 border transition cursor-pointer ${
+                    interactionMode === "place"
+                      ? "bg-emerald-600/80 border-emerald-400 text-white"
+                      : "bg-red-600/80 border-red-400 text-white"
+                  }`}
+                  title={lang === "es" ? "Cambiar acción al tocar pantalla" : "Toggle tap action"}
+                >
+                  <i className={`fas ${interactionMode === "place" ? "fa-cubes" : "fa-hammer"} text-[9px]`} />
+                  <span>{interactionMode === "place" ? (lang === "es" ? "Poner" : "Place") : (lang === "es" ? "Romper" : "Break")}</span>
+                </button>
+
+                <div className="w-px h-3.5 bg-white/15" />
+
+                {([
+                  { id: "single", label: "1x1" },
+                  { id: "line3", label: lang === "es" ? "Fila x3" : "Row x3" },
+                  { id: "wall3x2", label: lang === "es" ? "Pared 3x2" : "Wall 3x2" },
+                ] as const).map((b) => (
+                  <button
+                    key={b.id}
+                    type="button"
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      resumeAudio();
+                      setBuildBrush(b.id);
+                    }}
+                    className={`px-2 py-0.5 rounded-lg text-[9px] font-bold uppercase transition cursor-pointer ${
+                      buildBrush === b.id
+                        ? "bg-amber-500 text-zinc-950 font-black shadow"
+                        : "bg-zinc-900/90 text-zinc-300 hover:text-white border border-white/10"
+                    }`}
+                  >
+                    {b.label}
+                  </button>
+                ))}
+              </div>
+
               {/* Advanced Horizontal Swipeable Scroll Hotbar */}
               <div className="bg-black/80 p-1.5 rounded-2xl flex flex-row items-center gap-1.5 border border-white/10 shadow-2xl min-w-0 max-w-[170px] xs:max-w-[230px] sm:max-w-[320px] md:max-w-[420px] lg:max-w-[500px] pointer-events-auto">
                 <div 
                   className="flex flex-row gap-1.5 overflow-x-auto scrollbar-none py-0.5 px-0.5 min-w-0" 
                   style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
                 >
-                  {inventoryItems.map((type) => (
-                    <button
-                      key={type}
-                      onPointerDown={(e) => {
-                        e.stopPropagation();
-                        resumeAudio();
-                        setCurrentBlock(type);
-                        setInteractionMode("place");
-                      }}
-                      onTouchStart={(e) => {
-                        e.stopPropagation();
-                        resumeAudio();
-                        setCurrentBlock(type);
-                        setInteractionMode("place");
-                      }}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        resumeAudio();
-                        setCurrentBlock(type);
-                        setInteractionMode("place");
-                      }}
-                      className={`w-9 h-9 sm:w-10 sm:h-10 rounded-lg border-2 transition-all shrink-0 ${currentBlock === type ? "border-emerald-400 scale-105" : "border-transparent opacity-60"}`}
-                      style={{ backgroundColor: BLOCK_COLORS[type] }}
-                    />
-                  ))}
+                  {inventoryItems.map((type) => {
+                    const count = survivalInventory[type];
+                    return (
+                      <div key={type} className="relative shrink-0">
+                        <button
+                          onPointerDown={(e) => {
+                            e.stopPropagation();
+                            resumeAudio();
+                            setCurrentBlock(type);
+                            setInteractionMode("place");
+                          }}
+                          onTouchStart={(e) => {
+                            e.stopPropagation();
+                            resumeAudio();
+                            setCurrentBlock(type);
+                            setInteractionMode("place");
+                          }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            resumeAudio();
+                            setCurrentBlock(type);
+                            setInteractionMode("place");
+                          }}
+                          className={`w-9 h-9 sm:w-10 sm:h-10 rounded-lg border-2 transition-all block p-0.5 ${
+                            currentBlock === type ? "border-emerald-400 scale-105 shadow-md shadow-emerald-500/20" : "border-transparent opacity-75 hover:opacity-100"
+                          }`}
+                          title={BLOCK_NAMES[type]}
+                        >
+                          <ItemVisualBadge type={type} className="w-full h-full" />
+                        </button>
+                        {!isCreativeMode && typeof count === "number" && (
+                          <span className={`absolute -bottom-1 -right-1 text-[7.5px] font-mono font-black px-1 rounded shadow pointer-events-none select-none border border-white/10 ${
+                            count > 0 ? "bg-black/90 text-white" : "bg-red-950/90 text-red-300"
+                          }`}>
+                            {count}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
                 <div className="w-px h-6 bg-white/10 shrink-0" />
                 <button
@@ -4856,6 +9043,98 @@ const App: React.FC = () => {
               </div>
             </div>
           </div>
+
+          {/* Action cluster on mobile: Build/Place, Attack/Break, and Jump buttons */}
+          {showTouchControls ? (
+            <div
+              className="pointer-events-auto flex flex-col gap-2.5 items-center mb-2 select-none"
+              onPointerDown={(e) => e.stopPropagation()}
+              onTouchStart={(e) => e.stopPropagation()}
+            >
+              {/* Boton Dedicado de Construir / Colocar / Abrir */}
+              <button
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  startContinuousPlace();
+                }}
+                onPointerUp={(e) => {
+                  e.stopPropagation();
+                  stopContinuousPlace();
+                }}
+                onPointerCancel={(e) => {
+                  e.stopPropagation();
+                  stopContinuousPlace();
+                }}
+                onPointerLeave={stopContinuousPlace}
+                onTouchStart={(e) => {
+                  e.stopPropagation();
+                }}
+                onTouchEnd={(e) => {
+                  e.stopPropagation();
+                  stopContinuousPlace();
+                }}
+                onTouchCancel={(e) => {
+                  e.stopPropagation();
+                  stopContinuousPlace();
+                }}
+                className={`${uiScaleConfig.jumpButtonSize} rounded-full bg-gradient-to-tr from-emerald-600/95 to-teal-500/95 border-2 border-emerald-300/90 shadow-lg shadow-emerald-500/30 flex flex-col items-center justify-center active:scale-90 active:brightness-125 transition-all select-none pointer-events-auto touch-none ring-2 ring-black/40`}
+                style={{ touchAction: "none" }}
+                title="Colocar Bloque / Construir (Mantener para construir rápido)"
+                aria-label="Construir"
+              >
+                <i className="fas fa-cubes text-white text-lg drop-shadow-md" />
+                <span className="text-[7px] font-black text-white uppercase leading-none mt-0.5">
+                  {lang === "es" ? "Poner" : "Build"}
+                </span>
+              </button>
+
+              {/* Boton de Ataque / Romper */}
+              <button
+                onPointerDown={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  handleAttack();
+                }}
+                onTouchStart={(e) => {
+                  e.stopPropagation();
+                }}
+                className={`${uiScaleConfig.jumpButtonSize} rounded-full bg-gradient-to-tr from-amber-600/90 to-red-500/90 border-2 border-amber-300/80 shadow-lg shadow-red-500/30 flex items-center justify-center active:scale-90 active:brightness-125 transition-all select-none pointer-events-auto touch-none ring-2 ring-black/40`}
+                style={{ touchAction: "none" }}
+                title="Atacar / Romper"
+                aria-label="Atacar"
+              >
+                <i className="fas fa-hand-back-fist text-white text-xl drop-shadow-md" />
+              </button>
+
+              {/* Boton de Salto / Nado */}
+              <button
+                onPointerDown={(e) => { e.stopPropagation(); setIsJumping(true); }}
+                onPointerUp={(e) => { e.stopPropagation(); setIsJumping(false); }}
+                onPointerCancel={(e) => { e.stopPropagation(); setIsJumping(false); }}
+                onTouchStart={(e) => { e.preventDefault(); e.stopPropagation(); setIsJumping(true); }}
+                onTouchEnd={(e) => { e.preventDefault(); e.stopPropagation(); setIsJumping(false); }}
+                onTouchCancel={(e) => { e.preventDefault(); e.stopPropagation(); setIsJumping(false); }}
+                className={`${uiScaleConfig.jumpButtonSize} rounded-full border-2 shadow-lg flex flex-col items-center justify-center active:scale-90 transition-all select-none pointer-events-auto touch-none ring-2 ring-black/40 ${
+                  isInWater
+                    ? "bg-gradient-to-tr from-cyan-600/90 to-sky-500/90 border-cyan-300 shadow-cyan-500/40"
+                    : "bg-zinc-900/65 border-white/80 active:bg-white/60"
+                }`}
+                style={{ touchAction: "none" }}
+                title={isInWater ? (lang === "es" ? "Nadar hacia arriba" : "Swim up") : "Saltar"}
+                aria-label={isInWater ? "Nadar" : "Saltar"}
+              >
+                <i className={`fas ${isInWater ? "fa-water" : "fa-arrow-up"} text-white text-xl font-black drop-shadow`} />
+                {isInWater && (
+                  <span className="text-[7px] font-black text-white uppercase leading-none mt-0.5">
+                    {lang === "es" ? "Nadar ▲" : "Swim ▲"}
+                  </span>
+                )}
+              </button>
+            </div>
+          ) : (
+            <div className="w-10 sm:w-16 pointer-events-none" />
+          )}
         </div>
       </div>
 
@@ -4933,229 +9212,358 @@ const App: React.FC = () => {
             </button>
           </div>
 
-          {/* Tab 1: Bloques y Objetos */}
+          {/* Tab 1: Bloques y Objetos con Categorías y Búsqueda */}
           {inventoryTab === "items" && (
             <div className="w-full max-w-3xl flex flex-col">
-              {!isCreativeMode && Object.keys(survivalInventory).filter(k => survivalInventory[parseInt(k)] > 0).length === 0 ? (
-                <div className="bg-zinc-900/50 border border-zinc-800 rounded-3xl p-8 text-center flex flex-col items-center max-w-md mx-auto my-6">
-                  <i className="fas fa-box-open text-zinc-600 text-4xl mb-4" />
-                  <h3 className="text-white font-bold text-lg mb-2">¡Tu Inventario está Vacío!</h3>
-                  <p className="text-zinc-500 text-xs leading-relaxed">
-                    Rompe bloques en el mundo (como Tierra o Troncos de Madera) para empezar a recolectar materiales rápidamente.
-                  </p>
+              {/* Category Pills & Search */}
+              <div className="flex flex-col gap-2 mb-4 w-full">
+                {/* Search Bar */}
+                <div className="relative w-full">
+                  <i className="fas fa-search absolute left-3.5 top-3 text-zinc-500 text-xs" />
+                  <input
+                    type="text"
+                    placeholder={lang === "es" ? "Buscar por nombre (ej. madera, antorcha, diamante)..." : "Search item by name..."}
+                    value={inventorySearch}
+                    onChange={(e) => setInventorySearch(e.target.value)}
+                    className="w-full bg-zinc-900 border border-white/10 rounded-xl pl-9 pr-8 py-2 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-emerald-500 font-mono"
+                  />
+                  {inventorySearch && (
+                    <button
+                      onClick={() => setInventorySearch("")}
+                      className="absolute right-3 top-2.5 text-zinc-400 hover:text-white text-xs"
+                    >
+                      <i className="fas fa-times" />
+                    </button>
+                  )}
                 </div>
-              ) : (
-                <div className="grid grid-cols-3 sm:grid-cols-5 md:grid-cols-6 gap-3 sm:gap-4 pb-10">
-                  {Object.keys(BLOCK_NAMES).map((k) => {
-                    const tVal = parseInt(k);
-                    if (tVal === 0) return null;
 
-                    // If survival mode, hide blocks they don't have
-                    if (!isCreativeMode) {
-                      const qty = survivalInventory[tVal] || 0;
-                      if (qty <= 0) return null;
-                    }
+                {/* Subcategory Filter Buttons */}
+                <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-none w-full">
+                  {[
+                    { id: "all", label: lang === "es" ? "📦 Todos" : "📦 All" },
+                    { id: "building", label: lang === "es" ? "🧱 Construcción" : "🧱 Building" },
+                    { id: "nature", label: lang === "es" ? "🌿 Naturaleza & Minerales" : "🌿 Nature & Ores" },
+                    { id: "tools", label: lang === "es" ? "⚔️ Herramientas & Utilidad" : "⚔️ Tools & Utility" },
+                  ].map((cat) => (
+                    <button
+                      key={cat.id}
+                      onClick={() => setInventoryCategory(cat.id as any)}
+                      className={`px-3 py-1.5 rounded-xl text-[10px] sm:text-xs font-bold whitespace-nowrap transition border ${
+                        inventoryCategory === cat.id
+                          ? "bg-emerald-600/40 border-emerald-400 text-white shadow-md shadow-emerald-500/20 font-black"
+                          : "bg-zinc-900 border-white/5 text-zinc-400 hover:text-white hover:bg-zinc-800"
+                      }`}
+                    >
+                      {cat.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
 
-                    const isSelected = currentBlock === tVal;
-                    const blockCount = survivalInventory[tVal] || 0;
+              {/* Items Grid */}
+              <div className="grid grid-cols-3 sm:grid-cols-5 md:grid-cols-6 gap-2.5 sm:gap-3.5 pb-10">
+                {Object.keys(BLOCK_NAMES).map((k) => {
+                  const tVal = parseInt(k) as BlockType;
+                  if (tVal === 0) return null;
 
-                    return (
-                      <button
-                        key={tVal}
-                        onPointerDown={(e) => e.stopPropagation()}
-                        onTouchStart={(e) => e.stopPropagation()}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          resumeAudio();
-                          setCurrentBlock(tVal);
-                          setIsInventoryOpen(false);
-                          setIsCraftingTableActive(false);
-                        }}
-                        className={`aspect-square bg-zinc-900/60 rounded-2xl border-2 p-2 flex flex-col items-center justify-between transition-all active:scale-95 text-center relative group overflow-hidden ${
-                          isSelected
-                            ? "border-emerald-500 bg-emerald-950/20 shadow-md shadow-emerald-500/10"
-                            : "border-zinc-800 hover:border-zinc-700"
-                        }`}
-                      >
-                        {/* 3D Color representation inside slot */}
-                        <div
-                          className="w-full h-11 sm:h-12 rounded-lg shadow-inner flex-shrink-0 transition group-hover:scale-105"
-                          style={{ backgroundColor: BLOCK_COLORS[tVal as BlockType] }}
-                        />
+                  const blockName = BLOCK_NAMES[tVal] || "";
+                  // Search query filter
+                  if (inventorySearch && !blockName.toLowerCase().includes(inventorySearch.toLowerCase())) {
+                    return null;
+                  }
 
-                        <span className="text-[9px] text-zinc-300 font-bold uppercase truncate w-full mt-2">
-                          {BLOCK_NAMES[tVal as BlockType]}
+                  // Category filter
+                  const isToolOrUtility = 
+                    isUiToolBlock(tVal) ||
+                    tVal === BlockType.TORCH || tVal === BlockType.BED || tVal === BlockType.CRAFTING_TABLE || tVal === BlockType.FURNACE ||
+                    tVal === BlockType.CHEST || tVal === BlockType.CARTOGRAPHY_TABLE || tVal === BlockType.BUCKET_EMPTY ||
+                    tVal === BlockType.BUCKET_WATER || tVal === BlockType.BUCKET_LAVA || tVal === BlockType.FLINT_AND_STEEL ||
+                    tVal === BlockType.MAP || tVal === BlockType.LOCATOR_MAP || tVal === BlockType.DOOR || tVal === BlockType.JUKEBOX ||
+                    tVal === BlockType.MUSIC_DISC_CAT || tVal === BlockType.MUSIC_DISC_CHIRP || tVal === BlockType.MUSIC_DISC_BLOCKS || tVal === BlockType.MUSIC_DISC_MELLOHI;
+
+                  const isNatureOrOre = 
+                    tVal === BlockType.DIRT || tVal === BlockType.GRASS || tVal === BlockType.LEAVES || tVal === BlockType.FLOWER_RED ||
+                    tVal === BlockType.FLOWER_YELLOW || tVal === BlockType.MUSHROOM_RED || tVal === BlockType.MUSHROOM_BROWN ||
+                    tVal === BlockType.WATER || tVal === BlockType.LAVA || tVal === BlockType.OBSIDIAN || tVal === BlockType.COAL_ORE ||
+                    tVal === BlockType.IRON_ORE || tVal === BlockType.GOLD_ORE || tVal === BlockType.REDSTONE_ORE ||
+                    tVal === BlockType.DIAMOND_ORE || tVal === BlockType.NETHER_QUARTZ_ORE || tVal === BlockType.SULFUR ||
+                    tVal === BlockType.REDSTONE || tVal === BlockType.SUGAR_CANE || tVal === BlockType.BAMBOO ||
+                    tVal === BlockType.CHICKEN_EGG || tVal === BlockType.FROG_EGGS || tVal === BlockType.DARK_LEAVES ||
+                    tVal === BlockType.DARK_GRASS || tVal === BlockType.CHERRY_LEAVES;
+
+                  const cat = isToolOrUtility ? "tools" : (isNatureOrOre ? "nature" : "building");
+                  if (inventoryCategory !== "all" && inventoryCategory !== cat) {
+                    return null;
+                  }
+
+                  const isSelected = currentBlock === tVal;
+                  const blockCount = isCreativeMode ? 64 : (survivalInventory[tVal] || 0);
+                  const isAvailable = isCreativeMode || blockCount > 0;
+
+                  return (
+                    <button
+                      key={tVal}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onTouchStart={(e) => e.stopPropagation()}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        resumeAudio();
+                        if (!isAvailable) {
+                          setScreenshotToast(lang === "es" ? `Tienes 0 unidades de ${blockName}. Consíguelo o fabrícalo.` : `You have 0 of ${blockName}. Craft or gather it.`);
+                          setTimeout(() => setScreenshotToast(null), 2500);
+                          return;
+                        }
+                        setCurrentBlock(tVal);
+                        setIsInventoryOpen(false);
+                        setIsCraftingTableActive(false);
+                      }}
+                      className={`aspect-square rounded-2xl border-2 p-2 flex flex-col items-center justify-between transition-all active:scale-95 text-center relative group overflow-hidden ${
+                        isSelected
+                          ? "border-emerald-400 bg-emerald-950/40 shadow-lg shadow-emerald-500/20"
+                          : isAvailable
+                            ? "bg-zinc-900/80 border-zinc-700/60 hover:border-zinc-500"
+                            : "bg-zinc-950/40 border-zinc-900 opacity-50 hover:opacity-75"
+                      }`}
+                    >
+                      <div className="w-full h-11 sm:h-12 flex-shrink-0 transition group-hover:scale-105">
+                        <ItemVisualBadge type={tVal} className="w-full h-full" />
+                      </div>
+
+                      <span className="text-[9px] text-zinc-300 font-bold uppercase truncate w-full mt-1.5">
+                        {blockName}
+                      </span>
+
+                      {/* Quantity badge */}
+                      {!isCreativeMode && (
+                        <span className={`absolute top-1.5 right-1.5 font-mono font-black text-[9px] px-1.5 py-0.5 rounded-md border shadow-lg ${
+                          blockCount > 0
+                            ? "bg-zinc-950/95 text-emerald-400 border-emerald-500/30"
+                            : "bg-red-950/90 text-red-300 border-red-500/30"
+                        }`}>
+                          {blockCount}
                         </span>
-
-                        {/* Survival quantity badge */}
-                        {!isCreativeMode && (
-                          <span className="absolute top-1.5 right-1.5 bg-zinc-950/90 text-white font-mono font-bold text-[9px] px-1.5 py-0.5 rounded-md border border-white/10 z-10 shadow-lg">
-                            {blockCount}
-                          </span>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           )}
 
           {/* Tab 2: Crafting Panel */}
           {inventoryTab === "crafting" && (
-            <div className="w-full max-w-3xl grid grid-cols-1 md:grid-cols-12 gap-6 pb-12 items-start">
-              {/* Left Side: Recipe List */}
-              <div className="md:col-span-6 flex flex-col gap-2.5 max-h-[460px] overflow-y-auto pr-1">
-                {CRAFTING_RECIPES.map((recipe) => {
-                  const hasAllMats = recipe.ingredients.every(
-                    (ing) => (survivalInventory[ing.type] || 0) >= ing.count
-                  );
-                  const isLockedByTable = recipe.requiresCraftingTable && !isCraftingTableActive;
-                  const isSelected = selectedRecipeId === recipe.id;
-
-                  return (
+            <div className="w-full max-w-3xl flex flex-col gap-4 pb-12">
+              {/* Filter bar: Search + Category tabs */}
+              <div className="flex flex-col gap-2">
+                <div className="relative w-full">
+                  <i className="fas fa-search absolute left-3.5 top-3 text-zinc-500 text-xs" />
+                  <input
+                    type="text"
+                    placeholder="Buscar receta (ej. pico, espada, diamante, antorcha)..."
+                    value={craftingSearch}
+                    onChange={(e) => setCraftingSearch(e.target.value)}
+                    className="w-full bg-zinc-900 border border-white/10 rounded-xl pl-9 pr-8 py-2 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-emerald-500 font-mono"
+                  />
+                  {craftingSearch && (
                     <button
-                      key={recipe.id}
-                      onClick={() => setSelectedRecipeId(recipe.id)}
-                      className={`w-full p-3 rounded-2xl border-2 text-left flex items-center justify-between transition-all active:scale-[0.98] ${
-                        isSelected
-                          ? "border-emerald-500 bg-emerald-950/20"
-                          : "border-zinc-800 bg-zinc-900/40 hover:border-zinc-700"
+                      onClick={() => setCraftingSearch("")}
+                      className="absolute right-3 top-2.5 text-zinc-400 hover:text-white text-xs"
+                    >
+                      <i className="fas fa-times" />
+                    </button>
+                  )}
+                </div>
+
+                <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-none">
+                  {[
+                    { id: "all", label: "📦 Todas" },
+                    { id: "tools", label: "⚔️ Picos, Espadas y Herramientas" },
+                    { id: "utility", label: "🔥 Antorchas y Utilidad" },
+                    { id: "building", label: "🧱 Construcción" },
+                  ].map((cat) => (
+                    <button
+                      key={cat.id}
+                      onClick={() => setCraftingCategory(cat.id as any)}
+                      className={`px-3 py-1.5 rounded-xl text-[10px] sm:text-xs font-bold whitespace-nowrap transition border ${
+                        craftingCategory === cat.id
+                          ? "bg-emerald-600/40 border-emerald-400 text-white shadow-md shadow-emerald-500/20 font-black"
+                          : "bg-zinc-900 border-white/5 text-zinc-400 hover:text-white hover:bg-zinc-800"
                       }`}
                     >
-                      <div className="flex items-center gap-3 w-10/12">
-                        {/* Resulting block thumbnail preview */}
-                        <div
-                          className="w-8 h-8 rounded-lg shadow-inner flex-shrink-0 border border-white/5"
-                          style={{ backgroundColor: BLOCK_COLORS[recipe.result] }}
-                        />
-                        <div className="flex flex-col truncate">
-                          <span className="text-xs font-bold text-white uppercase tracking-wide">
-                            {recipe.name}
-                          </span>
-                          <span className="text-[10px] text-zinc-400">
-                            Obtienes {recipe.resultCount} unidades
-                          </span>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-1.5 flex-shrink-0">
-                        {isLockedByTable ? (
-                          <span className="bg-zinc-800 text-zinc-500 text-[8px] font-bold uppercase py-0.5 px-1.5 rounded-md border border-zinc-700 flex items-center gap-1">
-                            <i className="fas fa-lock text-[7px]" /> Mesa
-                          </span>
-                        ) : hasAllMats ? (
-                          <span className="bg-emerald-500/20 text-emerald-400 text-[8px] font-bold uppercase py-0.5 px-1.5 rounded-md border border-emerald-500/30">
-                            Listo
-                          </span>
-                        ) : (
-                          <span className="bg-zinc-850 text-zinc-500 text-[8px] font-bold uppercase py-0.5 px-1.5 rounded-md">
-                            Faltan
-                          </span>
-                        )}
-                      </div>
+                      {cat.label}
                     </button>
-                  );
-                })}
+                  ))}
+                </div>
               </div>
 
-              {/* Right Side: Recipe Details View */}
-              <div className="md:col-span-6 bg-zinc-900/40 border-2 border-zinc-800 rounded-3xl p-5 flex flex-col">
-                {(() => {
-                  const activeRecipe =
-                    CRAFTING_RECIPES.find((r) => r.id === selectedRecipeId) ||
-                    CRAFTING_RECIPES[0];
+              <div className="grid grid-cols-1 md:grid-cols-12 gap-6 items-start">
+                {/* Left Side: Recipe List */}
+                <div className="md:col-span-6 flex flex-col gap-2.5 max-h-[440px] overflow-y-auto pr-1">
+                  {CRAFTING_RECIPES.filter((recipe) => {
+                    if (craftingCategory !== "all" && recipe.category !== craftingCategory) return false;
+                    if (craftingSearch && !recipe.name.toLowerCase().includes(craftingSearch.toLowerCase())) return false;
+                    return true;
+                  }).map((recipe) => {
+                    const hasAllMats = isCreativeMode || recipe.ingredients.every(
+                      (ing) => (survivalInventory[ing.type] || 0) >= ing.count
+                    );
+                    const isLockedByTable = recipe.requiresCraftingTable && !isCraftingTableActive;
+                    const isSelected = selectedRecipeId === recipe.id;
 
-                  const hasAllMats = activeRecipe.ingredients.every(
-                    (ing) => (survivalInventory[ing.type] || 0) >= ing.count
-                  );
-                  const isLockedByTable =
-                    activeRecipe.requiresCraftingTable && !isCraftingTableActive;
-
-                  return (
-                    <>
-                      {/* Recipe Output header representation */}
-                      <div className="flex flex-col items-center text-center border-b border-white/5 pb-4 mb-4">
-                        <div
-                          className="w-16 h-16 rounded-2xl shadow-xl flex items-center justify-center border-2 border-white/10 mb-3 hover:scale-105 transition-transform"
-                          style={{ backgroundColor: BLOCK_COLORS[activeRecipe.result] }}
-                        />
-                        <span className="bg-zinc-800 text-zinc-300 text-[9px] font-bold uppercase px-2 py-0.5 rounded-full border border-white/5 mb-1.5">
-                          Resultado de Fabricación
-                        </span>
-                        <h3 className="text-white text-lg font-bold uppercase tracking-wide">
-                          {activeRecipe.name}
-                        </h3>
-                        <p className="text-zinc-400 text-xs">
-                          Produce x{activeRecipe.resultCount} unidades en total
-                        </p>
-                      </div>
-
-                      {/* Ingredients breakdown */}
-                      <div className="flex flex-col gap-2 mb-6">
-                        <span className="text-[9px] text-zinc-400 font-mono tracking-wider uppercase mb-1">
-                          Ingredientes Necesarios:
-                        </span>
-                        {activeRecipe.ingredients.map((ing, i) => {
-                          const possessed = survivalInventory[ing.type] || 0;
-                          const isMet = possessed >= ing.count;
-
-                          return (
-                            <div
-                              key={i}
-                              className="flex items-center justify-between p-2.5 rounded-xl bg-zinc-950/40 border border-white/5"
-                            >
-                              <div className="flex items-center gap-2.5">
-                                <div
-                                  className="w-5 h-5 rounded shadow-inner"
-                                  style={{ backgroundColor: BLOCK_COLORS[ing.type] }}
-                                />
-                                <span className="text-xs font-bold text-zinc-300">
-                                  {BLOCK_NAMES[ing.type]}
-                                </span>
-                              </div>
-                              <span
-                                className={`text-[11px] font-mono font-bold ${
-                                  isMet ? "text-emerald-400" : "text-rose-500"
-                                }`}
-                              >
-                                {possessed} / {ing.count}
-                              </span>
-                            </div>
-                          );
-                        })}
-                      </div>
-
-                      {/* Action trigger button */}
+                    return (
                       <button
-                        disabled={!hasAllMats || isLockedByTable}
-                        onClick={() => {
-                          resumeAudio();
-                          handleCraft(activeRecipe);
-                        }}
-                        className={`w-full py-4 rounded-2xl font-bold uppercase text-xs tracking-wider transition-all duration-200 ${
-                          isLockedByTable
-                            ? "bg-zinc-800 text-zinc-500 cursor-not-allowed border border-zinc-700/55"
-                            : hasAllMats
-                            ? "bg-emerald-600 border border-emerald-400 text-white shadow-lg shadow-emerald-500/20 active:scale-95 hover:bg-emerald-500"
-                            : "bg-zinc-850 text-zinc-500 cursor-not-allowed"
+                        key={recipe.id}
+                        onClick={() => setSelectedRecipeId(recipe.id)}
+                        className={`w-full p-2.5 rounded-2xl border-2 text-left flex items-center justify-between transition-all active:scale-[0.98] ${
+                          isSelected
+                            ? "border-emerald-500 bg-emerald-950/20"
+                            : "border-zinc-800 bg-zinc-900/40 hover:border-zinc-700"
                         }`}
                       >
-                        {isLockedByTable ? (
-                          <span className="flex items-center justify-center gap-2">
-                            <i className="fas fa-lock" /> Requiere Mesa de Crafteo
-                          </span>
-                        ) : hasAllMats ? (
-                          <span className="flex items-center justify-center gap-1.5">
-                            <i className="fas fa-hammer" /> FABRICAR AHORA
-                          </span>
-                        ) : (
-                          "Faltan Recursos"
-                        )}
+                        <div className="flex items-center gap-3 w-10/12">
+                          <div className="w-9 h-9 flex-shrink-0">
+                            <ItemVisualBadge type={recipe.result} className="w-full h-full" />
+                          </div>
+                          <div className="flex flex-col truncate">
+                            <span className="text-xs font-bold text-white uppercase tracking-wide truncate">
+                              {recipe.name}
+                            </span>
+                            <span className="text-[10px] text-zinc-400">
+                              Obtienes {recipe.resultCount} {recipe.resultCount === 1 ? "unidad" : "unidades"}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 flex-shrink-0">
+                          {isLockedByTable ? (
+                            <span className="bg-zinc-800 text-zinc-400 text-[8px] font-bold uppercase py-0.5 px-1.5 rounded-md border border-zinc-700 flex items-center gap-1">
+                              <i className="fas fa-lock text-[7px]" /> Mesa
+                            </span>
+                          ) : hasAllMats ? (
+                            <span className="bg-emerald-500/20 text-emerald-400 text-[8px] font-bold uppercase py-0.5 px-1.5 rounded-md border border-emerald-500/30">
+                              Listo
+                            </span>
+                          ) : (
+                            <span className="bg-zinc-850 text-zinc-500 text-[8px] font-bold uppercase py-0.5 px-1.5 rounded-md">
+                              Faltan
+                            </span>
+                          )}
+                        </div>
                       </button>
-                    </>
-                  );
-                })()}
+                    );
+                  })}
+                </div>
+
+                {/* Right Side: Recipe Details View */}
+                <div className="md:col-span-6 bg-zinc-900/40 border-2 border-zinc-800 rounded-3xl p-5 flex flex-col">
+                  {(() => {
+                    const activeRecipe =
+                      CRAFTING_RECIPES.find((r) => r.id === selectedRecipeId) ||
+                      CRAFTING_RECIPES[0];
+
+                    const hasAllMats = isCreativeMode || activeRecipe.ingredients.every(
+                      (ing) => (survivalInventory[ing.type] || 0) >= ing.count
+                    );
+                    const isLockedByTable =
+                      activeRecipe.requiresCraftingTable && !isCraftingTableActive;
+
+                    return (
+                      <>
+                        {/* Recipe Output header representation */}
+                        <div className="flex flex-col items-center text-center border-b border-white/5 pb-4 mb-4">
+                          <div className="w-16 h-16 mb-3 hover:scale-105 transition-transform">
+                            <ItemVisualBadge type={activeRecipe.result} className="w-full h-full rounded-2xl" />
+                          </div>
+                          <span className="bg-zinc-800 text-zinc-300 text-[9px] font-bold uppercase px-2 py-0.5 rounded-full border border-white/5 mb-1.5">
+                            Resultado de Fabricación
+                          </span>
+                          <h3 className="text-white text-lg font-bold uppercase tracking-wide">
+                            {activeRecipe.name}
+                          </h3>
+                          <p className="text-zinc-400 text-xs">
+                            Produce x{activeRecipe.resultCount} {activeRecipe.resultCount === 1 ? "unidad" : "unidades"} en total
+                          </p>
+                        </div>
+
+                        {/* Ingredients breakdown */}
+                        <div className="flex flex-col gap-2 mb-5">
+                          <span className="text-[9px] text-zinc-400 font-mono tracking-wider uppercase mb-1">
+                            {isCreativeMode ? "Ingredientes (Gratis en Creativo):" : "Ingredientes Necesarios:"}
+                          </span>
+                          {activeRecipe.ingredients.map((ing, i) => {
+                            const possessed = isCreativeMode ? ing.count : (survivalInventory[ing.type] || 0);
+                            const isMet = possessed >= ing.count;
+
+                            return (
+                              <div
+                                key={i}
+                                className="flex items-center justify-between p-2.5 rounded-xl bg-zinc-950/40 border border-white/5"
+                              >
+                                <div className="flex items-center gap-2.5">
+                                  <div className="w-6 h-6 flex-shrink-0">
+                                    <ItemVisualBadge type={ing.type} className="w-full h-full" />
+                                  </div>
+                                  <span className="text-xs font-bold text-zinc-300">
+                                    {BLOCK_NAMES[ing.type]}
+                                  </span>
+                                </div>
+                                <span
+                                  className={`text-[11px] font-mono font-bold ${
+                                    isMet ? "text-emerald-400" : "text-rose-500"
+                                  }`}
+                                >
+                                  {isCreativeMode ? `∞ / ${ing.count}` : `${possessed} / ${ing.count}`}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        {/* Action trigger buttons */}
+                        <div className="flex flex-col gap-2">
+                          <button
+                            disabled={!hasAllMats || isLockedByTable}
+                            onClick={() => {
+                              resumeAudio();
+                              handleCraft(activeRecipe, false);
+                            }}
+                            className={`w-full py-3.5 rounded-2xl font-bold uppercase text-xs tracking-wider transition-all duration-200 ${
+                              isLockedByTable
+                                ? "bg-zinc-800 text-zinc-500 cursor-not-allowed border border-zinc-700/55"
+                                : hasAllMats
+                                ? "bg-emerald-600 border border-emerald-400 text-white shadow-lg shadow-emerald-500/20 active:scale-95 hover:bg-emerald-500"
+                                : "bg-zinc-850 text-zinc-500 cursor-not-allowed"
+                            }`}
+                          >
+                            {isLockedByTable ? (
+                              <span className="flex items-center justify-center gap-2">
+                                <i className="fas fa-lock" /> Coloca y abre una Mesa de Crafteo
+                              </span>
+                            ) : hasAllMats ? (
+                              <span className="flex items-center justify-center gap-1.5">
+                                <i className="fas fa-hammer" /> FABRICAR AHORA
+                              </span>
+                            ) : (
+                              "Faltan Recursos"
+                            )}
+                          </button>
+
+                          {!isLockedByTable && hasAllMats && (
+                            <button
+                              onClick={() => {
+                                resumeAudio();
+                                handleCraft(activeRecipe, true);
+                              }}
+                              className="w-full py-2.5 rounded-xl font-bold uppercase text-[11px] tracking-wider bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/50 text-amber-200 transition active:scale-95 flex items-center justify-center gap-1.5"
+                            >
+                              <i className="fas fa-hand-holding" /> FABRICAR Y EQUIPAR EN MANO
+                            </button>
+                          )}
+                        </div>
+                      </>
+                    );
+                  })()}
+                </div>
               </div>
             </div>
           )}
@@ -5217,9 +9625,11 @@ const App: React.FC = () => {
 
       {/* Screenshot Toast Notification */}
       {screenshotToast && (
-        <div className="fixed top-6 left-1/2 -translate-x-1/2 bg-black/85 text-white border border-teal-500/30 px-5 py-3 rounded-2xl shadow-2xl z-[200] flex items-center gap-3 font-semibold text-sm animate-bounce pointer-events-none">
-          <i className="fas fa-camera text-teal-400 text-base animate-pulse" />
-          <span>{screenshotToast}</span>
+        <div className="fixed inset-x-0 top-6 px-4 flex justify-center z-[200] pointer-events-none">
+          <div className="max-w-[90vw] sm:max-w-md bg-black/85 text-white border border-teal-500/30 px-4 py-2.5 rounded-2xl shadow-2xl flex items-center gap-2.5 font-semibold text-xs sm:text-sm text-center break-words">
+            <i className="fas fa-camera text-teal-400 text-base animate-pulse shrink-0" />
+            <span>{screenshotToast}</span>
+          </div>
         </div>
       )}
 
@@ -5268,6 +9678,11 @@ const App: React.FC = () => {
                   { label: "⚡ Creativo", cmd: "/gamemode creative" },
                   { label: "🪓 Supervivencia", cmd: "/gamemode survival" },
                   { label: "🌀 Tp Farlands", cmd: "/tp edge_farlands" },
+                  { label: "🤖 Invocar IA", cmd: "/ai on" },
+                  { label: "⛏️ IA Minar", cmd: "/ai minar" },
+                  { label: "🏠 IA Construir", cmd: "/ai construir" },
+                  { label: "⚔️ IA Proteger", cmd: "/ai proteger" },
+                  { label: "🎁 IA Bloques", cmd: "/ai dar" },
                 ].map((item, idx) => (
                   <button
                     key={idx}
@@ -5400,6 +9815,105 @@ const App: React.FC = () => {
                 {lang === "es" ? "Tabla de Clasificación" : "Leaderboard"}
               </button>
 
+              {/* Quick Skin Switcher & World Code / Active Players in Pause Menu */}
+              <div className="bg-zinc-950/60 border border-white/10 rounded-xl p-3 flex flex-col gap-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-400 flex items-center gap-1.5">
+                    <i className="fas fa-user-astronaut" />
+                    {lang === "es" ? "Personaje 3D" : "3D Character"}
+                  </span>
+                  <button
+                    onClick={() => {
+                      resumeAudio();
+                      setPerspective((prev) => prev === "first" ? "third" : prev === "third" ? "second" : "first");
+                    }}
+                    className="text-[9px] bg-zinc-800 hover:bg-zinc-700 text-sky-300 font-bold px-2 py-0.5 rounded border border-white/10 uppercase"
+                  >
+                    <i className="fas fa-video mr-1" />
+                    {perspective === "first" ? "1ª Pers." : perspective === "third" ? "3ª Pers." : "2ª Pers."}
+                  </button>
+                </div>
+                <div className="flex gap-1.5 overflow-x-auto pb-0.5">
+                  {Object.values(CHARACTER_SKINS).filter((skin) => {
+                    if (skin.id === "dragon") return vipActive || ownedShopItems.includes("skin_dragon");
+                    if (skin.id === "angel") return vipActive || ownedShopItems.includes("skin_angel");
+                    if (skin.id === "titan") return vipActive || ownedShopItems.includes("skin_titan");
+                    if (skin.id === "poseidon") return vipActive || ownedShopItems.includes("skin_poseidon");
+                    if (skin.id === "obsidian") return mvpActive || ownedShopItems.includes("skin_obsidian");
+                    return true;
+                  }).map((skin) => {
+                    const active = characterSkin === skin.id;
+                    return (
+                      <button
+                        key={skin.id}
+                        onClick={() => {
+                          resumeAudio();
+                          handleSelectSkin(skin.id);
+                        }}
+                        className={`px-2 py-1 rounded-lg border text-[9px] font-bold shrink-0 flex items-center gap-1.5 transition active:scale-95 ${
+                          active
+                            ? "bg-emerald-600/30 border-emerald-400 text-white"
+                            : "bg-zinc-900 border-white/5 text-zinc-400 hover:text-white"
+                        }`}
+                      >
+                        <span className="w-2.5 h-2.5 rounded-full border border-white/30" style={{ backgroundColor: skin.id === "custom" ? customSkin.accent : skin.badgeColor }} />
+                        <span>{lang === "es" ? skin.nameEs : skin.nameEn}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {currentWorld && (
+                  <div className="flex items-center justify-between gap-2 bg-zinc-900/90 border border-white/5 rounded-lg px-2.5 py-1.5">
+                    <div className="flex flex-col min-w-0">
+                      <span className="text-[8px] text-zinc-400 font-bold uppercase">
+                        {lang === "es" ? "Código del Mundo" : "World Code"} • {activePlayers.length + 1} {lang === "es" ? "en sala" : "online"}
+                      </span>
+                      <span className="text-[10px] font-mono text-emerald-300 truncate">{currentWorld.id}</span>
+                    </div>
+                    <button
+                      onClick={() => {
+                        navigator.clipboard?.writeText(currentWorld.id);
+                        setScreenshotToast(lang === "es" ? "🌍 Código copiado" : "🌍 Code copied");
+                        setTimeout(() => setScreenshotToast(null), 2000);
+                      }}
+                      className="bg-emerald-600 hover:bg-emerald-500 text-white text-[9px] font-bold px-2 py-1 rounded shrink-0 active:scale-95"
+                    >
+                      <i className="fas fa-copy mr-1" />
+                      {lang === "es" ? "Copiar" : "Copy"}
+                    </button>
+                  </div>
+                )}
+
+                {activePlayers.length > 0 && (
+                  <div className="flex flex-col gap-1 max-h-24 overflow-y-auto">
+                    {activePlayers.map((p) => (
+                      <div key={p.id} className="flex items-center justify-between bg-zinc-900/70 rounded-lg px-2 py-1 text-[10px]">
+                        <span className="text-sky-300 font-bold truncate flex items-center gap-1.5">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                          {p.name}
+                        </span>
+                        <button
+                          onClick={() => {
+                            const tpPos = { x: p.pos.x + 1.5, y: p.pos.y + 0.5, z: p.pos.z + 1.5 };
+                            if (p.dimension && p.dimension !== dimension) {
+                              setDimension(p.dimension as "overworld" | "nether");
+                            }
+                            setPlayerPos(tpPos);
+                            activePlayerPosRef.current = tpPos;
+                            setIsGameMenuOpen(false);
+                            setChatMessages((m) => [...m, `🌀 Teletransportado junto a ${p.name}`]);
+                          }}
+                          className="bg-sky-600 hover:bg-sky-500 text-white font-black text-[8px] px-2 py-0.5 rounded uppercase active:scale-95"
+                        >
+                          TP
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               {/* Button: Friends / Amigos */}
               <button
                 onClick={() => {
@@ -5443,6 +9957,20 @@ const App: React.FC = () => {
               >
                 <i className="fas fa-boxes-stacked text-xs text-yellow-500" />
                 {lang === "es" ? "Inventario & Crafteo" : "Inventory & Crafting"}
+              </button>
+
+              {/* Button: Unstuck / Return to Surface */}
+              <button
+                onClick={() => {
+                  resumeAudio();
+                  setIsGameMenuOpen(false);
+                  // Teleport player high up to trigger the safe spawn-guard landing check
+                  setPlayerPos(prev => ({ x: prev.x, y: 150, z: prev.z }));
+                }}
+                className="w-full bg-amber-600 hover:bg-amber-500 text-white py-3 rounded-lg font-bold text-sm uppercase tracking-widest border border-amber-500/30 shadow-md transition-all active:scale-95 flex items-center justify-center gap-2"
+              >
+                <i className="fas fa-life-ring text-xs text-zinc-100" />
+                {lang === "es" ? "Desatascarse (Ir a Superficie)" : "Unstuck (Go to Surface)"}
               </button>
 
               {/* Editable Biome Configuration - Visible ONLY to STAFF / MOD / lionbastias18 */}

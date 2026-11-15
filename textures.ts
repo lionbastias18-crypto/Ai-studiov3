@@ -206,19 +206,63 @@ const createProceduralTexture = (
       ctx.fillRect(7, 5, 2, 2);
     }
   } else if (blockType === BlockType.CACTUS) {
-    if (face === 'top' || face === 'bottom') {
-      ctx.fillStyle = '#107a22';
+    if (face === 'top') {
+      ctx.fillStyle = '#0f6a1e';
       ctx.fillRect(0, 0, 16, 16);
-      drawNoise(20);
+      // Outer ribbed rim
+      ctx.fillStyle = '#0a4a14';
+      for (let i = 0; i < 16; i += 4) {
+        ctx.fillRect(i, 0, 1, 16);
+        ctx.fillRect(0, i, 16, 1);
+      }
+      // Lighter green crown core
+      ctx.fillStyle = '#4e9c38';
+      ctx.fillRect(2, 2, 12, 12);
+      ctx.fillStyle = '#6ec24f';
+      ctx.fillRect(4, 4, 8, 8);
+      ctx.fillStyle = '#2d7524';
+      ctx.fillRect(6, 7, 4, 2);
+      ctx.fillRect(7, 6, 2, 4);
+      // Corner highlight dots
+      ctx.fillStyle = '#d9ecc7';
+      ctx.fillRect(1, 1, 1, 1);
+      ctx.fillRect(14, 1, 1, 1);
+      ctx.fillRect(1, 14, 1, 1);
+      ctx.fillRect(14, 14, 1, 1);
+    } else if (face === 'bottom') {
+      ctx.fillStyle = '#2e6b24';
+      ctx.fillRect(0, 0, 16, 16);
+      ctx.fillStyle = '#124e19';
+      ctx.fillRect(0, 0, 16, 2);
+      ctx.fillRect(0, 14, 16, 2);
+      ctx.fillRect(0, 0, 2, 16);
+      ctx.fillRect(14, 0, 2, 16);
+      ctx.fillStyle = '#538e3a';
+      ctx.fillRect(4, 4, 8, 8);
     } else {
-      ctx.fillStyle = '#0f5e1b';
+      // Crisp fluted vertical cactus ribs (deterministic pixel art)
+      ctx.fillStyle = '#0f611c';
       ctx.fillRect(0, 0, 16, 16);
-      ctx.fillStyle = '#107a22';
-      for(let x=2; x<16; x+=4) ctx.fillRect(x, 0, 2, 16);
-      // Pinchos
-      ctx.fillStyle = '#000000';
-      for(let i=0; i<10; i++) {
-          ctx.fillRect(Math.floor(Math.random()*16), Math.floor(Math.random()*16), 1, 1);
+      for (let x = 0; x < 16; x++) {
+        const mod = x % 4;
+        if (mod === 0) ctx.fillStyle = '#093f11';
+        else if (mod === 1) ctx.fillStyle = '#147a25';
+        else if (mod === 2) ctx.fillStyle = '#249433';
+        else ctx.fillStyle = '#10661e';
+        ctx.fillRect(x, 0, 1, 16);
+      }
+      // Deterministic cream spines with dark roots
+      const spines: Array<[number, number]> = [
+        [2, 2], [10, 1], [6, 5], [14, 4],
+        [2, 9], [10, 8], [6, 12], [14, 11],
+        [2, 14], [10, 14]
+      ];
+      for (const [sx, sy] of spines) {
+        ctx.fillStyle = '#072d0c';
+        ctx.fillRect(sx, sy, 1, 1);
+        ctx.fillStyle = '#e7f0c9';
+        ctx.fillRect(Math.max(0, sx - 1), sy, 1, 1);
+        ctx.fillRect(sx, Math.max(0, sy - 1), 1, 1);
       }
     }
   } else if (blockType === BlockType.LAVA) {
@@ -238,25 +282,133 @@ const createProceduralTexture = (
       ctx.fillRect(Math.floor(Math.random() * 16), Math.floor(Math.random() * 16), 2, 2);
     }
   } else if (blockType === BlockType.TORCH) {
-    ctx.clearRect(0, 0, 16, 16);
-    // Stick
-    ctx.fillStyle = '#5c3a21';
-    ctx.fillRect(7, 6, 2, 10);
-    // Flame
-    ctx.fillStyle = '#ffcc00';
-    ctx.fillRect(7, 4, 2, 2);
-    ctx.fillStyle = '#ff5500';
-    ctx.fillRect(7, 3, 2, 1);
+    // Full-canvas opaque face textures tailored to the 0.16x0.68x0.16 torch box
+    if (face === 'top') {
+      // Glowing ember/flame tip viewed from above
+      ctx.fillStyle = '#e65100';
+      ctx.fillRect(0, 0, 16, 16);
+      ctx.fillStyle = '#ff9100';
+      ctx.fillRect(2, 2, 12, 12);
+      ctx.fillStyle = '#ffd54f';
+      ctx.fillRect(4, 4, 8, 8);
+      ctx.fillStyle = '#fff9c4';
+      ctx.fillRect(5, 5, 6, 6);
+    } else if (face === 'bottom') {
+      // Solid wooden stick base
+      ctx.fillStyle = '#5c3a21';
+      ctx.fillRect(0, 0, 16, 16);
+      ctx.fillStyle = '#472b16';
+      ctx.fillRect(2, 2, 4, 12);
+      ctx.fillRect(10, 0, 3, 16);
+      ctx.fillStyle = '#754c29';
+      ctx.fillRect(6, 0, 4, 16);
+    } else {
+      // Side face: blazing flame crown (y=0..4), charcoal band (y=4..6), wood-grain handle (y=6..16)
+      // Flame crown
+      ctx.fillStyle = '#ff6d00';
+      ctx.fillRect(0, 0, 16, 4);
+      ctx.fillStyle = '#ffab00';
+      ctx.fillRect(2, 0, 12, 4);
+      ctx.fillStyle = '#ffe082';
+      ctx.fillRect(4, 0, 8, 3);
+      ctx.fillStyle = '#fffde7';
+      ctx.fillRect(5, 1, 6, 2);
+      // Glowing ember/charcoal collar
+      ctx.fillStyle = '#2b1b12';
+      ctx.fillRect(0, 4, 16, 2);
+      ctx.fillStyle = '#ff7043';
+      ctx.fillRect(3, 4, 3, 1);
+      ctx.fillRect(10, 4, 4, 1);
+      ctx.fillStyle = '#4e342e';
+      ctx.fillRect(0, 5, 16, 1);
+      // Wood-grain stick shaft across full UV width
+      ctx.fillStyle = '#6d4423';
+      ctx.fillRect(0, 6, 16, 10);
+      ctx.fillStyle = '#86562e';
+      ctx.fillRect(3, 6, 4, 10);
+      ctx.fillRect(11, 6, 3, 10);
+      ctx.fillStyle = '#4f3016';
+      ctx.fillRect(0, 6, 2, 10);
+      ctx.fillRect(8, 6, 2, 10);
+      ctx.fillRect(14, 6, 2, 10);
+      // Subtle horizontal plank joints for pixel crispness
+      ctx.fillStyle = '#3d2410';
+      ctx.fillRect(0, 10, 4, 1);
+      ctx.fillRect(9, 13, 5, 1);
+    }
   } else if (blockType === BlockType.DOOR) {
-    ctx.clearRect(0, 0, 16, 16);
-    ctx.fillStyle = '#5c3a21';
-    ctx.fillRect(0, 0, 16, 16);
-    ctx.fillStyle = '#3a2211';
-    ctx.fillRect(2, 2, 12, 5);
-    ctx.fillRect(2, 9, 12, 5);
-    // Door knob
-    ctx.fillStyle = '#aaaaaa';
-    ctx.fillRect(12, 8, 2, 2);
+    if (face === 'top' || face === 'bottom') {
+      ctx.fillStyle = '#7a4d28';
+      ctx.fillRect(0, 0, 16, 16);
+      ctx.fillStyle = '#5c381b';
+      ctx.fillRect(0, 0, 16, 2);
+      ctx.fillRect(0, 14, 16, 2);
+      ctx.fillRect(0, 0, 2, 16);
+      ctx.fillRect(14, 0, 2, 16);
+    } else {
+      canvas.width = 16;
+      canvas.height = 32;
+      ctx.clearRect(0, 0, 16, 32);
+
+      // Base oak wood
+      ctx.fillStyle = '#8b5a2b';
+      ctx.fillRect(0, 0, 16, 32);
+
+      // Vertical plank variation & highlights
+      ctx.fillStyle = '#9c6836';
+      ctx.fillRect(2, 1, 3, 30);
+      ctx.fillRect(7, 1, 2, 30);
+      ctx.fillRect(11, 1, 3, 30);
+      ctx.fillStyle = '#734820';
+      ctx.fillRect(5, 1, 1, 30);
+      ctx.fillRect(10, 1, 1, 30);
+
+      // Outer dark oak bevel frame
+      ctx.fillStyle = '#4e2f16';
+      ctx.fillRect(0, 0, 16, 1);
+      ctx.fillRect(0, 31, 16, 1);
+      ctx.fillRect(0, 0, 1, 32);
+      ctx.fillRect(15, 0, 1, 32);
+
+      // Upper window recess frame + 4 real alphaTest transparent window panes
+      ctx.fillStyle = '#5a361a';
+      ctx.fillRect(2, 2, 12, 12);
+      ctx.fillStyle = '#6c4221';
+      ctx.fillRect(3, 3, 10, 10);
+      // Center oak mullions stay solid, 4 glass panes punched cleanly via clearRect
+      ctx.clearRect(3, 3, 4, 4);
+      ctx.clearRect(9, 3, 4, 4);
+      ctx.clearRect(3, 9, 4, 4);
+      ctx.clearRect(9, 9, 4, 4);
+
+      // Subtle crossbar shadow + middle rail
+      ctx.fillStyle = '#5a361a';
+      ctx.fillRect(2, 14, 12, 2);
+
+      // Lower carved recessed panel
+      ctx.fillStyle = '#5a361a';
+      ctx.fillRect(3, 17, 10, 12);
+      ctx.fillStyle = '#744822';
+      ctx.fillRect(4, 18, 8, 10);
+      ctx.fillStyle = '#633c1b';
+      ctx.fillRect(5, 19, 6, 8);
+
+      // Iron hinges (left side)
+      ctx.fillStyle = '#3f3f46';
+      ctx.fillRect(0, 5, 2, 3);
+      ctx.fillRect(0, 23, 2, 3);
+      ctx.fillStyle = '#9ca3af';
+      ctx.fillRect(1, 6, 1, 1);
+      ctx.fillRect(1, 24, 1, 1);
+
+      // Brass door plate & handle (right side)
+      ctx.fillStyle = '#78350f';
+      ctx.fillRect(12, 14, 2, 4);
+      ctx.fillStyle = '#fbbf24';
+      ctx.fillRect(11, 15, 3, 1);
+      ctx.fillStyle = '#d97706';
+      ctx.fillRect(13, 16, 1, 1);
+    }
   } else if (blockType === BlockType.BED) {
     if (face === 'top') {
       ctx.fillStyle = '#e53935'; 
@@ -334,39 +486,68 @@ const createProceduralTexture = (
     ctx.fillRect(12, 2, 2, 2);
     ctx.fillRect(2, 12, 2, 2);
     ctx.fillRect(12, 12, 2, 2);
-  } else if (blockType === BlockType.SWORD) {
+  } else if (
+    blockType === BlockType.SWORD || blockType === BlockType.WOOD_SWORD || blockType === BlockType.STONE_SWORD || blockType === BlockType.GOLD_SWORD || blockType === BlockType.DIAMOND_SWORD ||
+    blockType === BlockType.PICKAXE || blockType === BlockType.WOOD_PICKAXE || blockType === BlockType.IRON_PICKAXE || blockType === BlockType.GOLD_PICKAXE || blockType === BlockType.DIAMOND_PICKAXE ||
+    blockType === BlockType.AXE || blockType === BlockType.STONE_AXE || blockType === BlockType.IRON_AXE || blockType === BlockType.GOLD_AXE || blockType === BlockType.DIAMOND_AXE ||
+    blockType === BlockType.SHOVEL || blockType === BlockType.WOOD_SHOVEL || blockType === BlockType.IRON_SHOVEL || blockType === BlockType.GOLD_SHOVEL || blockType === BlockType.DIAMOND_SHOVEL
+  ) {
     ctx.clearRect(0, 0, 16, 16);
-    ctx.fillStyle = '#836531';
-    ctx.fillRect(5, 11, 6, 1);
-    ctx.fillStyle = '#5c3a21';
-    ctx.fillRect(7, 12, 2, 4);
-    ctx.fillStyle = '#e0e0e0';
-    ctx.fillRect(7, 2, 2, 9);
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(7, 2, 1, 9);
-  } else if (blockType === BlockType.PICKAXE) {
-    ctx.clearRect(0, 0, 16, 16);
-    ctx.fillStyle = '#8d6e63';
-    ctx.fillRect(7, 5, 2, 11);
-    ctx.fillStyle = '#a1a1a1';
-    ctx.fillRect(4, 3, 8, 2);
-    ctx.fillRect(3, 4, 1, 2);
-    ctx.fillRect(11, 4, 1, 2);
-  } else if (blockType === BlockType.AXE) {
-    ctx.clearRect(0, 0, 16, 16);
-    ctx.fillStyle = '#8d6e63';
-    ctx.fillRect(7, 4, 2, 12);
-    ctx.fillStyle = '#a1a1a1';
-    ctx.fillRect(4, 2, 4, 4);
-    ctx.fillRect(2, 3, 2, 2);
-  } else if (blockType === BlockType.SHOVEL) {
-    ctx.clearRect(0, 0, 16, 16);
-    ctx.fillStyle = '#8d6e63';
-    ctx.fillRect(7, 6, 2, 10);
-    ctx.fillStyle = '#df9c5c';
-    ctx.fillRect(6, 2, 4, 4);
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(6, 2, 1, 1);
+    const getPalette = () => {
+      if (blockType === BlockType.WOOD_SWORD || blockType === BlockType.WOOD_PICKAXE || blockType === BlockType.AXE || blockType === BlockType.WOOD_SHOVEL) {
+        return { main: '#b6895b', hi: '#d6aa79', dark: '#7c5531' };
+      }
+      if (blockType === BlockType.STONE_SWORD || blockType === BlockType.PICKAXE || blockType === BlockType.STONE_AXE || blockType === BlockType.SHOVEL) {
+        return { main: '#94a3b8', hi: '#cbd5e1', dark: '#475569' };
+      }
+      if (blockType === BlockType.GOLD_SWORD || blockType === BlockType.GOLD_PICKAXE || blockType === BlockType.GOLD_AXE || blockType === BlockType.GOLD_SHOVEL) {
+        return { main: '#facc15', hi: '#fef08a', dark: '#ca8a04' };
+      }
+      if (blockType === BlockType.DIAMOND_SWORD || blockType === BlockType.DIAMOND_PICKAXE || blockType === BlockType.DIAMOND_AXE || blockType === BlockType.DIAMOND_SHOVEL) {
+        return { main: '#22d3ee', hi: '#a5f3fc', dark: '#0284c7' };
+      }
+      return { main: '#e2e8f0', hi: '#ffffff', dark: '#64748b' };
+    };
+    const pal = getPalette();
+    const isSword = blockType === BlockType.SWORD || blockType === BlockType.WOOD_SWORD || blockType === BlockType.STONE_SWORD || blockType === BlockType.GOLD_SWORD || blockType === BlockType.DIAMOND_SWORD;
+    const isPick = blockType === BlockType.PICKAXE || blockType === BlockType.WOOD_PICKAXE || blockType === BlockType.IRON_PICKAXE || blockType === BlockType.GOLD_PICKAXE || blockType === BlockType.DIAMOND_PICKAXE;
+    const isAxe = blockType === BlockType.AXE || blockType === BlockType.STONE_AXE || blockType === BlockType.IRON_AXE || blockType === BlockType.GOLD_AXE || blockType === BlockType.DIAMOND_AXE;
+
+    if (isSword) {
+      ctx.fillStyle = '#5c3a21';
+      ctx.fillRect(7, 12, 2, 4);
+      ctx.fillStyle = pal.dark;
+      ctx.fillRect(4, 11, 8, 1);
+      ctx.fillStyle = pal.main;
+      ctx.fillRect(7, 2, 2, 9);
+      ctx.fillStyle = pal.hi;
+      ctx.fillRect(7, 2, 1, 9);
+    } else if (isPick) {
+      ctx.fillStyle = '#6a4423';
+      ctx.fillRect(7, 5, 2, 11);
+      ctx.fillStyle = pal.main;
+      ctx.fillRect(4, 2, 8, 2);
+      ctx.fillStyle = pal.dark;
+      ctx.fillRect(2, 3, 2, 3);
+      ctx.fillRect(12, 3, 2, 3);
+      ctx.fillStyle = pal.hi;
+      ctx.fillRect(5, 2, 6, 1);
+    } else if (isAxe) {
+      ctx.fillStyle = '#6a4423';
+      ctx.fillRect(7, 4, 2, 12);
+      ctx.fillStyle = pal.main;
+      ctx.fillRect(3, 2, 5, 4);
+      ctx.fillRect(2, 3, 2, 3);
+      ctx.fillStyle = pal.hi;
+      ctx.fillRect(2, 3, 1, 3);
+    } else {
+      ctx.fillStyle = '#6a4423';
+      ctx.fillRect(7, 6, 2, 10);
+      ctx.fillStyle = pal.main;
+      ctx.fillRect(5, 2, 6, 4);
+      ctx.fillStyle = pal.hi;
+      ctx.fillRect(6, 2, 2, 3);
+    }
   } else if (blockType === BlockType.JUKEBOX) {
     if (face === 'top') {
       // Wood top base
@@ -664,6 +845,226 @@ const createProceduralTexture = (
         }
       }
     }
+  } else if (blockType === BlockType.CUSHION) {
+    ctx.fillStyle = '#e57373';
+    ctx.fillRect(0, 0, 16, 16);
+    drawNoise(20);
+    // Draw cross stitching
+    ctx.fillStyle = '#ffcdd2';
+    ctx.fillRect(7, 3, 2, 10);
+    ctx.fillRect(3, 7, 10, 2);
+  } else if (blockType === BlockType.WOOL || blockType === BlockType.WOOL_STAIRS) {
+    ctx.fillStyle = '#f5f5f5';
+    ctx.fillRect(0, 0, 16, 16);
+    drawNoise(30);
+    // Draw wool curls pattern
+    ctx.fillStyle = '#e0e0e0';
+    for (let i = 0; i < 8; i++) {
+      ctx.fillRect(Math.floor(Math.random()*14), Math.floor(Math.random()*14), 2, 2);
+    }
+  } else if (blockType === BlockType.CONCRETE || blockType === BlockType.CONCRETE_STAIRS) {
+    ctx.fillStyle = '#90a4ae';
+    ctx.fillRect(0, 0, 16, 16);
+    drawNoise(8); // Concrete is very smooth
+  } else if (blockType === BlockType.GRAVEL) {
+    ctx.fillStyle = '#cfd8dc';
+    ctx.fillRect(0, 0, 16, 16);
+    drawNoise(30);
+    ctx.fillStyle = '#78909c';
+    for (let i = 0; i < 12; i++) {
+      ctx.fillRect(Math.floor(Math.random()*14), Math.floor(Math.random()*14), 2, 1);
+    }
+  } else if (blockType === BlockType.FIRE) {
+    ctx.clearRect(0, 0, 16, 16);
+    ctx.fillStyle = '#ff5722';
+    ctx.fillRect(1, 4, 14, 12);
+    ctx.fillStyle = '#ff9800';
+    ctx.fillRect(3, 6, 10, 10);
+    ctx.fillStyle = '#ffeb3b';
+    ctx.fillRect(6, 9, 4, 7);
+  } else if (blockType === BlockType.SUGAR_CANE) {
+    ctx.clearRect(0, 0, 16, 16);
+    if (face === 'top' || face === 'bottom') {
+      // Top/Bottom cut bamboo-green stalk cross section (avoids void top face glitch)
+      ctx.fillStyle = '#4e912a';
+      ctx.fillRect(3, 3, 10, 10);
+      ctx.fillStyle = '#78bf42';
+      ctx.fillRect(4, 4, 8, 8);
+      ctx.fillStyle = '#b4e384';
+      ctx.fillRect(5, 5, 6, 6);
+      ctx.fillStyle = '#92d159';
+      ctx.fillRect(7, 7, 2, 2);
+    } else {
+      // Crisp double-stalk sugar cane with shaded ribs, nodes, and crisp leaves
+      const drawStalk = (sx: number, w: number) => {
+        ctx.fillStyle = '#6db83a';
+        ctx.fillRect(sx, 0, w, 16);
+        ctx.fillStyle = '#9de05c';
+        ctx.fillRect(sx, 0, 1, 16);
+        ctx.fillStyle = '#448224';
+        ctx.fillRect(sx + w - 1, 0, 1, 16);
+        // Segmented nodes
+        ctx.fillStyle = '#336619';
+        ctx.fillRect(sx, 3, w, 1);
+        ctx.fillRect(sx, 9, w, 1);
+        ctx.fillRect(sx, 14, w, 1);
+        ctx.fillStyle = '#b5e878';
+        ctx.fillRect(sx + 1, 4, Math.max(1, w - 2), 1);
+        ctx.fillRect(sx + 1, 10, Math.max(1, w - 2), 1);
+      };
+      drawStalk(2, 5);
+      drawStalk(9, 5);
+      // Small diagonal leaves for crisp silhouette
+      ctx.fillStyle = '#5da632';
+      ctx.fillRect(0, 4, 2, 2);
+      ctx.fillRect(7, 2, 2, 2);
+      ctx.fillRect(14, 7, 2, 2);
+      ctx.fillRect(7, 11, 2, 2);
+    }
+  } else if (blockType === BlockType.BAMBOO) {
+    ctx.clearRect(0, 0, 16, 16);
+    if (face === 'top' || face === 'bottom') {
+      ctx.fillStyle = '#4e912a';
+      ctx.fillRect(5, 5, 6, 6);
+      ctx.fillStyle = '#92d159';
+      ctx.fillRect(6, 6, 4, 4);
+    } else {
+      ctx.fillStyle = '#5cb83d';
+      ctx.fillRect(5, 0, 6, 16);
+      ctx.fillStyle = '#8ee068';
+      ctx.fillRect(6, 0, 2, 16);
+      ctx.fillStyle = '#3d8225';
+      ctx.fillRect(5, 5, 6, 1);
+      ctx.fillRect(5, 11, 6, 1);
+      ctx.fillStyle = '#6ec94b';
+      ctx.fillRect(3, 6, 2, 2);
+      ctx.fillRect(11, 2, 2, 2);
+    }
+  } else if (blockType === BlockType.CHEST) {
+    if (face === 'top' || face === 'bottom') {
+      ctx.fillStyle = '#b45309';
+      ctx.fillRect(0, 0, 16, 16);
+      ctx.fillStyle = '#78350f';
+      ctx.strokeRect(1, 1, 14, 14);
+    } else {
+      ctx.fillStyle = '#b45309';
+      ctx.fillRect(0, 0, 16, 16);
+      ctx.fillStyle = '#78350f';
+      ctx.strokeRect(1, 1, 14, 14);
+      // Draw latch
+      ctx.fillStyle = '#d1d5db';
+      ctx.fillRect(7, 6, 2, 4);
+    }
+  } else if (blockType === BlockType.FROG_EGGS) {
+    ctx.clearRect(0, 0, 16, 16);
+    ctx.fillStyle = '#a1e3b6';
+    for (let i = 0; i < 4; i++) {
+      const ex = 4 + (i % 2) * 6;
+      const ey = 4 + Math.floor(i / 2) * 6;
+      ctx.fillStyle = 'rgba(161,227,182,0.6)';
+      ctx.fillRect(ex - 1, ey - 1, 4, 4);
+      ctx.fillStyle = '#1b5e20';
+      ctx.fillRect(ex, ey, 2, 2);
+    }
+  } else if (blockType === BlockType.CHERRY_LOG) {
+    if (face === 'top' || face === 'bottom') {
+      ctx.fillStyle = '#ffe0b2';
+      ctx.fillRect(0, 0, 16, 16);
+      ctx.strokeStyle = '#f48fb1';
+      ctx.strokeRect(3, 3, 10, 10);
+    } else {
+      ctx.fillStyle = '#f48fb1';
+      ctx.fillRect(0, 0, 16, 16);
+      drawNoise(15);
+    }
+  } else if (blockType === BlockType.CHERRY_LEAVES) {
+    ctx.clearRect(0, 0, 16, 16);
+    ctx.fillStyle = '#ff80ab';
+    ctx.fillRect(0, 0, 16, 16);
+    for(let i=0; i<30; i++) {
+      ctx.fillStyle = '#ff4081';
+      ctx.fillRect(Math.floor(Math.random()*16), Math.floor(Math.random()*16), 2, 2);
+    }
+  } else if (blockType === BlockType.CHERRY_WOOD) {
+    ctx.fillStyle = '#ffccd5';
+    ctx.fillRect(0, 0, 16, 16);
+    drawNoise(10);
+    ctx.fillStyle = '#ff80ab';
+    ctx.fillRect(0, 4, 16, 1);
+    ctx.fillRect(0, 10, 16, 1);
+  } else if (blockType === BlockType.DARK_LOG) {
+    if (face === 'top' || face === 'bottom') {
+      ctx.fillStyle = '#a1887f';
+      ctx.fillRect(0, 0, 16, 16);
+      ctx.strokeStyle = '#3e2723';
+      ctx.strokeRect(3, 3, 10, 10);
+    } else {
+      ctx.fillStyle = '#3e2723';
+      ctx.fillRect(0, 0, 16, 16);
+      drawNoise(15);
+    }
+  } else if (blockType === BlockType.DARK_LEAVES) {
+    ctx.clearRect(0, 0, 16, 16);
+    ctx.fillStyle = '#1a237e';
+    ctx.fillRect(0, 0, 16, 16);
+    for(let i=0; i<30; i++) {
+      ctx.fillStyle = '#0d47a1';
+      ctx.fillRect(Math.floor(Math.random()*16), Math.floor(Math.random()*16), 2, 2);
+    }
+  } else if (blockType === BlockType.DARK_GRASS) {
+    if (face === 'top') {
+      ctx.fillStyle = '#212121';
+      ctx.fillRect(0, 0, 16, 16);
+      drawNoise(40);
+    } else if (face === 'bottom') {
+      ctx.fillStyle = '#3e2723';
+      ctx.fillRect(0, 0, 16, 16);
+      drawNoise(45);
+    } else {
+      ctx.fillStyle = '#3e2723';
+      ctx.fillRect(0, 0, 16, 16);
+      drawNoise(45);
+      ctx.fillStyle = '#212121';
+      for(let x=0; x<16; x++) {
+        let depth = 3 + Math.floor(Math.random() * 3);
+        ctx.fillRect(x, 0, 1, depth);
+      }
+    }
+  } else if (blockType === BlockType.FURNACE) {
+    if (face === 'top' || face === 'bottom') {
+      ctx.fillStyle = '#546e7a';
+      ctx.fillRect(0, 0, 16, 16);
+      drawNoise(40);
+    } else if (face === 'side') { // Front face
+      ctx.fillStyle = '#37474f';
+      ctx.fillRect(0, 0, 16, 16);
+      ctx.fillStyle = '#263238';
+      ctx.fillRect(2, 2, 12, 12);
+      // Furnace mouth / grate
+      ctx.fillStyle = '#ff5722';
+      ctx.fillRect(4, 8, 8, 4);
+    } else {
+      ctx.fillStyle = '#546e7a';
+      ctx.fillRect(0, 0, 16, 16);
+      drawNoise(40);
+    }
+  } else if (blockType === BlockType.CARTOGRAPHY_TABLE) {
+    if (face === 'top') {
+      ctx.fillStyle = '#d7ccc8';
+      ctx.fillRect(0, 0, 16, 16);
+      // Draw grid lines
+      ctx.fillStyle = '#8d6e63';
+      ctx.fillRect(4, 0, 1, 16);
+      ctx.fillRect(10, 0, 1, 16);
+      ctx.fillRect(0, 5, 16, 1);
+      // Compass drawing on map
+      ctx.fillStyle = '#e53935';
+      ctx.fillRect(8, 8, 2, 2);
+    } else {
+      ctx.fillStyle = '#5d4037';
+      ctx.fillRect(0, 0, 16, 16);
+      drawNoise(15);
+    }
   } else if (String(BlockType[blockType]).startsWith('TERRACOTTA')) {
     drawNoise(15);
   } else {
@@ -730,35 +1131,69 @@ export const TextureCache = {
             map: side, emissive: '#4cebeb', emissiveIntensity: 0.1
         });
     } else if (blockType === BlockType.TORCH) {
-        material = new THREE.MeshLambertMaterial({
-            map: side, emissive: '#ffaa00', emissiveIntensity: 0.8, transparent: true, alphaTest: 0.5
+        const torchSideMat = new THREE.MeshLambertMaterial({
+            map: side, emissive: '#ff7b14', emissiveIntensity: 0.55
         });
+        const torchTopMat = new THREE.MeshLambertMaterial({
+            map: top, emissive: '#ffbe33', emissiveIntensity: 1.2
+        });
+        const torchBottomMat = new THREE.MeshLambertMaterial({
+            map: bottom
+        });
+        material = [torchSideMat, torchSideMat, torchTopMat, torchBottomMat, torchSideMat, torchSideMat];
     } else if (blockType === BlockType.GRASS || blockType === BlockType.LOG || blockType === BlockType.CACTUS || 
                blockType === BlockType.MUSHROOM_RED || blockType === BlockType.MUSHROOM_BROWN || 
                blockType === BlockType.FLOWER_RED || blockType === BlockType.FLOWER_YELLOW ||
                blockType === BlockType.BED || blockType === BlockType.DOOR || blockType === BlockType.CRAFTING_TABLE ||
                blockType === BlockType.SWORD || blockType === BlockType.PICKAXE || blockType === BlockType.AXE || blockType === BlockType.SHOVEL ||
+               blockType === BlockType.WOOD_SWORD || blockType === BlockType.WOOD_PICKAXE || blockType === BlockType.WOOD_SHOVEL ||
+               blockType === BlockType.STONE_SWORD || blockType === BlockType.STONE_AXE ||
+               blockType === BlockType.IRON_PICKAXE || blockType === BlockType.IRON_AXE || blockType === BlockType.IRON_SHOVEL ||
+               blockType === BlockType.GOLD_SWORD || blockType === BlockType.GOLD_PICKAXE || blockType === BlockType.GOLD_AXE || blockType === BlockType.GOLD_SHOVEL ||
+               blockType === BlockType.DIAMOND_SWORD || blockType === BlockType.DIAMOND_PICKAXE || blockType === BlockType.DIAMOND_AXE || blockType === BlockType.DIAMOND_SHOVEL ||
                blockType === BlockType.JUKEBOX || blockType === BlockType.MUSIC_DISC_CAT || blockType === BlockType.MUSIC_DISC_CHIRP ||
                blockType === BlockType.MUSIC_DISC_BLOCKS || blockType === BlockType.MUSIC_DISC_MELLOHI ||
                blockType === BlockType.AUTUMN_GRASS || blockType === BlockType.GREY_LOG || blockType === BlockType.AUTUMN_FLOWER ||
                blockType === BlockType.CRIMSON_NYLIUM || blockType === BlockType.WARPED_NYLIUM ||
-               blockType === BlockType.VINES) {
+               blockType === BlockType.VINES || blockType === BlockType.CUSHION || blockType === BlockType.CHEST ||
+               blockType === BlockType.FURNACE || blockType === BlockType.CARTOGRAPHY_TABLE ||
+               blockType === BlockType.CHERRY_LOG || blockType === BlockType.DARK_LOG || blockType === BlockType.DARK_GRASS ||
+               blockType === BlockType.FIRE || blockType === BlockType.SUGAR_CANE || blockType === BlockType.BAMBOO ||
+               blockType === BlockType.FROG_EGGS) {
         const isTransparentFlora = blockType === BlockType.MUSHROOM_RED || blockType === BlockType.MUSHROOM_BROWN || 
                                    blockType === BlockType.FLOWER_RED || blockType === BlockType.FLOWER_YELLOW || 
                                    blockType === BlockType.AUTUMN_FLOWER ||
                                    blockType === BlockType.DOOR ||
                                    blockType === BlockType.SWORD || blockType === BlockType.PICKAXE || blockType === BlockType.AXE || blockType === BlockType.SHOVEL ||
+                                   blockType === BlockType.WOOD_SWORD || blockType === BlockType.WOOD_PICKAXE || blockType === BlockType.WOOD_SHOVEL ||
+                                   blockType === BlockType.STONE_SWORD || blockType === BlockType.STONE_AXE ||
+                                   blockType === BlockType.IRON_PICKAXE || blockType === BlockType.IRON_AXE || blockType === BlockType.IRON_SHOVEL ||
+                                   blockType === BlockType.GOLD_SWORD || blockType === BlockType.GOLD_PICKAXE || blockType === BlockType.GOLD_AXE || blockType === BlockType.GOLD_SHOVEL ||
+                                   blockType === BlockType.DIAMOND_SWORD || blockType === BlockType.DIAMOND_PICKAXE || blockType === BlockType.DIAMOND_AXE || blockType === BlockType.DIAMOND_SHOVEL ||
                                    blockType === BlockType.MUSIC_DISC_CAT || blockType === BlockType.MUSIC_DISC_CHIRP ||
                                    blockType === BlockType.MUSIC_DISC_BLOCKS || blockType === BlockType.MUSIC_DISC_MELLOHI ||
-                                   blockType === BlockType.VINES;
-        material = [
-            new THREE.MeshLambertMaterial({ map: side, transparent: false, alphaTest: isTransparentFlora ? 0.5 : 0 }),
-            new THREE.MeshLambertMaterial({ map: side, transparent: false, alphaTest: isTransparentFlora ? 0.5 : 0 }),
-            new THREE.MeshLambertMaterial({ map: top, transparent: false, alphaTest: isTransparentFlora ? 0.5 : 0 }),
-            new THREE.MeshLambertMaterial({ map: bottom, transparent: false, alphaTest: isTransparentFlora ? 0.5 : 0 }),
-            new THREE.MeshLambertMaterial({ map: side, transparent: false, alphaTest: isTransparentFlora ? 0.5 : 0 }),
-            new THREE.MeshLambertMaterial({ map: side, transparent: false, alphaTest: isTransparentFlora ? 0.5 : 0 }),
-        ];
+                                   blockType === BlockType.VINES || blockType === BlockType.FIRE ||
+                                   blockType === BlockType.SUGAR_CANE || blockType === BlockType.BAMBOO ||
+                                   blockType === BlockType.FROG_EGGS;
+        // Use strict alphaTest cutouts with transparent: false and DoubleSide on flora/cutouts
+        // to eliminate InstancedMesh alpha-sorting glitches and invisible faces behind water/blocks.
+        material = isTransparentFlora
+          ? [
+              new THREE.MeshLambertMaterial({ map: side, transparent: false, alphaTest: 0.5, side: THREE.DoubleSide }),
+              new THREE.MeshLambertMaterial({ map: side, transparent: false, alphaTest: 0.5, side: THREE.DoubleSide }),
+              new THREE.MeshLambertMaterial({ map: top, transparent: false, alphaTest: 0.5, side: THREE.DoubleSide }),
+              new THREE.MeshLambertMaterial({ map: bottom, transparent: false, alphaTest: 0.5, side: THREE.DoubleSide }),
+              new THREE.MeshLambertMaterial({ map: side, transparent: false, alphaTest: 0.5, side: THREE.DoubleSide }),
+              new THREE.MeshLambertMaterial({ map: side, transparent: false, alphaTest: 0.5, side: THREE.DoubleSide }),
+            ]
+          : [
+              new THREE.MeshLambertMaterial({ map: side }),
+              new THREE.MeshLambertMaterial({ map: side }),
+              new THREE.MeshLambertMaterial({ map: top }),
+              new THREE.MeshLambertMaterial({ map: bottom }),
+              new THREE.MeshLambertMaterial({ map: side }),
+              new THREE.MeshLambertMaterial({ map: side }),
+            ];
     } else {
         material = new THREE.MeshLambertMaterial({ map: side });
     }

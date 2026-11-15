@@ -6,5 +6,7 @@
   "firestoreDatabaseId": "ai-studio-37f3bab7-1dd4-4428-a497-2c3af28ea0bc",
   "storageBucket": "scenic-beaker-7nzsc.firebasestorage.app",
   "messagingSenderId": "222424559539",
-  "measurementId": ""
+  "measurementId": "",
+  "oAuthClientId": "222424559539-kn9u2nij6n5fi8pesnuvlj9il0q2epqt.apps.googleusercontent.com",
+  "recaptchaSiteKey": ""
 }
