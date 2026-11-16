@@ -245,3 +245,53 @@ export interface AICompanionConfig {
   skinId: CharacterSkinId;
   mode: AICompanionMode;
 }
+
+export type RealmPlanTier = 'none' | 'basic' | 'plus';
+
+export interface RealmWorldMeta {
+  id: string;
+  name: string;
+  gameMode: 'creative' | 'survival' | 'adventure' | 'spectator';
+  worldType: 'flat' | 'normal' | 'edge_farlands';
+  createdAt: number;
+}
+
+export interface RealmData {
+  id: string;
+  joinCode: string;
+  name: string;
+  tier: 'basic' | 'plus';
+  maxFriends: 2 | 4;
+  maxWorlds: 3 | 6;
+  ownerUid: string;
+  ownerEmail: string;
+  ownerName: string;
+  invitedEmails: string[];
+  memberEmails: string[];
+  worldIds: string[];
+  worldsMeta: RealmWorldMeta[];
+  activeWorldId?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type RealmEditorTool = 'none' | 'sphere' | 'erase_sphere' | 'paint' | 'platform';
+
+export interface RealmEditorConfig {
+  enabled: boolean;
+  tool: RealmEditorTool;
+  radius: number;
+  fillPercent: number; // 0 = hollow shell, 1-99 = porous density %, 100 = solid
+  replaceExisting: boolean;
+  selectedColor: string;
+  applyColorToShapes: boolean;
+  eraseColorMode: boolean;
+  paintRadius: number;
+}
+
+export interface RealmBatchEditPayload {
+  blockChanges: Record<string, number>; // "x,y,z" -> BlockType (0 = AIR)
+  colorChanges: Record<string, string | null>; // "x,y,z" -> "#RRGGBB" or null to clear
+  summaryLabel?: string;
+}
+

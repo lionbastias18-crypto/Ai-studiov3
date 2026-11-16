@@ -16,6 +16,7 @@ import {
   setDoc,
   getDoc,
   getDocs,
+  updateDoc,
   deleteDoc,
   collection,
   query,
@@ -25,6 +26,7 @@ import {
 } from "firebase/firestore";
 import firebaseConfig from "../firebase-applet-config.json";
 import { World } from "./worldPersistence";
+import { RealmData } from "../types";
 
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
@@ -43,13 +45,13 @@ try {
     localCache: persistentLocalCache({
       tabManager: persistentMultipleTabManager()
     }),
-    experimentalForceLongPolling: true
+    experimentalAutoDetectLongPolling: true
   }, firebaseConfig.firestoreDatabaseId);
 } catch (e) {
-  console.warn("Failed to initialize Firestore with persistent multi-tab cache, falling back to basic Firestore with long-polling.", e);
+  console.warn("Failed to initialize Firestore with persistent multi-tab cache, falling back to basic Firestore with auto-detect streaming.", e);
   try {
     dbInstance = initializeFirestore(app, {
-      experimentalForceLongPolling: true
+      experimentalAutoDetectLongPolling: true
     }, firebaseConfig.firestoreDatabaseId);
   } catch (err) {
     dbInstance = getFirestore(app, firebaseConfig.firestoreDatabaseId);
@@ -83,6 +85,88 @@ googleProvider.setCustomParameters({
   prompt: "select_account"
 });
 
+export const FIRESTORE_QUOTA_CONSOLE_URL = `https://console.firebase.google.com/project/${firebaseConfig.projectId}/firestore/databases/${firebaseConfig.firestoreDatabaseId}/data?openUpgradeDialog=true`;
+
+// Global quota circuit breaker: pauses background writes cleanly when Firestore hits free daily write limit
+const QUOTA_PAUSE_DURATION_MS = 5 * 60 * 1000; // 5 minutes cooldown before allowing retry
+let quotaExceededUntil = 0;
+let quotaErrorMessage: string | null = null;
+const quotaListeners = new Set<(paused: boolean, message: string | null) => void>();
+
+export function isQuotaExceededError(error: unknown): boolean {
+  if (!error) return false;
+  const anyErr = error as any;
+  const code = typeof anyErr?.code === "string" ? anyErr.code.toLowerCase() : "";
+  const msg = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  return (
+    code === "resource-exhausted" ||
+    code.endsWith("/resource-exhausted") ||
+    msg.includes("resource-exhausted") ||
+    msg.includes("quota limit exceeded") ||
+    msg.includes("quota exceeded") ||
+    msg.includes("free daily write units")
+  );
+}
+
+export function isFirestoreWritePaused(): boolean {
+  return Date.now() < quotaExceededUntil;
+}
+
+export function getFirestoreQuotaMessage(): string | null {
+  return isFirestoreWritePaused() ? quotaErrorMessage : null;
+}
+
+export function onFirestoreQuotaChange(
+  listener: (paused: boolean, message: string | null) => void
+): () => void {
+  quotaListeners.add(listener);
+  return () => {
+    quotaListeners.delete(listener);
+  };
+}
+
+let lastQuotaLogTime = 0;
+export function markFirestoreQuotaExceeded(error?: unknown): void {
+  const alreadyPaused = isFirestoreWritePaused();
+  quotaExceededUntil = Date.now() + QUOTA_PAUSE_DURATION_MS;
+  const msg =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : "Firestore daily free write quota limit exceeded.";
+  quotaErrorMessage = msg;
+
+  const now = Date.now();
+  if (now - lastQuotaLogTime > 30000) {
+    lastQuotaLogTime = now;
+    console.warn(
+      `[Firestore Quota Guard] Free daily write quota reached. Pausing automatic cloud writes for 5 minutes and saving locally. Upgrade or inspect database: ${FIRESTORE_QUOTA_CONSOLE_URL}`
+    );
+  }
+
+  if (!alreadyPaused) {
+    quotaListeners.forEach((cb) => {
+      try {
+        cb(true, quotaErrorMessage);
+      } catch {}
+    });
+  }
+}
+
+export function clearFirestoreQuotaPause(): void {
+  const wasPaused = quotaExceededUntil > 0;
+  quotaExceededUntil = 0;
+  quotaErrorMessage = null;
+  if (wasPaused) {
+    quotaListeners.forEach((cb) => {
+      try {
+        cb(false, null);
+      } catch {}
+    });
+  }
+}
+
 // Operations error handling wrapper
 export enum OperationType {
   CREATE = "create",
@@ -106,6 +190,10 @@ export interface FirestoreErrorInfo {
 }
 
 export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  if (isQuotaExceededError(error)) {
+    markFirestoreQuotaExceeded(error);
+    throw new Error("FIRESTORE_QUOTA_EXCEEDED");
+  }
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
     authInfo: {
@@ -143,6 +231,9 @@ export async function logoutGoogle(): Promise<void> {
 
 // Firestore Worlds API
 export async function saveWorldToFirestore(world: World): Promise<void> {
+  if (isFirestoreWritePaused()) {
+    throw new Error("FIRESTORE_QUOTA_EXCEEDED");
+  }
   const docPath = `worlds/${world.id}`;
   try {
     const docRef = doc(db, "worlds", world.id);
@@ -156,6 +247,7 @@ export async function saveWorldToFirestore(world: World): Promise<void> {
       gameMode: world.gameMode || "survival",
       worldType: world.worldType || "normal",
       edits: world.edits || {},
+      blockColors: world.blockColors || {},
       survivalInventory: world.survivalInventory || {}
     });
 
@@ -168,11 +260,12 @@ export async function saveWorldToFirestore(world: World): Promise<void> {
       userWorlds.push({ id: doc.id, createdAt: data.createdAt || 0 });
     });
 
-    if (userWorlds.length > 100) {
+    if (userWorlds.length > 100 && !isFirestoreWritePaused()) {
       // Sort oldest first (ascending createdAt)
       userWorlds.sort((a, b) => a.createdAt - b.createdAt);
       const excessCount = userWorlds.length - 100;
       for (let i = 0; i < excessCount; i++) {
+        if (isFirestoreWritePaused()) break;
         await deleteDoc(doc(db, "worlds", userWorlds[i].id));
       }
     }
@@ -199,6 +292,7 @@ export async function loadWorldsFromFirestore(userId: string): Promise<World[]> 
         gameMode: d.gameMode || "survival",
         worldType: d.worldType || "normal",
         edits: d.edits || {},
+        blockColors: d.blockColors || {},
         survivalInventory: d.survivalInventory || {}
       });
     });
@@ -210,6 +304,9 @@ export async function loadWorldsFromFirestore(userId: string): Promise<World[]> 
 }
 
 export async function deleteWorldFromFirestore(worldId: string): Promise<void> {
+  if (isFirestoreWritePaused()) {
+    throw new Error("FIRESTORE_QUOTA_EXCEEDED");
+  }
   const docPath = `worlds/${worldId}`;
   try {
     const docRef = doc(db, "worlds", worldId);
@@ -218,3 +315,104 @@ export async function deleteWorldFromFirestore(worldId: string): Promise<void> {
     handleFirestoreError(error, OperationType.DELETE, docPath);
   }
 }
+
+export async function batchUpdateWorldInFirestore(
+  worldId: string,
+  patchFields: Record<string, any>
+): Promise<void> {
+  const keys = Object.keys(patchFields);
+  if (keys.length === 0) return;
+  if (isFirestoreWritePaused()) {
+    throw new Error("FIRESTORE_QUOTA_EXCEEDED");
+  }
+  const docPath = `worlds/${worldId}`;
+  try {
+    const docRef = doc(db, "worlds", worldId);
+    // Split huge batch updates into safe chunks (<= 1500 field patches per write)
+    const CHUNK_LIMIT = 1500;
+    for (let i = 0; i < keys.length; i += CHUNK_LIMIT) {
+      if (isFirestoreWritePaused()) break;
+      const slice: Record<string, any> = {};
+      const end = Math.min(keys.length, i + CHUNK_LIMIT);
+      for (let j = i; j < end; j++) {
+        const k = keys[j];
+        slice[k] = patchFields[k];
+      }
+      await updateDoc(docRef, slice);
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, docPath);
+  }
+}
+
+// Firestore Realms API
+export async function createRealmInFirestore(realm: RealmData): Promise<void> {
+  if (isFirestoreWritePaused()) {
+    throw new Error("FIRESTORE_QUOTA_EXCEEDED");
+  }
+  const docPath = `realms/${realm.id}`;
+  try {
+    await setDoc(doc(db, "realms", realm.id), {
+      id: realm.id,
+      joinCode: realm.joinCode,
+      name: realm.name,
+      tier: realm.tier,
+      maxFriends: realm.maxFriends,
+      maxWorlds: realm.maxWorlds,
+      ownerUid: realm.ownerUid,
+      ownerEmail: realm.ownerEmail.toLowerCase(),
+      ownerName: realm.ownerName || realm.ownerEmail,
+      invitedEmails: realm.invitedEmails || [],
+      memberEmails: realm.memberEmails || [],
+      worldIds: realm.worldIds || [],
+      worldsMeta: realm.worldsMeta || [],
+      activeWorldId: realm.activeWorldId || "",
+      createdAt: realm.createdAt,
+      updatedAt: realm.updatedAt,
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.CREATE, docPath);
+  }
+}
+
+export async function updateRealmInFirestore(
+  realmId: string,
+  updates: Partial<RealmData>
+): Promise<void> {
+  if (isFirestoreWritePaused()) {
+    throw new Error("FIRESTORE_QUOTA_EXCEEDED");
+  }
+  const docPath = `realms/${realmId}`;
+  try {
+    const cleanUpdates: Record<string, any> = { ...updates, updatedAt: updates.updatedAt || Date.now() };
+    Object.keys(cleanUpdates).forEach((k) => {
+      if (cleanUpdates[k] === undefined) delete cleanUpdates[k];
+    });
+    await updateDoc(doc(db, "realms", realmId), cleanUpdates);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, docPath);
+  }
+}
+
+export async function deleteRealmFromFirestore(realmId: string): Promise<void> {
+  const docPath = `realms/${realmId}`;
+  try {
+    await deleteDoc(doc(db, "realms", realmId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, docPath);
+  }
+}
+
+export async function getRealmByCodeFromFirestore(code: string): Promise<RealmData | null> {
+  const cleanCode = code.trim().toUpperCase();
+  const docPath = `realms/${cleanCode}`;
+  try {
+    const snap = await getDoc(doc(db, "realms", cleanCode));
+    if (!snap.exists()) return null;
+    return snap.data() as RealmData;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, docPath);
+    return null;
+  }
+}
+

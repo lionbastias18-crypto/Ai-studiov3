@@ -40,6 +40,10 @@
         "edits": {
           "type": "object",
           "description": "Record of coordinate keys and block types"
+        },
+        "blockColors": {
+          "type": "object",
+          "description": "Record of coordinate keys and custom hex color strings (#RRGGBB)"
         }
       },
       "required": ["id", "name", "creator", "createdAt", "gameMode", "worldType"]
@@ -100,9 +104,97 @@
         "customSkin": {
           "type": "object",
           "description": "Custom 3D character configuration"
+        },
+        "realmPlan": {
+          "type": "string",
+          "enum": ["none", "basic", "plus"],
+          "description": "Unlocked Realm tier: none, basic (2 friends, 3 worlds), or plus (4 friends, 6 worlds)"
         }
       },
       "required": ["email", "role"]
+    },
+    "Realm": {
+      "title": "Realm",
+      "description": "Persistent multiplayer Realm hosting shared worlds with friend and world capacity limits",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Unique Realm ID and join code"
+        },
+        "joinCode": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 24,
+          "description": "Shareable invite code for joining the Realm"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "description": "Display name of the Realm"
+        },
+        "tier": {
+          "type": "string",
+          "enum": ["basic", "plus"],
+          "description": "Realm tier: basic (free, 2 friends, 3 worlds) or plus (cheap, 4 friends, 6 worlds)"
+        },
+        "maxFriends": {
+          "type": "number",
+          "description": "Maximum friend slots (2 for basic, 4 for plus)"
+        },
+        "maxWorlds": {
+          "type": "number",
+          "description": "Maximum shared worlds in the Realm (3 for basic, 6 for plus)"
+        },
+        "ownerUid": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Firebase Auth UID of the Realm owner"
+        },
+        "ownerEmail": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Lowercase Google email of the Realm owner"
+        },
+        "ownerName": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Display name of the Realm owner"
+        },
+        "invitedEmails": {
+          "type": "array",
+          "description": "Bounded list of invited friend emails"
+        },
+        "memberEmails": {
+          "type": "array",
+          "description": "Bounded list of joined member emails"
+        },
+        "worldIds": {
+          "type": "array",
+          "description": "Bounded list of world IDs hosted inside this Realm"
+        },
+        "worldsMeta": {
+          "type": "array",
+          "description": "Lightweight metadata summaries for worlds inside this Realm"
+        },
+        "activeWorldId": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Currently highlighted world ID inside the Realm"
+        },
+        "createdAt": {
+          "type": "number",
+          "description": "Creation timestamp in milliseconds"
+        },
+        "updatedAt": {
+          "type": "number",
+          "description": "Last modification timestamp in milliseconds"
+        }
+      },
+      "required": ["id", "joinCode", "name", "tier", "maxFriends", "maxWorlds", "ownerUid", "ownerEmail", "createdAt", "updatedAt"]
     },
     "UserPurchase": {
       "title": "UserPurchase",
@@ -267,6 +359,10 @@
     "/worlds/{worldId}": {
       "schema": "World",
       "description": "Collection of user-created voxel worlds"
+    },
+    "/realms/{realmId}": {
+      "schema": "Realm",
+      "description": "Collection of player-owned multiplayer Realms with friend and world capacity limits"
     },
     "/user_roles/{email}": {
       "schema": "UserRole",

@@ -3,7 +3,7 @@ import VoxelWorld, { DEFAULT_NOISE_CONFIG } from "./components/VoxelWorld";
 import Joystick from "./components/Joystick";
 import { FpsCounter } from "./components/FpsCounter";
 import { MenuPanorama3D } from "./components/MenuPanorama3D";
-import { BlockType, ToolType, Vector3D, GeminiSuggestion, NoiseConfig, PerformanceConfig, CharacterSkinId, CustomCharacterConfig, ActivePlayerInfo, AICompanionConfig, AICompanionMode } from "./types";
+import { BlockType, ToolType, Vector3D, GeminiSuggestion, NoiseConfig, PerformanceConfig, CharacterSkinId, CustomCharacterConfig, ActivePlayerInfo, AICompanionConfig, AICompanionMode, RealmData, RealmPlanTier, RealmWorldMeta, RealmEditorTool, RealmEditorConfig, RealmBatchEditPayload } from "./types";
 import { CharacterModel, CHARACTER_SKINS, DEFAULT_CUSTOM_SKIN } from "./components/CharacterModel";
 import { CharacterPreviewCard } from "./components/CharacterPreviewCard";
 import { BLOCK_NAMES, BLOCK_COLORS } from "./constants";
@@ -49,8 +49,19 @@ import {
   saveWorldToFirestore,
   loadWorldsFromFirestore,
   deleteWorldFromFirestore,
+  batchUpdateWorldInFirestore,
+  createRealmInFirestore,
+  updateRealmInFirestore,
+  deleteRealmFromFirestore,
+  getRealmByCodeFromFirestore,
   handleFirestoreError,
-  OperationType
+  OperationType,
+  isQuotaExceededError,
+  isFirestoreWritePaused,
+  markFirestoreQuotaExceeded,
+  clearFirestoreQuotaPause,
+  onFirestoreQuotaChange,
+  FIRESTORE_QUOTA_CONSOLE_URL
 } from "./services/firebaseService";
 import {
   doc,
@@ -918,6 +929,24 @@ const App: React.FC = () => {
   const [placeTrigger, setPlaceTrigger] = useState(0);
   const placeHoldTimerRef = useRef<any>(null);
   const pendingLocalEditsRef = useRef<Record<string, { value: BlockType; ts: number }>>({});
+  const pendingLocalColorsRef = useRef<Record<string, { value: string | null; ts: number }>>({});
+  const [isRealmEditorOpen, setIsRealmEditorOpen] = useState(false);
+  const [realmEditorConfig, setRealmEditorConfig] = useState<RealmEditorConfig>({
+    enabled: true,
+    tool: "none",
+    radius: 5,
+    fillPercent: 100,
+    replaceExisting: true,
+    selectedColor: "#ff2a6d",
+    applyColorToShapes: false,
+    eraseColorMode: false,
+    paintRadius: 1,
+  });
+  const [realmActionRequest, setRealmActionRequest] = useState<{
+    seq: number;
+    action: "place_front" | "paint_aimed" | "undo";
+  } | null>(null);
+  const [realmCanUndo, setRealmCanUndo] = useState(false);
 
   const handleAttack = useCallback(() => {
     resumeAudio();
@@ -1057,6 +1086,22 @@ const App: React.FC = () => {
   const [showCameraFlash, setShowCameraFlash] = useState<boolean>(false);
   const [flashOpacity, setFlashOpacity] = useState<number>(0);
   const [screenshotToast, setScreenshotToast] = useState<string | null>(null);
+  const [firestoreQuotaPaused, setFirestoreQuotaPaused] = useState<boolean>(() => isFirestoreWritePaused());
+  const [quotaBannerDismissed, setQuotaBannerDismissed] = useState<boolean>(false);
+  const otherPlayersCountRef = useRef<number>(0);
+  const queuedBlockPatchRef = useRef<{ worldId: string; patchFields: Record<string, any> } | null>(null);
+  const blockPatchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastAutoSaveSignatureRef = useRef<string>("");
+
+  useEffect(() => {
+    const unsub = onFirestoreQuotaChange((paused) => {
+      setFirestoreQuotaPaused(paused);
+      if (paused) {
+        setQuotaBannerDismissed(false);
+      }
+    });
+    return unsub;
+  }, []);
   const [devicePreset, setDevicePreset] = useState<"auto" | "redmi" | "funtouch" | "galaxy">(() => {
     if (typeof window !== "undefined") {
       const saved = localStorage.getItem("minecraft_device_preset");
@@ -1066,11 +1111,21 @@ const App: React.FC = () => {
     }
     return "auto";
   });
-  const [screenSize, setScreenSize] = useState({
-    width: typeof window !== "undefined" ? window.innerWidth : 1280,
-    height: typeof window !== "undefined" ? window.innerHeight : 720,
-    aspectRatio: typeof window !== "undefined" ? (window.innerWidth / (window.innerHeight || 1)) : 1.78,
+  const [webAutoRotateMode, setWebAutoRotateMode] = useState<"auto" | "landscape" | "portrait">(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("minecraft_web_autorotate");
+      if (saved === "auto" || saved === "landscape" || saved === "portrait") {
+        return saved;
+      }
+    }
+    return "auto";
   });
+  const [physicalViewport, setPhysicalViewport] = useState({
+    width: typeof window !== "undefined" ? Math.round(window.visualViewport?.width || window.innerWidth) : 1280,
+    height: typeof window !== "undefined" ? Math.round(window.visualViewport?.height || window.innerHeight) : 720,
+  });
+  const [sensorTiltDeg, setSensorTiltDeg] = useState<0 | 90 | -90 | null>(null);
+  const [sensorStatus, setSensorStatus] = useState<"idle" | "active" | "needs_permission" | "unsupported">("idle");
   const { health, food, air, isInWater, isUnderwater, aquaticPerk, isRegenerating } = useGameState();
 
   // Active World
@@ -1157,7 +1212,7 @@ const App: React.FC = () => {
   const [allUserRolesList, setAllUserRolesList] = useState<Array<{ email: string; role: string; biomeSurface?: number; biomeUnderground?: number; biomeFlora?: number; blocksPlaced?: number; blocksBroken?: number; worldsCreated?: number; score?: number; displayName?: string; lastActive?: number; vipActive?: boolean; mvpActive?: boolean; unlockedWorldsPass?: boolean; indefCoins?: number; ownedShopItems?: string[] }>>([]);
   const [isLeaderboardOpen, setIsLeaderboardOpen] = useState(false);
   const [isShopOpen, setIsShopOpen] = useState(false);
-  const [shopCategory, setShopCategory] = useState<"all" | "indefs" | "passes" | "skins" | "cosmetics" | "history">("all");
+  const [shopCategory, setShopCategory] = useState<"all" | "indefs" | "passes" | "realms" | "skins" | "cosmetics" | "history">("all");
   const [selectedProduct, setSelectedProduct] = useState<
     | "indef_500"
     | "indef_1500"
@@ -1167,6 +1222,8 @@ const App: React.FC = () => {
     | "mvp_plus"
     | "aquatic_vip"
     | "unlocked_worlds"
+    | "realm_basic"
+    | "realm_plus"
     | "skin_dragon"
     | "skin_angel"
     | "skin_titan"
@@ -1178,6 +1235,47 @@ const App: React.FC = () => {
     | "cape_royal"
     | null
   >(null);
+  const [realmPlan, setRealmPlan] = useState<RealmPlanTier>(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("minecraft_realm_plan");
+      if (saved === "basic" || saved === "plus") return saved;
+    }
+    return "none";
+  });
+  const [isRealmsOpen, setIsRealmsOpen] = useState(false);
+  const [realmsTab, setRealmsTab] = useState<"my" | "join" | "plans" | "admin">("my");
+  const [myRealms, setMyRealms] = useState<RealmData[]>(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const raw = localStorage.getItem("minecraft_local_realms");
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) return parsed;
+        }
+      } catch {}
+    }
+    return [];
+  });
+  const [joinedRealms, setJoinedRealms] = useState<RealmData[]>([]);
+  const [allAdminRealms, setAllAdminRealms] = useState<RealmData[]>([]);
+  const [selectedRealmId, setSelectedRealmId] = useState<string | null>(null);
+  const [activeRealmId, setActiveRealmId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!activeRealmId) {
+      setIsRealmEditorOpen(false);
+      setRealmCanUndo(false);
+      setRealmEditorConfig((prev) => (prev.tool === "none" ? prev : { ...prev, tool: "none" }));
+    }
+  }, [activeRealmId]);
+  const [newRealmName, setNewRealmName] = useState("");
+  const [newRealmTier, setNewRealmTier] = useState<"basic" | "plus">("basic");
+  const [joinRealmCodeInput, setJoinRealmCodeInput] = useState("");
+  const [inviteFriendEmailInput, setInviteFriendEmailInput] = useState("");
+  const [realmWorldNameInput, setRealmWorldNameInput] = useState("");
+  const [realmWorldMode, setRealmWorldMode] = useState<"survival" | "creative" | "adventure" | "spectator">("survival");
+  const [realmWorldType, setRealmWorldType] = useState<"normal" | "flat" | "edge_farlands">("normal");
+  const [realmStatusMsg, setRealmStatusMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
+  const [realmLoading, setRealmLoading] = useState(false);
   const [lastDailyIndefClaim, setLastDailyIndefClaim] = useState<number>(() => {
     if (typeof window !== "undefined") {
       return Math.max(0, Number(localStorage.getItem("minecraft_last_daily_indef") || 0) || 0);
@@ -1249,6 +1347,25 @@ const App: React.FC = () => {
     }
     return edits;
   }, [currentWorld?.edits, dimension]);
+
+  const dimensionBlockColors = useMemo(() => {
+    if (!currentWorld?.blockColors) return {};
+    const colors: Record<string, string> = {};
+    if (dimension === "nether") {
+      for (const [key, value] of Object.entries(currentWorld.blockColors)) {
+        if (key.startsWith("nether:") && typeof value === "string") {
+          colors[key.substring(7)] = value;
+        }
+      }
+    } else {
+      for (const [key, value] of Object.entries(currentWorld.blockColors)) {
+        if (!key.startsWith("nether:") && typeof value === "string") {
+          colors[key] = value;
+        }
+      }
+    }
+    return colors;
+  }, [currentWorld?.blockColors, dimension]);
 
   // Chat & Commands State
   const [isChatOpen, setIsChatOpen] = useState(false);
@@ -1410,7 +1527,7 @@ const App: React.FC = () => {
         ]);
       }
     } else {
-      if (currentWorld && db) {
+      if (currentWorld && db && !isFirestoreWritePaused()) {
         const senderId = multiplayerUserIdRef.current || activeSession || "guest";
         const senderName = googleUser ? (googleUser.displayName || googleUser.email || "Jugador") : (currentUser || "Invitado");
         const msgId = `msg_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
@@ -1422,7 +1539,11 @@ const App: React.FC = () => {
           text: trimmed,
           timestamp: Date.now(),
         }).catch((err) => {
-          console.warn("Error sending world chat message:", err);
+          if (isQuotaExceededError(err)) {
+            markFirestoreQuotaExceeded(err);
+          } else {
+            console.warn("Error sending world chat message:", err);
+          }
         });
       }
       if (aiCompanionConfigRef.current.enabled) {
@@ -1569,8 +1690,34 @@ const App: React.FC = () => {
     return "auto"; // Default / standard
   })();
 
-  const isCompactHeight = screenSize.height < 520;
-  const isCompactWidth = screenSize.width < 768;
+  const physIsLandscape = physicalViewport.width > physicalViewport.height;
+  const virtualRotationDeg: 0 | 90 | -90 = (() => {
+    if (webAutoRotateMode === "landscape") {
+      if (physIsLandscape) return 0;
+      return sensorTiltDeg === -90 ? -90 : 90;
+    }
+    if (webAutoRotateMode === "portrait") {
+      return physIsLandscape ? 90 : 0;
+    }
+    if (!physIsLandscape && (isTouchDevice || physicalViewport.width <= 900) && (sensorTiltDeg === 90 || sensorTiltDeg === -90)) {
+      return sensorTiltDeg;
+    }
+    return 0;
+  })();
+
+  const screenSize = (() => {
+    const effW = virtualRotationDeg !== 0 ? physicalViewport.height : physicalViewport.width;
+    const effH = virtualRotationDeg !== 0 ? physicalViewport.width : physicalViewport.height;
+    return {
+      width: effW,
+      height: effH,
+      aspectRatio: effW / (effH || 1),
+    };
+  })();
+
+  const isPortrait = screenSize.height > screenSize.width && screenSize.width < 900;
+  const isCompactHeight = screenSize.height < 640;
+  const isCompactWidth = screenSize.width < 820;
   const useCompactUI = isCompactHeight || isCompactWidth;
 
   const uiScaleConfig = (() => {
@@ -1578,77 +1725,77 @@ const App: React.FC = () => {
       case "redmi":
         return {
           name: "Redmi Pad SE 8.7 (5:3)",
-          joystickSize: useCompactUI ? 100 : 135,
-          jumpButtonSize: useCompactUI ? "w-11 h-11" : "w-16 h-16",
-          hotbarScale: useCompactUI ? "scale-[0.8] origin-bottom" : "scale-[1.08] origin-bottom",
-          controlPadding: useCompactUI ? "px-3 pb-1.5 pt-0.5" : "px-6 pb-6 pt-2",
+          joystickSize: isPortrait ? 84 : (useCompactUI ? (screenSize.height < 450 ? 88 : 100) : 135),
+          jumpButtonSize: isPortrait ? "w-10 h-10" : (useCompactUI ? (screenSize.height < 450 ? "w-10 h-10" : "w-11 h-11") : "w-16 h-16"),
+          hotbarScale: isPortrait ? "scale-[0.92] origin-bottom" : (useCompactUI ? "scale-[0.82] origin-bottom" : "scale-[1.08] origin-bottom"),
+          controlPadding: isPortrait ? "px-2 pb-2 pt-0.5" : (useCompactUI ? "px-2.5 pb-1.5 pt-0.5" : "px-6 pb-4 pt-2"),
           marginClass: useCompactUI ? "mb-1 mx-2 px-1" : "mb-3 mx-4 px-2",
-          gapClass: useCompactUI ? "gap-2" : "gap-4",
+          gapClass: useCompactUI ? "gap-1.5" : "gap-4",
           fontSize: "text-[10px]",
           badge: "bg-orange-500/20 text-orange-400 border border-orange-500/30",
           desc: "Redmi Pad SE 8.7 (Pantalla compacta 5:3 / 1.67)",
           containerPadding: useCompactUI ? "p-2" : "p-4 md:p-6",
-          statsPadding: useCompactUI ? "p-2.5" : "p-4",
-          statsTitle: useCompactUI ? "text-sm" : "text-lg",
+          statsPadding: useCompactUI ? "p-2" : "p-3.5",
+          statsTitle: useCompactUI ? "text-xs sm:text-sm" : "text-lg",
           statsText: useCompactUI ? "text-[8px]" : "text-[9px]",
-          btnSize: useCompactUI ? "w-9 h-9" : "w-12 h-12",
+          btnSize: useCompactUI ? "w-8 h-8 sm:w-9 sm:h-9" : "w-11 h-11",
           btnIcon: useCompactUI ? "text-xs" : "text-base",
         };
       case "funtouch":
         return {
           name: "Funtouch OS 15 (3:2)",
-          joystickSize: useCompactUI ? 110 : 165,
-          jumpButtonSize: useCompactUI ? "w-12 h-12" : "w-20 h-20",
-          hotbarScale: useCompactUI ? "scale-[0.85] origin-bottom" : "scale-[1.18] origin-bottom",
-          controlPadding: useCompactUI ? "px-4 pb-2 pt-0.5" : "px-10 pb-8 pt-3",
-          marginClass: useCompactUI ? "mb-1.5 mx-3 px-1.5" : "mb-6 mx-8 px-4",
-          gapClass: useCompactUI ? "gap-2.5" : "gap-6",
+          joystickSize: isPortrait ? 88 : (useCompactUI ? (screenSize.height < 450 ? 92 : 108) : 150),
+          jumpButtonSize: isPortrait ? "w-10 h-10" : (useCompactUI ? "w-11 h-11" : "w-16 h-16"),
+          hotbarScale: isPortrait ? "scale-[0.94] origin-bottom" : (useCompactUI ? "scale-[0.85] origin-bottom" : "scale-[1.12] origin-bottom"),
+          controlPadding: isPortrait ? "px-2.5 pb-2 pt-0.5" : (useCompactUI ? "px-3 pb-2 pt-0.5" : "px-8 pb-5 pt-2"),
+          marginClass: useCompactUI ? "mb-1.5 mx-3 px-1.5" : "mb-4 mx-6 px-3",
+          gapClass: useCompactUI ? "gap-2" : "gap-5",
           fontSize: "text-xs",
           badge: "bg-cyan-500/20 text-cyan-400 border border-cyan-500/30",
           desc: "Funtouch OS 15 Tablet (Pantalla grande 3:2 / 1.50)",
-          containerPadding: useCompactUI ? "p-2.5" : "p-4 md:p-6",
-          statsPadding: useCompactUI ? "p-3" : "p-4",
+          containerPadding: useCompactUI ? "p-2" : "p-4 md:p-6",
+          statsPadding: useCompactUI ? "p-2.5" : "p-3.5",
           statsTitle: useCompactUI ? "text-sm sm:text-base" : "text-lg",
           statsText: useCompactUI ? "text-[8.5px]" : "text-xs",
-          btnSize: useCompactUI ? "w-10 h-10" : "w-12 h-12",
+          btnSize: useCompactUI ? "w-9 h-9 sm:w-10 sm:h-10" : "w-11 h-11",
           btnIcon: useCompactUI ? "text-sm" : "text-base",
         };
       case "galaxy":
         return {
           name: "Galaxy A23 (20:9)",
-          joystickSize: useCompactUI ? 90 : 120,
-          jumpButtonSize: useCompactUI ? "w-10 h-10" : "w-14 h-14",
-          hotbarScale: useCompactUI ? "scale-[0.75] origin-bottom" : "scale-[0.92] origin-bottom",
-          controlPadding: useCompactUI ? "px-4 pb-1.5 pt-0.5" : "px-12 pb-4 pt-1",
+          joystickSize: isPortrait ? 80 : (useCompactUI ? 86 : 120),
+          jumpButtonSize: isPortrait ? "w-9.5 h-9.5" : (useCompactUI ? "w-9.5 h-9.5 sm:w-10 sm:h-10" : "w-14 h-14"),
+          hotbarScale: isPortrait ? "scale-[0.88] origin-bottom" : (useCompactUI ? "scale-[0.78] origin-bottom" : "scale-[0.92] origin-bottom"),
+          controlPadding: isPortrait ? "px-2 pb-2 pt-0.5" : (useCompactUI ? "px-2.5 pb-1.5 pt-0.5" : "px-10 pb-4 pt-1"),
           marginClass: useCompactUI ? "mb-0.5 mx-2 px-0.5" : "mb-2 mx-6 px-1",
           gapClass: useCompactUI ? "gap-1.5" : "gap-3",
           fontSize: "text-[9px]",
           badge: "bg-fuchsia-500/20 text-fuchsia-400 border border-fuchsia-500/30",
           desc: "Galaxy A23 (Ultra panorámico 20:9 / 2.22)",
-          containerPadding: useCompactUI ? "p-2" : "p-4 md:p-6",
-          statsPadding: useCompactUI ? "p-2.5" : "p-4",
+          containerPadding: useCompactUI ? "p-1.5 sm:p-2" : "p-4 md:p-6",
+          statsPadding: useCompactUI ? "p-2" : "p-3.5",
           statsTitle: useCompactUI ? "text-xs" : "text-base",
           statsText: useCompactUI ? "text-[8px]" : "text-[9px]",
-          btnSize: useCompactUI ? "w-8.5 h-8.5" : "w-12 h-12",
+          btnSize: useCompactUI ? "w-8 h-8" : "w-11 h-11",
           btnIcon: useCompactUI ? "text-[11px]" : "text-base",
         };
       default:
         return {
           name: "Adaptable Auto",
-          joystickSize: useCompactUI ? 105 : 150,
-          jumpButtonSize: useCompactUI ? "w-11 h-11" : "w-16 h-16",
-          hotbarScale: useCompactUI ? "scale-[0.8] origin-bottom" : "scale-100 origin-bottom",
-          controlPadding: useCompactUI ? "px-3 pb-1.5 pt-0.5" : "px-6 pb-6 pt-2",
+          joystickSize: isPortrait ? 84 : (useCompactUI ? (screenSize.height < 450 ? 90 : 102) : 140),
+          jumpButtonSize: isPortrait ? "w-10 h-10" : (useCompactUI ? (screenSize.height < 450 ? "w-10 h-10" : "w-11 h-11") : "w-15 h-15"),
+          hotbarScale: isPortrait ? "scale-[0.92] origin-bottom" : (useCompactUI ? "scale-[0.82] origin-bottom" : "scale-100 origin-bottom"),
+          controlPadding: isPortrait ? "px-2 pb-2 pt-0.5" : (useCompactUI ? "px-2.5 pb-1.5 pt-0.5" : "px-6 pb-4 pt-2"),
           marginClass: useCompactUI ? "mb-1 mx-2 px-1" : "mb-3 mx-4 px-2",
-          gapClass: useCompactUI ? "gap-2.5" : "gap-4",
+          gapClass: useCompactUI ? "gap-2" : "gap-4",
           fontSize: "text-[10px]",
           badge: "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30",
           desc: "Estándar auto-adaptable y flexible",
           containerPadding: useCompactUI ? "p-2" : "p-4 md:p-6",
-          statsPadding: useCompactUI ? "p-2.5" : "p-4",
-          statsTitle: useCompactUI ? "text-sm" : "text-lg",
+          statsPadding: useCompactUI ? "p-2" : "p-3.5",
+          statsTitle: useCompactUI ? "text-xs sm:text-sm" : "text-lg",
           statsText: useCompactUI ? "text-[8px]" : "text-[9px]",
-          btnSize: useCompactUI ? "w-9 h-9" : "w-12 h-12",
+          btnSize: useCompactUI ? "w-8 h-8 sm:w-9 sm:h-9" : "w-11 h-11",
           btnIcon: useCompactUI ? "text-xs" : "text-base",
         };
     }
@@ -1664,21 +1811,212 @@ const App: React.FC = () => {
         ('maxTouchPoints' in navigator && navigator.maxTouchPoints > 0) ||
         window.matchMedia('(pointer: coarse)').matches;
       setIsTouchDevice(hasTouch);
+      const vw = Math.round(window.visualViewport?.width || window.innerWidth);
+      const vh = Math.round(window.visualViewport?.height || window.innerHeight);
       // Modern tablet landscape screens and larger widths can also run touch modes
-      setIsSmallScreen(window.innerWidth <= 1280);
+      setIsSmallScreen(vw <= 1280 || vh <= 1280);
       
-      setScreenSize({
-        width: window.innerWidth,
-        height: window.innerHeight,
-        aspectRatio: window.innerWidth / (window.innerHeight || 1),
+      setPhysicalViewport((prev) => {
+        if (prev.width === vw && prev.height === vh) return prev;
+        return { width: vw, height: vh };
       });
     };
+
+    let t1: ReturnType<typeof setTimeout> | null = null;
+    let t2: ReturnType<typeof setTimeout> | null = null;
+    let rafId: number | null = null;
+    const handleOrientationOrResize = () => {
+      checkTouchAndSize();
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        checkTouchAndSize();
+      });
+      if (t1) clearTimeout(t1);
+      if (t2) clearTimeout(t2);
+      t1 = setTimeout(checkTouchAndSize, 90);
+      t2 = setTimeout(() => {
+        checkTouchAndSize();
+        window.scrollTo(0, 0);
+      }, 260);
+    };
+
     checkTouchAndSize();
-    window.addEventListener("resize", checkTouchAndSize);
+    window.addEventListener("resize", handleOrientationOrResize);
+    window.addEventListener("orientationchange", handleOrientationOrResize);
+    window.visualViewport?.addEventListener("resize", handleOrientationOrResize);
+    try {
+      (window.screen as any)?.orientation?.addEventListener?.("change", handleOrientationOrResize);
+    } catch {}
     return () => {
-      window.removeEventListener("resize", checkTouchAndSize);
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      if (t1) clearTimeout(t1);
+      if (t2) clearTimeout(t2);
+      window.removeEventListener("resize", handleOrientationOrResize);
+      window.removeEventListener("orientationchange", handleOrientationOrResize);
+      window.visualViewport?.removeEventListener("resize", handleOrientationOrResize);
+      try {
+        (window.screen as any)?.orientation?.removeEventListener?.("change", handleOrientationOrResize);
+      } catch {}
     };
   }, []);
+
+  // Hardware Accelerometer/Gyroscope auto-rotation listener (works on mobile browsers even when OS Auto-Rotate is locked)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!isTouchDevice && physicalViewport.width > 900) return;
+
+    const dmReq = (window as any).DeviceMotionEvent?.requestPermission;
+    const doReq = (window as any).DeviceOrientationEvent?.requestPermission;
+    if (typeof dmReq === "function" || typeof doReq === "function") {
+      setSensorStatus((prev) => (prev === "active" ? prev : "needs_permission"));
+    }
+
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+    let candidateTilt: 0 | 90 | -90 | null = null;
+    let candidateSince = 0;
+    let lastMotionEventAt = 0;
+
+    const commitCandidate = (nextTilt: 0 | 90 | -90) => {
+      const now = Date.now();
+      if (candidateTilt !== nextTilt) {
+        candidateTilt = nextTilt;
+        candidateSince = now;
+        return;
+      }
+      if (now - candidateSince >= 300) {
+        setSensorTiltDeg((prev) => (prev === nextTilt ? prev : nextTilt));
+      }
+    };
+
+    const handleDeviceMotion = (e: DeviceMotionEvent) => {
+      const acc = e.accelerationIncludingGravity;
+      if (!acc || acc.x === null || acc.y === null || acc.x === undefined || acc.y === undefined) return;
+      lastMotionEventAt = Date.now();
+      setSensorStatus("active");
+      const gx = acc.x;
+      const gy = acc.y;
+      const gz = acc.z ?? 0;
+      // Ignore flat table resting posture
+      if (Math.abs(gz) > 8.6 && Math.hypot(gx, gy) < 3.6) return;
+
+      if (Math.abs(gx) > 5.8 && Math.abs(gy) < 4.5) {
+        const deg: 90 | -90 = isIOS ? (gx < 0 ? 90 : -90) : (gx > 0 ? 90 : -90);
+        commitCandidate(deg);
+      } else if (Math.abs(gy) > 6.2 && Math.abs(gx) < 4.2) {
+        commitCandidate(0);
+      }
+    };
+
+    const handleDeviceOrientation = (e: DeviceOrientationEvent) => {
+      // Prefer devicemotion if actively firing; fallback to beta/gamma otherwise
+      if (Date.now() - lastMotionEventAt < 800) return;
+      if (typeof e.beta !== "number" || typeof e.gamma !== "number") return;
+      setSensorStatus("active");
+      const absBeta = Math.abs(e.beta);
+      const absGamma = Math.abs(e.gamma);
+      if (absBeta < 38 && absGamma > 48) {
+        commitCandidate(e.gamma < 0 ? 90 : -90);
+      } else if (absBeta > 48 && absGamma < 35) {
+        commitCandidate(0);
+      }
+    };
+
+    window.addEventListener("devicemotion", handleDeviceMotion);
+    window.addEventListener("deviceorientation", handleDeviceOrientation);
+    return () => {
+      window.removeEventListener("devicemotion", handleDeviceMotion);
+      window.removeEventListener("deviceorientation", handleDeviceOrientation);
+    };
+  }, [isTouchDevice, physicalViewport.width]);
+
+  const applyMobileRotationSelection = useCallback((mode: "auto" | "landscape" | "portrait", tryFullscreen = true) => {
+    setWebAutoRotateMode(mode);
+    try {
+      localStorage.setItem("minecraft_web_autorotate", mode);
+    } catch {}
+    if (mode !== "auto") {
+      setSensorTiltDeg(null);
+    }
+
+    // Request iOS 13+ sensor permissions synchronously inside user gesture
+    try {
+      const dm = (window as any).DeviceMotionEvent;
+      if (dm && typeof dm.requestPermission === "function") {
+        dm.requestPermission()
+          .then((res: string) => {
+            if (res === "granted") setSensorStatus("active");
+          })
+          .catch(() => {});
+      }
+      const dor = (window as any).DeviceOrientationEvent;
+      if (dor && typeof dor.requestPermission === "function") {
+        dor.requestPermission()
+          .then((res: string) => {
+            if (res === "granted") setSensorStatus("active");
+          })
+          .catch(() => {});
+      }
+    } catch {}
+
+    // Attempt native browser Fullscreen + screen.orientation lock (supported on Android Chrome)
+    if (typeof window !== "undefined") {
+      const screenOrientation = (window.screen as any)?.orientation;
+      const docEl = document.documentElement as any;
+      const applyLock = () => {
+        if (!screenOrientation) return;
+        try {
+          if (mode === "auto") {
+            screenOrientation.unlock?.();
+          } else {
+            screenOrientation.lock?.(mode)?.catch?.(() => {});
+          }
+        } catch {}
+      };
+
+      if (tryFullscreen && mode !== "auto" && !document.fullscreenElement && docEl?.requestFullscreen) {
+        try {
+          const fsPromise = docEl.requestFullscreen({ navigationUI: "hide" });
+          if (fsPromise && typeof fsPromise.then === "function") {
+            fsPromise.then(applyLock).catch(applyLock);
+          } else {
+            applyLock();
+          }
+        } catch {
+          applyLock();
+        }
+      } else {
+        applyLock();
+      }
+    }
+  }, []);
+
+  const toggleManualScreenRotation = useCallback(() => {
+    const nextMode: "landscape" | "portrait" = isPortrait ? "landscape" : "portrait";
+    applyMobileRotationSelection(nextMode, true);
+  }, [isPortrait, applyMobileRotationSelection]);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.scrollTo(0, 0);
+      document.documentElement.scrollTop = 0;
+      document.body.scrollTop = 0;
+    }
+    if (appState === "settings") {
+      moveVectorRef.current.x = 0;
+      moveVectorRef.current.y = 0;
+      setIsJumping(false);
+      setIsZooming(false);
+      stopContinuousPlace();
+    } else if (appState === "playing" && typeof window !== "undefined") {
+      const raf = requestAnimationFrame(() => {
+        window.scrollTo(0, 0);
+        document.documentElement.scrollTop = 0;
+        document.body.scrollTop = 0;
+        window.dispatchEvent(new Event("resize"));
+      });
+      return () => cancelAnimationFrame(raf);
+    }
+  }, [appState, stopContinuousPlace]);
 
   useEffect(() => {
     if (currentWorld) {
@@ -1714,6 +2052,12 @@ const App: React.FC = () => {
   const [newWorldType, setNewWorldType] = useState<"flat" | "normal" | "edge_farlands">("normal");
 
   const [googleUser, setGoogleUser] = useState<any | null>(null);
+  const isRealmAdmin = googleUser?.email?.toLowerCase().trim() === "lionbastias18@gmail.com";
+  const effectiveRealmPlan: RealmPlanTier = isRealmAdmin
+    ? "plus"
+    : (realmPlan === "plus" || ownedShopItems.includes("realm_plus")
+        ? "plus"
+        : (realmPlan === "basic" || ownedShopItems.includes("realm_basic") ? "basic" : "none"));
 
   const userWorlds = worlds.filter((w) => {
     if (googleUser) {
@@ -1748,15 +2092,15 @@ const App: React.FC = () => {
     return unsubscribe;
   }, []);
 
-  // Activity logging helper
+  // Activity logging helper (skips cleanly if Firestore daily write quota is exhausted)
   const logUserActivity = useCallback(async (actionText: string) => {
-    if (!auth.currentUser) return;
+    if (!auth.currentUser || isFirestoreWritePaused()) return;
     const user = auth.currentUser;
     const email = user.email?.toLowerCase() || "anonimo";
     const displayName = user.displayName || user.email || "Usuario de Google";
     const logId = `${user.uid}_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
     const logRef = doc(db, "activity_logs", logId);
-    
+
     try {
       await setDoc(logRef, {
         id: logId,
@@ -1766,8 +2110,11 @@ const App: React.FC = () => {
         timestamp: Date.now()
       });
     } catch (err) {
-      console.error("Error writing activity log:", err);
-      handleFirestoreError(err, OperationType.WRITE, `activity_logs/${logId}`);
+      if (isQuotaExceededError(err)) {
+        markFirestoreQuotaExceeded(err);
+        return;
+      }
+      console.warn("Error writing activity log:", err);
     }
   }, []);
 
@@ -1787,22 +2134,31 @@ const App: React.FC = () => {
     // If admin email, guarantee role is 'owner' in DB
     if (emailKey === "lionbastias18@gmail.com") {
       setUserRole("owner");
-      setDoc(roleRef, {
-        email: emailKey,
-        role: "owner",
-        displayName: googleUser.displayName || "LionBastias18",
-        lastActive: Date.now()
-      }, { merge: true }).catch(err => {
-        console.error("Error enforcing admin role:", err);
-        handleFirestoreError(err, OperationType.WRITE, `user_roles/${emailKey}`);
-      });
-    } else {
+      if (!isFirestoreWritePaused()) {
+        setDoc(roleRef, {
+          email: emailKey,
+          role: "owner",
+          displayName: googleUser.displayName || "LionBastias18",
+          lastActive: Date.now()
+        }, { merge: true }).catch(err => {
+          if (isQuotaExceededError(err)) {
+            markFirestoreQuotaExceeded(err);
+          } else {
+            console.warn("Error enforcing admin role:", err);
+          }
+        });
+      }
+    } else if (!isFirestoreWritePaused()) {
       // For any other user, ensure their metadata is set/updated on login
       setDoc(roleRef, {
         displayName: googleUser.displayName || googleUser.email || emailKey,
         lastActive: Date.now()
       }, { merge: true }).catch(err => {
-        console.error("Error updating user metadata:", err);
+        if (isQuotaExceededError(err)) {
+          markFirestoreQuotaExceeded(err);
+        } else {
+          console.warn("Error updating user metadata:", err);
+        }
       });
     }
 
@@ -1844,6 +2200,15 @@ const App: React.FC = () => {
             localStorage.setItem("minecraft_custom_skin", JSON.stringify(merged));
           }
 
+          const syncedRealmPlan: RealmPlanTier =
+            emailKey === "lionbastias18@gmail.com"
+              ? "plus"
+              : (data.realmPlan === "plus" || itemsList.includes("realm_plus")
+                  ? "plus"
+                  : (data.realmPlan === "basic" || itemsList.includes("realm_basic") ? "basic" : "none"));
+          setRealmPlan(syncedRealmPlan);
+          localStorage.setItem("minecraft_realm_plan", syncedRealmPlan);
+
           localStorage.setItem("minecraft_vip_active", String(isVip || isMvp));
           localStorage.setItem("minecraft_mvp_active", String(isMvp));
           localStorage.setItem("minecraft_unlocked_worlds", String(hasPass));
@@ -1869,35 +2234,46 @@ const App: React.FC = () => {
           setUnlockedWorldsPass(false);
           setIndefCoins(0);
           setOwnedShopItems([]);
+          setRealmPlan("none");
           localStorage.setItem("minecraft_vip_active", "false");
           localStorage.setItem("minecraft_mvp_active", "false");
           localStorage.setItem("minecraft_unlocked_worlds", "false");
           localStorage.setItem("minecraft_indef_coins", "0");
           localStorage.setItem("minecraft_owned_shop_items", "[]");
+          localStorage.setItem("minecraft_realm_plan", "none");
 
-          // Register user in the database so they show up on the leaderboard
-          setDoc(roleRef, {
-            email: emailKey,
-            role: "user",
-            displayName: googleUser.displayName || googleUser.email || emailKey,
-            blocksPlaced: 0,
-            blocksBroken: 0,
-            worldsCreated: 0,
-            score: 0,
-            lastActive: Date.now(),
-            vipActive: false,
-            mvpActive: false,
-            unlockedWorldsPass: false,
-            indefCoins: 0,
-            ownedShopItems: []
-          }, { merge: true }).catch(err => {
-            console.error("Error auto-registering user role:", err);
-          });
+          if (!isFirestoreWritePaused()) {
+            setDoc(roleRef, {
+              email: emailKey,
+              role: "user",
+              displayName: googleUser.displayName || googleUser.email || emailKey,
+              blocksPlaced: 0,
+              blocksBroken: 0,
+              worldsCreated: 0,
+              score: 0,
+              lastActive: Date.now(),
+              vipActive: false,
+              mvpActive: false,
+              unlockedWorldsPass: false,
+              indefCoins: 0,
+              ownedShopItems: [],
+              realmPlan: "none"
+            }, { merge: true }).catch(err => {
+              if (isQuotaExceededError(err)) {
+                markFirestoreQuotaExceeded(err);
+              } else {
+                console.warn("Error auto-registering user role:", err);
+              }
+            });
+          }
         }
       }
     }, (error) => {
-      console.error("Error watching user role:", error);
-      handleFirestoreError(error, OperationType.GET, `user_roles/${emailKey}`);
+      if (isQuotaExceededError(error)) {
+        markFirestoreQuotaExceeded(error);
+      } else {
+        console.warn("Error watching user role:", error);
+      }
     });
 
     // Listen to verified purchases for this account
@@ -1917,9 +2293,69 @@ const App: React.FC = () => {
       localStorage.setItem("minecraft_purchase_history", JSON.stringify(list));
     }, () => {});
 
+    // Real-time listeners for Realms (Owned, Member/Invited, and Admin global view)
+    const ownedRealmsQuery = query(collection(db, "realms"), where("ownerUid", "==", googleUser.uid));
+    const unsubOwnedRealms = onSnapshot(ownedRealmsQuery, (snap) => {
+      const list: RealmData[] = [];
+      snap.forEach((d) => {
+        const data = d.data() as RealmData;
+        if (data && data.id) list.push(data);
+      });
+      list.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      setMyRealms(list);
+    }, (err) => console.warn("Failed watching owned realms:", err));
+
+    let memberDocsMap: Record<string, RealmData> = {};
+    let invitedDocsMap: Record<string, RealmData> = {};
+    const syncJoinedRealms = () => {
+      const merged: Record<string, RealmData> = { ...invitedDocsMap, ...memberDocsMap };
+      const list = Object.values(merged).filter((r) => r.ownerUid !== googleUser.uid);
+      list.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+      setJoinedRealms(list);
+    };
+
+    const memberRealmsQuery = query(collection(db, "realms"), where("memberEmails", "array-contains", emailKey));
+    const unsubMemberRealms = onSnapshot(memberRealmsQuery, (snap) => {
+      memberDocsMap = {};
+      snap.forEach((d) => {
+        const data = d.data() as RealmData;
+        if (data && data.id) memberDocsMap[data.id] = data;
+      });
+      syncJoinedRealms();
+    }, (err) => console.warn("Failed watching member realms:", err));
+
+    const invitedRealmsQuery = query(collection(db, "realms"), where("invitedEmails", "array-contains", emailKey));
+    const unsubInvitedRealms = onSnapshot(invitedRealmsQuery, (snap) => {
+      invitedDocsMap = {};
+      snap.forEach((d) => {
+        const data = d.data() as RealmData;
+        if (data && data.id) invitedDocsMap[data.id] = data;
+      });
+      syncJoinedRealms();
+    }, (err) => console.warn("Failed watching invited realms:", err));
+
+    let unsubAllAdminRealms = () => {};
+    if (emailKey === "lionbastias18@gmail.com") {
+      unsubAllAdminRealms = onSnapshot(collection(db, "realms"), (snap) => {
+        const list: RealmData[] = [];
+        snap.forEach((d) => {
+          const data = d.data() as RealmData;
+          if (data && data.id) list.push(data);
+        });
+        list.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+        setAllAdminRealms(list);
+      }, (err) => console.warn("Failed watching admin realms:", err));
+    } else {
+      setAllAdminRealms([]);
+    }
+
     return () => {
       unsubRole();
       unsubPurchases();
+      unsubOwnedRealms();
+      unsubMemberRealms();
+      unsubInvitedRealms();
+      unsubAllAdminRealms();
     };
   }, [googleUser]);
 
@@ -1932,6 +2368,7 @@ const App: React.FC = () => {
     dimension,
     gameMode: currentWorld?.gameMode || "survival",
     worldName: currentWorld?.name || "",
+    activeRealmId: null as string | null,
   });
   useEffect(() => {
     liveMultiplayerStateRef.current = {
@@ -1942,8 +2379,9 @@ const App: React.FC = () => {
       dimension,
       gameMode: currentWorld?.gameMode || "survival",
       worldName: currentWorld?.name || "",
+      activeRealmId: activeRealmId || null,
     };
-  }, [characterSkin, customSkin, currentBlock, attackTrigger, dimension, currentWorld?.gameMode, currentWorld?.name]);
+  }, [characterSkin, customSkin, currentBlock, attackTrigger, dimension, currentWorld?.gameMode, currentWorld?.name, activeRealmId]);
 
   // Handle active gameplay presence, world initialization, chat, and multiplayer syncing
   useEffect(() => {
@@ -1976,7 +2414,7 @@ const App: React.FC = () => {
     const worldDocRef = doc(db, "worlds", worldId);
     getDoc(worldDocRef)
       .then((snap) => {
-        if (!snap.exists()) {
+        if (!snap.exists() && !isFirestoreWritePaused()) {
           setDoc(worldDocRef, {
             id: currentWorld.id,
             name: currentWorld.name,
@@ -1987,8 +2425,15 @@ const App: React.FC = () => {
             gameMode: currentWorld.gameMode || "survival",
             worldType: currentWorld.worldType || "normal",
             edits: currentWorld.edits || {},
+            blockColors: currentWorld.blockColors || {},
             survivalInventory: currentWorld.survivalInventory || {},
-          }, { merge: true }).catch((err) => console.warn("Failed to ensure world doc in Firestore:", err));
+          }, { merge: true }).catch((err) => {
+            if (isQuotaExceededError(err)) {
+              markFirestoreQuotaExceeded(err);
+            } else {
+              console.warn("Failed to ensure world doc in Firestore:", err);
+            }
+          });
         }
       })
       .catch(() => {});
@@ -2005,14 +2450,31 @@ const App: React.FC = () => {
     let lastSentDim = "";
     let lastPresenceWrite = 0;
     let lastOnlineWrite = 0;
+    let lastCustomSkinSync = 0;
+    let presenceInFlight = false;
+    otherPlayersCountRef.current = 0;
 
-    // Adaptive fast sync (~350ms check): writes immediately on movement/rotation/action, keep-alive every 3.5s
+    // Quota-safe adaptive multiplayer presence:
+    // - Solo player in private world: 45s lightweight keep-alive (no wasted movement writes!)
+    // - Active multiplayer / Realm session: ~400ms movement delta sync paired with dead-reckoning interpolation
     const updatePresence = async (force = false) => {
+      if (isFirestoreWritePaused()) return;
+      if (presenceInFlight && !force) return;
+      if (!force && typeof document !== "undefined" && document.visibilityState === "hidden") return;
+
       try {
         const now = Date.now();
         const pos = activePlayerPosRef.current;
         const { yaw, pitch } = activePlayerPoseRef.current;
         const live = liveMultiplayerStateRef.current;
+        const hasMultiplayerPeers = otherPlayersCountRef.current > 0 || Boolean(live.activeRealmId);
+
+        const skinChanged = live.characterSkin !== lastSentSkin;
+        const stateChanged =
+          skinChanged ||
+          live.currentBlock !== lastSentBlock ||
+          live.attackTrigger !== lastSentAttack ||
+          live.dimension !== lastSentDim;
 
         const movedDistSq =
           (pos.x - lastSentPos.x) ** 2 +
@@ -2020,16 +2482,19 @@ const App: React.FC = () => {
           (pos.z - lastSentPos.z) ** 2;
         const rotated =
           isNaN(lastSentYaw) ||
-          Math.abs(yaw - lastSentYaw) > 0.08 ||
-          Math.abs(pitch - lastSentPitch) > 0.08;
-        const stateChanged =
-          live.characterSkin !== lastSentSkin ||
-          live.currentBlock !== lastSentBlock ||
-          live.attackTrigger !== lastSentAttack ||
-          live.dimension !== lastSentDim;
-        const keepAliveDue = now - lastPresenceWrite >= 3500;
+          Math.abs(yaw - lastSentYaw) > 0.14 ||
+          Math.abs(pitch - lastSentPitch) > 0.14;
 
-        if (force || isNaN(movedDistSq) || movedDistSq > 0.015 || rotated || stateChanged || keepAliveDue) {
+        const elapsedSinceWrite = now - lastPresenceWrite;
+        const minSpacingMs = 400;
+        const keepAliveMs = hasMultiplayerPeers ? 20000 : 45000;
+        const keepAliveDue = elapsedSinceWrite >= keepAliveMs;
+
+        const shouldSendPeerDelta =
+          hasMultiplayerPeers &&
+          (stateChanged || (elapsedSinceWrite >= minSpacingMs && (isNaN(movedDistSq) || movedDistSq > 0.08 || rotated)));
+
+        if (force || keepAliveDue || shouldSendPeerDelta || (!hasMultiplayerPeers && stateChanged && elapsedSinceWrite >= 5000)) {
           lastSentPos = { x: pos.x, y: pos.y, z: pos.z };
           lastSentYaw = yaw;
           lastSentPitch = pitch;
@@ -2039,27 +2504,33 @@ const App: React.FC = () => {
           lastSentDim = live.dimension;
           lastPresenceWrite = now;
 
-          await setDoc(presenceRef, {
+          const presencePayload: Record<string, any> = {
             id: userId,
             email: userEmail,
             name: userName,
             pos: { x: Number(pos.x.toFixed(2)), y: Number(pos.y.toFixed(2)), z: Number(pos.z.toFixed(2)) },
-            yaw: Number(yaw.toFixed(3)),
-            pitch: Number(pitch.toFixed(3)),
+            yaw: Number(yaw.toFixed(2)),
+            pitch: Number(pitch.toFixed(2)),
             skinId: live.characterSkin,
-            customSkin: live.characterSkin === "custom" ? live.customSkin : undefined,
             heldBlock: live.currentBlock,
             attackSeq: live.attackTrigger,
             dimension: live.dimension,
             lastActive: now,
             spectator: live.gameMode === "spectator",
-          });
+          };
+          if (live.characterSkin === "custom" && (force || skinChanged || now - lastCustomSkinSync >= 30000)) {
+            presencePayload.customSkin = live.customSkin;
+            lastCustomSkinSync = now;
+          }
+
+          presenceInFlight = true;
+          await setDoc(presenceRef, presencePayload, { merge: true });
         }
 
-        // Refresh global /online_players discovery entry every 4 seconds
-        if (force || now - lastOnlineWrite >= 4000) {
+        // Refresh global /online_players discovery entry every 30 seconds
+        if (!isFirestoreWritePaused() && (force || now - lastOnlineWrite >= 30000)) {
           lastOnlineWrite = now;
-          await setDoc(onlinePlayerRef, {
+          void setDoc(onlinePlayerRef, {
             id: userId,
             name: userName,
             email: userEmail,
@@ -2070,15 +2541,25 @@ const App: React.FC = () => {
             pos: { x: Number(pos.x.toFixed(1)), y: Number(pos.y.toFixed(1)), z: Number(pos.z.toFixed(1)) },
             lastActive: now,
             spectator: live.gameMode === "spectator",
-          }, { merge: true });
+          }, { merge: true }).catch((err) => {
+            if (isQuotaExceededError(err)) {
+              markFirestoreQuotaExceeded(err);
+            }
+          });
         }
       } catch (err) {
-        console.warn("Error writing presence heartbeat:", err);
+        if (isQuotaExceededError(err)) {
+          markFirestoreQuotaExceeded(err);
+        } else {
+          console.warn("Error writing presence heartbeat:", err);
+        }
+      } finally {
+        presenceInFlight = false;
       }
     };
 
     updatePresence(true);
-    const intervalId = setInterval(() => updatePresence(false), 350);
+    const intervalId = setInterval(() => updatePresence(false), 250);
 
     // Listen to presence subcollection
     const playersColRef = collection(db, "worlds", worldId, "players");
@@ -2108,9 +2589,19 @@ const App: React.FC = () => {
           });
         }
       });
+      const prevPeerCount = otherPlayersCountRef.current;
+      otherPlayersCountRef.current = list.length;
       setActivePlayers(list);
+      // Immediately send fresh coordinates when a peer joins our world
+      if (prevPeerCount === 0 && list.length > 0) {
+        void updatePresence(true);
+      }
     }, (error) => {
-      console.error("Error watching world players:", error);
+      if (isQuotaExceededError(error)) {
+        markFirestoreQuotaExceeded(error);
+      } else {
+        console.warn("Error watching world players:", error);
+      }
     });
 
     // Real-time multiplayer world chat listener
@@ -2143,10 +2634,10 @@ const App: React.FC = () => {
       clearInterval(intervalId);
       unsubPlayers();
       unsubMessages();
-      deleteDoc(presenceRef).catch((err) => {
-        console.error("Error removing presence on exit:", err);
-      });
-      deleteDoc(onlinePlayerRef).catch(() => {});
+      if (!isFirestoreWritePaused()) {
+        deleteDoc(presenceRef).catch(() => {});
+        deleteDoc(onlinePlayerRef).catch(() => {});
+      }
       logUserActivity(`Salió del mundo '${currentWorld.name}'`);
     };
   }, [appState, currentWorld?.id, googleUser, activeSession, currentUser, logUserActivity]);
@@ -2158,13 +2649,21 @@ const App: React.FC = () => {
     const worldRef = doc(db, "worlds", currentWorld.id);
     const unsubWorld = onSnapshot(worldRef, (docSnap) => {
       if (docSnap.exists()) {
+        if (
+          docSnap.metadata.hasPendingWrites &&
+          (Object.keys(pendingLocalEditsRef.current).length > 0 ||
+            Object.keys(pendingLocalColorsRef.current).length > 0)
+        ) {
+          return;
+        }
         const data = docSnap.data();
-        if (data && data.edits) {
+        if (data && (data.edits || data.blockColors)) {
           const now = Date.now();
-          const mergedEdits: Record<string, number> = { ...data.edits };
+          const serverEdits = data.edits || {};
+          const mergedEdits: Record<string, number> = { ...serverEdits };
           // Protect optimistic local block edits until Firestore server explicitly confirms them (or 15s safety ceiling)
           for (const [k, entry] of Object.entries(pendingLocalEditsRef.current)) {
-            const serverVal = data.edits[k];
+            const serverVal = serverEdits[k];
             const isConfirmedOnServer =
               !docSnap.metadata.hasPendingWrites &&
               (serverVal === entry.value || (entry.value === BlockType.AIR && serverVal === undefined));
@@ -2175,25 +2674,59 @@ const App: React.FC = () => {
             }
           }
 
+          const serverColors: Record<string, string> = data.blockColors || {};
+          const mergedColors: Record<string, string> = { ...serverColors };
+          for (const [k, entry] of Object.entries(pendingLocalColorsRef.current)) {
+            const serverVal = serverColors[k];
+            const isConfirmedOnServer =
+              !docSnap.metadata.hasPendingWrites &&
+              (entry.value === null ? serverVal === undefined : serverVal === entry.value);
+            if (isConfirmedOnServer || now - entry.ts >= 15000) {
+              delete pendingLocalColorsRef.current[k];
+            } else if (entry.value === null) {
+              delete mergedColors[k];
+            } else {
+              mergedColors[k] = entry.value;
+            }
+          }
+
           setCurrentWorld((prev) => {
             if (!prev) return prev;
             let hasDiff = false;
-            const prevEditsKeys = Object.keys(prev.edits);
+            const prevEdits = prev.edits || {};
+            const prevEditsKeys = Object.keys(prevEdits);
             const dbEditsKeys = Object.keys(mergedEdits);
             if (prevEditsKeys.length !== dbEditsKeys.length) {
               hasDiff = true;
             } else {
               for (const key of dbEditsKeys) {
-                if (prev.edits[key] !== mergedEdits[key]) {
+                if (prevEdits[key] !== mergedEdits[key]) {
                   hasDiff = true;
                   break;
                 }
               }
             }
-            if (hasDiff) {
+
+            let hasColorDiff = false;
+            const prevColors = prev.blockColors || {};
+            const prevColorKeys = Object.keys(prevColors);
+            const dbColorKeys = Object.keys(mergedColors);
+            if (prevColorKeys.length !== dbColorKeys.length) {
+              hasColorDiff = true;
+            } else {
+              for (const key of dbColorKeys) {
+                if (prevColors[key] !== mergedColors[key]) {
+                  hasColorDiff = true;
+                  break;
+                }
+              }
+            }
+
+            if (hasDiff || hasColorDiff) {
               return {
                 ...prev,
-                edits: mergedEdits
+                edits: hasDiff ? mergedEdits : prev.edits,
+                blockColors: hasColorDiff ? mergedColors : prev.blockColors,
               };
             }
             return prev;
@@ -2261,7 +2794,7 @@ const App: React.FC = () => {
     };
   }, [activeSession, googleUser]);
 
-  // Main menu and Lobby presence heartbeat
+  // Main menu and Lobby presence heartbeat (throttled to 45s to stay well within free Firestore daily quota)
   useEffect(() => {
     if (appState !== "menu" && appState !== "settings" && appState !== "worlds-list") {
       return;
@@ -2269,6 +2802,8 @@ const App: React.FC = () => {
     if (!activeSession) return;
 
     const updateMenuPresence = async () => {
+      if (isFirestoreWritePaused()) return;
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
       try {
         const onlinePlayerRef = doc(db, "online_players", activeSession);
         await setDoc(onlinePlayerRef, {
@@ -2281,19 +2816,23 @@ const App: React.FC = () => {
           lastActive: Date.now()
         }, { merge: true });
       } catch (err) {
-        console.warn("Error updating menu presence:", err);
+        if (isQuotaExceededError(err)) {
+          markFirestoreQuotaExceeded(err);
+        } else {
+          console.warn("Error updating menu presence:", err);
+        }
       }
     };
 
     updateMenuPresence();
-    const intervalId = setInterval(updateMenuPresence, 4000);
+    const intervalId = setInterval(updateMenuPresence, 45000);
 
     return () => {
       clearInterval(intervalId);
       // Clean up when leaving menu (online_players/{userId} is deleted, unless active playing takes over)
       setTimeout(async () => {
         const latestState = latestSaveDataRef.current;
-        if (latestState.appState !== "playing") {
+        if (latestState.appState !== "playing" && !isFirestoreWritePaused()) {
           try {
             await deleteDoc(doc(db, "online_players", activeSession));
           } catch (e) {}
@@ -2399,7 +2938,7 @@ const App: React.FC = () => {
 
   const flushUserStats = useCallback(async () => {
     const { googleUser: activeUser } = latestSaveDataRef.current;
-    if (!activeUser || !activeUser.email) return;
+    if (!activeUser || !activeUser.email || isFirestoreWritePaused()) return;
 
     const placed = blocksPlacedRef.current;
     const broken = blocksBrokenRef.current;
@@ -2421,16 +2960,19 @@ const App: React.FC = () => {
         lastActive: Date.now(),
         displayName: activeUser.displayName || activeUser.email || emailKey,
       }, { merge: true });
-      console.log(`[Stats] Flushed: +${placed} placed, +${broken} broken. Added +${addedScore} score.`);
     } catch (err) {
-      console.error("[Stats] Error flushing user stats to Firestore:", err);
+      if (isQuotaExceededError(err)) {
+        markFirestoreQuotaExceeded(err);
+      } else {
+        console.warn("[Stats] Error flushing user stats to Firestore:", err);
+      }
       // Restore counts in case of error so we don't lose them
       blocksPlacedRef.current += placed;
       blocksBrokenRef.current += broken;
     }
   }, []);
 
-  // Quiet background auto-save every 30 seconds during active gameplay
+  // Quiet background auto-save every 45 seconds during active gameplay (dirty-checked to avoid redundant writes)
   useEffect(() => {
     if (appState !== "playing") return;
 
@@ -2438,35 +2980,51 @@ const App: React.FC = () => {
       const { currentWorld: activeWorld, survivalInventory: activeInv, googleUser: activeUser } = latestSaveDataRef.current;
       if (!activeWorld) return;
 
-      console.log("[Auto-Save] Guardando automáticamente el mundo en segundo plano...");
+      const curPos = activePlayerPosRef.current;
       const updatedWorld = {
         ...activeWorld,
-        playerPos: activePlayerPosRef.current,
+        playerPos: curPos,
         survivalInventory: activeInv,
       };
 
-      if (activeUser) {
+      const sig = `${activeWorld.id}|${curPos.x.toFixed(1)},${curPos.y.toFixed(1)},${curPos.z.toFixed(1)}|${JSON.stringify(activeInv || {})}`;
+      const isDirty = sig !== lastAutoSaveSignatureRef.current;
+
+      if (activeUser && !isFirestoreWritePaused()) {
+        if (!isDirty && blocksPlacedRef.current === 0 && blocksBrokenRef.current === 0) {
+          return;
+        }
         try {
-          // Merge ONLY playerPos & survivalInventory so concurrent block edits in Firestore are never overwritten
-          const worldDocRef = doc(db, "worlds", activeWorld.id);
-          await setDoc(worldDocRef, {
-            id: updatedWorld.id,
-            name: updatedWorld.name,
-            creator: updatedWorld.creator,
-            creatorName: updatedWorld.creatorName || updatedWorld.creator,
-            createdAt: updatedWorld.createdAt,
-            playerPos: activePlayerPosRef.current,
-            gameMode: updatedWorld.gameMode || "survival",
-            worldType: updatedWorld.worldType || "normal",
-            survivalInventory: activeInv,
-          }, { merge: true });
+          if (isDirty) {
+            const worldDocRef = doc(db, "worlds", activeWorld.id);
+            await setDoc(worldDocRef, {
+              id: updatedWorld.id,
+              name: updatedWorld.name,
+              creator: updatedWorld.creator,
+              creatorName: updatedWorld.creatorName || updatedWorld.creator,
+              createdAt: updatedWorld.createdAt,
+              playerPos: curPos,
+              gameMode: updatedWorld.gameMode || "survival",
+              worldType: updatedWorld.worldType || "normal",
+              survivalInventory: activeInv,
+            }, { merge: true });
+            lastAutoSaveSignatureRef.current = sig;
+          }
           setWorlds((prev) =>
-            prev.map((w) => (w.id === activeWorld.id ? { ...w, playerPos: activePlayerPosRef.current, survivalInventory: activeInv } : w))
+            prev.map((w) => (w.id === activeWorld.id ? { ...w, playerPos: curPos, survivalInventory: activeInv } : w))
           );
-          // Flush user stats too!
           await flushUserStats();
         } catch (e) {
-          console.error("[Auto-Save] Error al guardar automáticamente en Firestore:", e);
+          if (isQuotaExceededError(e)) {
+            markFirestoreQuotaExceeded(e);
+            setWorlds((prev) => {
+              const next = prev.map((w) => (w.id === activeWorld.id ? updatedWorld : w));
+              saveWorlds(next);
+              return next;
+            });
+          } else {
+            console.warn("[Auto-Save] Error al guardar automáticamente en Firestore:", e);
+          }
         }
       } else {
         setWorlds((prev) => {
@@ -2477,10 +3035,10 @@ const App: React.FC = () => {
           return next;
         });
       }
-    }, 30000);
+    }, 45000);
 
     return () => clearInterval(intervalId);
-  }, [appState]);
+  }, [appState, flushUserStats]);
 
   // Dynamic random weather cycle during gameplay
   useEffect(() => {
@@ -2600,6 +3158,7 @@ const App: React.FC = () => {
     setCurrentUser(null);
     setActiveSession(null);
     setCurrentWorld(null);
+    setActiveRealmId(null);
     setWorlds(loadWorlds()); // Reset to offline worlds
     setAppState("login-prompt");
   };
@@ -2697,6 +3256,7 @@ const App: React.FC = () => {
       gameMode: newWorldGameMode,
       worldType: newWorldType,
       edits: {},
+      blockColors: {},
       survivalInventory: initialInv
     };
 
@@ -2706,6 +3266,7 @@ const App: React.FC = () => {
     saveWorlds(nextWorlds);
 
     setWorldNameInput("");
+    setActiveRealmId(null);
     setSurvivalInventory(initialInv);
     setCurrentWorld(newWorld);
     setPlayerPos({ x: 0, y: newWorldType === "flat" ? 58 : 80, z: 0 });
@@ -2828,9 +3389,6 @@ const App: React.FC = () => {
           blocksPlacedRef.current += 1;
         }
 
-        const actName = blockType === BlockType.AIR ? "Destruyó bloque" : `Colocó bloque de ${BLOCK_NAMES[blockType] || blockType}`;
-        logUserActivity(`${actName} en coord [X: ${x}, Y: ${y}, Z: ${z}] (${dimension === "nether" ? "Nether" : "Overworld"})`);
-
         const isSurvival = (currentWorld.gameMode as string) === "survival" || (currentWorld.gameMode as string) === "supervivencia";
         if (isSurvival) {
           if (blockType === BlockType.AIR) {
@@ -2869,6 +3427,7 @@ const App: React.FC = () => {
       pendingLocalEditsRef.current[editKey] = { value: blockType, ts: Date.now() };
 
       const updatedEdits = { ...(baseWorld.edits || {}) };
+      const updatedBlockColors = { ...(baseWorld.blockColors || {}) };
       const patchFields: Record<string, any> = {};
 
       // Helper to get block in the local copy of edits
@@ -2893,6 +3452,11 @@ const App: React.FC = () => {
       if (blockType === BlockType.AIR) {
         updatedEdits[editKey] = BlockType.AIR;
         patchFields[`edits.${editKey}`] = BlockType.AIR;
+        if (editKey in updatedBlockColors) {
+          delete updatedBlockColors[editKey];
+          patchFields[`blockColors.${editKey}`] = deleteField();
+          pendingLocalColorsRef.current[editKey] = { value: null, ts: Date.now() };
+        }
       } else {
         updatedEdits[editKey] = blockType;
         patchFields[`edits.${editKey}`] = blockType;
@@ -2952,6 +3516,7 @@ const App: React.FC = () => {
       const updatedWorld: World = {
         ...baseWorld,
         edits: updatedEdits,
+        blockColors: updatedBlockColors,
         survivalInventory: (baseWorld as any).survivalInventory,
       };
 
@@ -2963,32 +3528,61 @@ const App: React.FC = () => {
 
       setCurrentWorld(updatedWorld);
 
-      // Sync ONLY modified edit keys atomically outside state updater
-      if (db) {
-        const worldDocRef = doc(db, "worlds", updatedWorld.id);
-        updateDoc(worldDocRef, patchFields).catch(() => {
-          setDoc(worldDocRef, {
-            id: updatedWorld.id,
-            name: updatedWorld.name,
-            creator: updatedWorld.creator,
-            creatorName: updatedWorld.creatorName || updatedWorld.creator,
-            createdAt: updatedWorld.createdAt,
-            playerPos: updatedWorld.playerPos || { x: 0, y: 80, z: 0 },
-            gameMode: updatedWorld.gameMode || "survival",
-            worldType: updatedWorld.worldType || "normal",
-            edits: updatedEdits,
-            survivalInventory: updatedWorld.survivalInventory || {},
-          }, { merge: true }).catch((err) => {
-            console.warn("Error syncing block edits to Firestore:", err);
-          });
-        });
+      // Queue and coalesce rapid block edits (~450ms) so fast building/mining batches into minimal Firestore writes
+      if (db && !isFirestoreWritePaused() && Object.keys(patchFields).length > 0) {
+        if (queuedBlockPatchRef.current && queuedBlockPatchRef.current.worldId === updatedWorld.id) {
+          Object.assign(queuedBlockPatchRef.current.patchFields, patchFields);
+        } else {
+          queuedBlockPatchRef.current = {
+            worldId: updatedWorld.id,
+            patchFields: { ...patchFields },
+          };
+        }
+
+        if (!blockPatchTimerRef.current) {
+          blockPatchTimerRef.current = setTimeout(() => {
+            blockPatchTimerRef.current = null;
+            const pending = queuedBlockPatchRef.current;
+            queuedBlockPatchRef.current = null;
+            if (!pending || isFirestoreWritePaused()) return;
+            const worldSnapshot = latestSaveDataRef.current.currentWorld;
+            const worldDocRef = doc(db, "worlds", pending.worldId);
+            updateDoc(worldDocRef, pending.patchFields).catch((err) => {
+              if (isQuotaExceededError(err)) {
+                markFirestoreQuotaExceeded(err);
+                return;
+              }
+              if (worldSnapshot && worldSnapshot.id === pending.worldId && !isFirestoreWritePaused()) {
+                setDoc(worldDocRef, {
+                  id: worldSnapshot.id,
+                  name: worldSnapshot.name,
+                  creator: worldSnapshot.creator,
+                  creatorName: worldSnapshot.creatorName || worldSnapshot.creator,
+                  createdAt: worldSnapshot.createdAt,
+                  playerPos: worldSnapshot.playerPos || { x: 0, y: 80, z: 0 },
+                  gameMode: worldSnapshot.gameMode || "survival",
+                  worldType: worldSnapshot.worldType || "normal",
+                  edits: worldSnapshot.edits || {},
+                  blockColors: worldSnapshot.blockColors || {},
+                  survivalInventory: worldSnapshot.survivalInventory || {},
+                }, { merge: true }).catch((innerErr) => {
+                  if (isQuotaExceededError(innerErr)) {
+                    markFirestoreQuotaExceeded(innerErr);
+                  } else {
+                    console.warn("Error syncing block edits to Firestore:", innerErr);
+                  }
+                });
+              }
+            });
+          }, 450);
+        }
       }
 
       setWorlds((allWorlds) => {
         const next = allWorlds.map((w) =>
           w.id === updatedWorld.id ? updatedWorld : w,
         );
-        if (!googleUser) {
+        if (!googleUser || isFirestoreWritePaused()) {
           saveWorlds(next);
         }
         return next;
@@ -2997,22 +3591,125 @@ const App: React.FC = () => {
     [currentWorld, googleUser, currentBlock, dimension],
   );
 
+  const handleBatchWorldEdit = useCallback(
+    (payload: RealmBatchEditPayload) => {
+      if (!currentWorld) return;
+      const baseWorld = latestSaveDataRef.current.currentWorld || currentWorld;
+      const updatedEdits = { ...(baseWorld.edits || {}) };
+      const updatedBlockColors = { ...(baseWorld.blockColors || {}) };
+      const patchFields: Record<string, any> = {};
+      const now = Date.now();
+      const dimPrefix = dimension === "nether" ? "nether:" : "";
+
+      let placedCount = 0;
+      let brokenCount = 0;
+
+      for (const [rawKey, blkVal] of Object.entries(payload.blockChanges || {})) {
+        const fullKey = `${dimPrefix}${rawKey}`;
+        pendingLocalEditsRef.current[fullKey] = { value: blkVal as BlockType, ts: now };
+        updatedEdits[fullKey] = blkVal;
+        patchFields[`edits.${fullKey}`] = blkVal;
+        if (blkVal === BlockType.AIR) {
+          brokenCount++;
+          if (!(rawKey in (payload.colorChanges || {})) && fullKey in updatedBlockColors) {
+            delete updatedBlockColors[fullKey];
+            patchFields[`blockColors.${fullKey}`] = deleteField();
+            pendingLocalColorsRef.current[fullKey] = { value: null, ts: now };
+          }
+        } else {
+          placedCount++;
+        }
+      }
+
+      for (const [rawKey, colorVal] of Object.entries(payload.colorChanges || {})) {
+        const fullKey = `${dimPrefix}${rawKey}`;
+        pendingLocalColorsRef.current[fullKey] = { value: colorVal, ts: now };
+        if (colorVal === null) {
+          if (fullKey in updatedBlockColors) {
+            delete updatedBlockColors[fullKey];
+            patchFields[`blockColors.${fullKey}`] = deleteField();
+          }
+        } else {
+          updatedBlockColors[fullKey] = colorVal;
+          patchFields[`blockColors.${fullKey}`] = colorVal;
+        }
+      }
+
+      blocksPlacedRef.current += placedCount;
+      blocksBrokenRef.current += brokenCount;
+      if (payload.summaryLabel) {
+        logUserActivity(`[Editor Realm] ${payload.summaryLabel}`);
+      }
+
+      const updatedWorld: World = {
+        ...baseWorld,
+        edits: updatedEdits,
+        blockColors: updatedBlockColors,
+        survivalInventory: (baseWorld as any).survivalInventory,
+      };
+
+      latestSaveDataRef.current = {
+        ...latestSaveDataRef.current,
+        currentWorld: updatedWorld,
+      };
+      setCurrentWorld(updatedWorld);
+
+      if (db && !isFirestoreWritePaused() && Object.keys(patchFields).length > 0) {
+        if (queuedBlockPatchRef.current && queuedBlockPatchRef.current.worldId === updatedWorld.id) {
+          queuedBlockPatchRef.current = null;
+        }
+        batchUpdateWorldInFirestore(updatedWorld.id, patchFields).catch((err) => {
+          if (isQuotaExceededError(err) || err?.message === "FIRESTORE_QUOTA_EXCEEDED") {
+            markFirestoreQuotaExceeded(err);
+          } else {
+            saveWorldToFirestore(updatedWorld).catch(() => {});
+          }
+        });
+      }
+
+      setWorlds((allWorlds) => {
+        const next = allWorlds.map((w) =>
+          w.id === updatedWorld.id ? updatedWorld : w,
+        );
+        if (!googleUser || isFirestoreWritePaused()) {
+          saveWorlds(next);
+        }
+        return next;
+      });
+    },
+    [currentWorld, googleUser, dimension, logUserActivity],
+  );
+
   const handleManualSave = async () => {
     if (!currentWorld) return;
-    
+    if (blockPatchTimerRef.current) {
+      clearTimeout(blockPatchTimerRef.current);
+      blockPatchTimerRef.current = null;
+    }
+    queuedBlockPatchRef.current = null;
+
     const updatedWorld = {
       ...currentWorld,
       playerPos: activePlayerPosRef.current,
       survivalInventory: survivalInventory,
     };
 
-    if (googleUser) {
+    if (googleUser && !isFirestoreWritePaused()) {
       try {
         await saveWorldToFirestore(updatedWorld);
         const dbWorlds = await loadWorldsFromFirestore((googleUser as any).uid);
         setWorlds(dbWorlds);
-      } catch (e) {
-        console.error("Error saving world to firestore manually:", e);
+      } catch (e: any) {
+        if (isQuotaExceededError(e) || e?.message === "FIRESTORE_QUOTA_EXCEEDED") {
+          markFirestoreQuotaExceeded(e);
+          setWorlds((prev) => {
+            const next = prev.map((w) => (w.id === currentWorld.id ? updatedWorld : w));
+            saveWorlds(next);
+            return next;
+          });
+        } else {
+          console.error("Error saving world to firestore manually:", e);
+        }
       }
     } else {
       setWorlds((prev) => {
@@ -3025,7 +3722,11 @@ const App: React.FC = () => {
     }
 
     setCurrentWorld(updatedWorld);
-    setScreenshotToast(lang === "es" ? "¡Mundo guardado con éxito!" : "World saved successfully!");
+    setScreenshotToast(
+      isFirestoreWritePaused()
+        ? (lang === "es" ? "¡Guardado localmente (cuota en nube pausada)!" : "Saved locally (cloud quota paused)!")
+        : (lang === "es" ? "¡Mundo guardado con éxito!" : "World saved successfully!")
+    );
     setTimeout(() => setScreenshotToast(null), 2500);
   };
 
@@ -3103,6 +3804,11 @@ const App: React.FC = () => {
   const handleSaveAndExit = () => {
     resumeAudio();
     setIsGameMenuOpen(false);
+    if (blockPatchTimerRef.current) {
+      clearTimeout(blockPatchTimerRef.current);
+      blockPatchTimerRef.current = null;
+    }
+    queuedBlockPatchRef.current = null;
 
     if (currentWorld) {
       const updatedWorld: World = {
@@ -3120,11 +3826,17 @@ const App: React.FC = () => {
         return next;
       });
 
-      // 2. Perform cloud sync in the background
-      if (googleUser) {
+      // 2. Perform cloud sync in the background if quota allows
+      if (googleUser && !isFirestoreWritePaused()) {
         saveWorldToFirestore(updatedWorld)
           .then(() => flushUserStats())
-          .catch((e) => console.warn("Background cloud sync on exit:", e));
+          .catch((e) => {
+            if (isQuotaExceededError(e) || e?.message === "FIRESTORE_QUOTA_EXCEEDED") {
+              markFirestoreQuotaExceeded(e);
+            } else {
+              console.warn("Background cloud sync on exit:", e);
+            }
+          });
       }
     }
 
@@ -3245,7 +3957,18 @@ const App: React.FC = () => {
       moveVectorRef.current.x = 0;
       moveVectorRef.current.y = 0;
       setIsJumping(prev => prev ? false : prev);
-      setDimension("overworld");
+      if (appState !== "settings") {
+        setDimension("overworld");
+      } else if (latestSaveDataRef.current.currentWorld) {
+        const handleSettingsEscape = (e: KeyboardEvent) => {
+          if (e.key === "Escape") {
+            e.preventDefault();
+            setAppState("playing");
+          }
+        };
+        window.addEventListener("keydown", handleSettingsEscape);
+        return () => window.removeEventListener("keydown", handleSettingsEscape);
+      }
       return;
     }
 
@@ -3445,8 +4168,12 @@ const App: React.FC = () => {
       clientY = mouseEv.clientY;
     }
 
-    lookOffsetRef.current.x += clientX - lastTouchPos.current.x;
-    lookOffsetRef.current.y += clientY - lastTouchPos.current.y;
+    const rawDx = clientX - lastTouchPos.current.x;
+    const rawDy = clientY - lastTouchPos.current.y;
+    const rotDx = virtualRotationDeg === 90 ? rawDy : virtualRotationDeg === -90 ? -rawDy : rawDx;
+    const rotDy = virtualRotationDeg === 90 ? -rawDx : virtualRotationDeg === -90 ? rawDx : rawDy;
+    lookOffsetRef.current.x += rotDx;
+    lookOffsetRef.current.y += rotDy;
 
     lastTouchPos.current.x = clientX;
     lastTouchPos.current.y = clientY;
@@ -3532,6 +4259,7 @@ const App: React.FC = () => {
 
   const t = dict[lang];
 
+  const renderAppScreen = () => {
   if (appState === "login-prompt") {
     return (
       <div className="w-full h-full bg-slate-900 flex flex-col items-center justify-end p-4 sm:p-6 pb-6 sm:pb-8 relative overflow-hidden select-none">
@@ -3676,350 +4404,14 @@ const App: React.FC = () => {
     );
   }
 
-  if (appState === "worlds-list") {
-    const filteredWorlds = userWorlds.filter((w) =>
-      w.name.toLowerCase().includes(worldSearchQuery.toLowerCase())
-    );
+  // worlds-list screen moved below modal renderers so renderRealmsModal and renderShopModal are initialized
 
-    return (
-      <div className="w-full h-full bg-slate-900 flex flex-col items-center justify-start sm:justify-center p-4 sm:p-8 relative overflow-y-auto select-none">
-        {/* 3D Rotating Voxel Panorama */}
-        <MenuPanorama3D showLogo={false} />
-
-        <div className="z-10 bg-zinc-950/90 backdrop-blur-2xl p-6 sm:p-8 rounded-[32px] border border-white/10 flex flex-col w-full max-w-4xl shadow-3xl my-auto">
-          {/* Header */}
-          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6 border-b border-white/5 pb-4">
-            <div>
-              <h2 className="text-white text-3xl font-extrabold minecraft-font tracking-tighter uppercase flex items-center gap-2">
-                <span className="text-emerald-400">⚡ MUNDOS</span> DE EXPLORACIÓN
-              </h2>
-              <div className="text-zinc-400 text-xs mt-0.5 font-medium flex items-center gap-2 flex-wrap">
-                <span>Gestiona y crea tus tierras infinitas personalizadas</span>
-                <span className={`text-[9px] font-bold px-2 py-0.5 rounded-md font-mono uppercase ${
-                  isBypassingWorldLimit
-                    ? "bg-gradient-to-r from-yellow-500/20 to-amber-500/20 border border-yellow-500/30 text-yellow-300 animate-pulse"
-                    : worlds.length >= 70 
-                      ? "bg-red-500/10 border border-red-500/20 text-red-400"
-                      : "bg-zinc-900 border border-white/5 text-zinc-500"
-                }`}>
-                  {worlds.length} / {isBypassingWorldLimit ? "ILIMITADOS" : "70"} MUNDOS
-                </span>
-              </div>
-            </div>
-            <div className="flex items-center gap-2 bg-zinc-900 border border-white/10 px-3 py-1.5 rounded-full shadow-inner">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
-              <span className="text-xs uppercase font-mono font-bold text-emerald-300">
-                {currentUser || "Invitado"}
-              </span>
-            </div>
-          </div>
-
-          {/* Dual Pane Layout */}
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-            
-            {/* LEFT PANE: Worlds Scroll List (7 columns) */}
-            <div className="lg:col-span-7 flex flex-col gap-4">
-              <div className="flex flex-col gap-2">
-                <label className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider">
-                  🔎 Buscar mundo guardado
-                </label>
-                <div className="relative">
-                  <span className="absolute left-3.5 top-2.5 text-zinc-400 text-sm">
-                    <i className="fas fa-search" />
-                  </span>
-                  <input
-                    type="text"
-                    placeholder="Filtrar por nombre..."
-                    value={worldSearchQuery}
-                    onChange={(e) => setWorldSearchQuery(e.target.value)}
-                    className="w-full bg-zinc-900 border border-white/10 hover:border-white/20 focus:border-emerald-400 rounded-xl py-2 px-3 pl-10 text-white text-xs focus:outline-none placeholder-zinc-500 font-semibold transition-all"
-                  />
-                  {worldSearchQuery && (
-                    <button 
-                      onClick={() => setWorldSearchQuery("")}
-                      className="absolute right-3.5 top-2 text-zinc-400 hover:text-white text-xs font-bold"
-                    >
-                      <i className="fas fa-times-circle" />
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* Worlds Scrollbox */}
-              <div className="bg-zinc-900/30 rounded-2xl border border-white/5 p-2 max-h-[380px] overflow-y-auto pr-1 flex flex-col gap-2.5">
-                {filteredWorlds.length === 0 ? (
-                  <div className="text-center py-12 text-zinc-500 text-sm flex flex-col items-center justify-center">
-                    <div className="w-16 h-16 rounded-2xl bg-zinc-900 border border-white/10 flex items-center justify-center mb-3 text-zinc-400">
-                      <i className="fas fa-globe text-3xl" />
-                    </div>
-                    <p className="font-extrabold text-zinc-400">{t.no_worlds_found}</p>
-                    <p className="text-zinc-600 text-[11px] mt-1 px-4">Utiliza el panel de la derecha para colonizar tu primer terreno.</p>
-                  </div>
-                ) : (
-                  filteredWorlds.map((world) => {
-                    const formattedDate = new Date(world.createdAt).toLocaleDateString(undefined, {
-                      day: "numeric",
-                      month: "short",
-                      year: "numeric"
-                    });
-
-                    return (
-                      <div
-                        key={world.id}
-                        className="bg-zinc-900/60 p-3.5 rounded-2xl border border-white/5 flex gap-3.5 items-center transition hover:bg-zinc-900/90 hover:border-white/10 hover:shadow-lg hover:scale-[1.01]"
-                      >
-                        {/* CSS Isometric 3D Voxel Grass Icon placeholder */}
-                        <div className="relative w-11 h-11 shrink-0 flex items-center justify-center bg-zinc-800 rounded-lg overflow-hidden border border-white/10">
-                          {world.worldType === "flat" ? (
-                            <div className="w-full h-full bg-gradient-to-b from-lime-500 to-green-700 flex flex-col items-center justify-center">
-                              <i className="fas fa-layer-group text-white/50 text-xs" />
-                            </div>
-                          ) : (
-                            <div className="w-full h-full bg-gradient-to-b from-emerald-500 to-amber-970 flex flex-col items-center justify-center">
-                              <i className="fas fa-mountain text-white/60 text-xs" />
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Text and stats */}
-                        <div className="flex-1 min-w-0">
-                          <p className="text-white text-[13px] font-bold truncate uppercase tracking-tight">
-                            {world.name}
-                          </p>
-                          <div className="flex gap-1 mt-1 flex-wrap items-center">
-                            <span className="text-[8px] font-bold uppercase tracking-wider bg-zinc-900 text-emerald-400 px-2 py-0.5 rounded-md border border-white/5">
-                              {world.gameMode === "creative" ? t.creative_mode : world.gameMode === "adventure" ? t.adventure_mode : world.gameMode === "spectator" ? t.spectator_mode : t.survival_mode}
-                            </span>
-                            <span className="text-[8px] font-bold uppercase tracking-wider bg-zinc-900 text-sky-400 px-2 py-0.5 rounded-md border border-white/5">
-                              {world.worldType === "flat" ? t.world_type_flat : world.worldType === "edge_farlands" ? t.world_type_edge_farlands : t.world_type_normal}
-                            </span>
-                            <span className="text-[8px] font-bold uppercase tracking-wider text-zinc-500 ml-1">
-                              • {formattedDate}
-                            </span>
-                          </div>
-                        </div>
-
-                        {/* Action buttons */}
-                        <div className="flex gap-2">
-                          <button
-                            onClick={() => {
-                              resumeAudio();
-                              setCurrentWorld(world);
-                              setSurvivalInventory(world.survivalInventory || {
-                                [BlockType.DIRT]: 16,
-                                [BlockType.WOOD]: 8,
-                                [BlockType.LOG]: 4,
-                                [BlockType.CRAFTING_TABLE]: 1,
-                              });
-                              setPlayerPos(world.playerPos || { x: 0, y: 80, z: 0 });
-                              setAppState("playing");
-                            }}
-                            className="bg-emerald-500 hover:bg-emerald-400 text-white font-bold h-9 px-3.5 rounded-xl text-[10px] uppercase tracking-wider shadow-md hover:shadow-emerald-500/20 transition-all active:scale-95 flex items-center justify-center gap-1.5"
-                          >
-                            <i className="fas fa-play text-[9px]" /> JUGAR
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(e) => handleDeleteWorld(world.id, e)}
-                            className="bg-zinc-800 hover:bg-red-950/40 hover:text-red-400 border border-white/5 hover:border-red-500/20 text-zinc-400 h-9 w-9 rounded-xl transition-all active:scale-95 flex items-center justify-center"
-                            title="Borrar Mundo"
-                          >
-                            <i className="fas fa-trash-alt text-xs" />
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </div>
-
-            {/* RIGHT PANE: Create World Form (5 columns) */}
-            <div className="lg:col-span-5 bg-zinc-900/30 p-5 rounded-2xl border border-white/5 flex flex-col gap-4">
-              <h3 className="text-white text-xs font-black uppercase tracking-wider border-b border-white/5 pb-2 flex items-center gap-1.5">
-                <i className="fas fa-hammer text-emerald-400" /> CREAR NUEVA TIERRA
-              </h3>
-
-              <form onSubmit={handleCreateWorld} className="flex flex-col gap-4">
-                <div className="flex flex-col gap-1.5">
-                  <label className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider flex justify-between">
-                    <span>{t.world_name}</span>
-                    <span className="text-[9px] text-zinc-600">Corto y descriptivo</span>
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="Escribe el nombre del mundo..."
-                    value={worldNameInput}
-                    onChange={(e) => setWorldNameInput(e.target.value)}
-                    className="w-full bg-zinc-950 border border-white/10 hover:border-white/20 focus:border-emerald-400 rounded-xl py-2 px-3 text-white text-xs focus:outline-none placeholder-zinc-600 font-semibold transition"
-                  />
-                </div>
-
-                <div className="flex flex-col gap-1.5">
-                  <label className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider">
-                    {t.game_mode}
-                  </label>
-                  <div className="grid grid-cols-4 gap-1 bg-zinc-950 p-1.5 rounded-xl border border-white/5">
-                    {(["survival", "creative", "adventure", "spectator"] as const).map((mode) => {
-                      const isActive = newWorldGameMode === mode;
-                      const modeText = mode === "survival" ? t.survival_mode : mode === "creative" ? t.creative_mode : mode === "adventure" ? t.adventure_mode : t.spectator_mode;
-                      return (
-                        <button
-                          key={mode}
-                          type="button"
-                          onClick={() => {
-                            resumeAudio();
-                            setNewWorldGameMode(mode);
-                          }}
-                          className={`py-2 px-1 rounded-lg text-[9px] uppercase font-extrabold tracking-wider text-center transition-all ${
-                            isActive
-                              ? "bg-emerald-500 text-white shadow-md font-black"
-                              : "text-zinc-500 hover:bg-white/5 hover:text-zinc-300"
-                          }`}
-                        >
-                          {modeText}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                <div className="flex flex-col gap-1.5">
-                  <label className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider">
-                    {t.world_type}
-                  </label>
-                  <div className="grid grid-cols-3 gap-1 bg-zinc-950 p-1.2 rounded-xl border border-white/5">
-                    {(["normal", "flat", "edge_farlands"] as const).map((type) => {
-                      const isActive = newWorldType === type;
-                      const typeText = type === "normal" 
-                        ? t.world_type_normal 
-                        : type === "flat" 
-                          ? t.world_type_flat 
-                          : t.world_type_edge_farlands;
-                      return (
-                        <button
-                          key={type}
-                          type="button"
-                          onClick={() => {
-                            resumeAudio();
-                            setNewWorldType(type);
-                          }}
-                          className={`py-2 px-0.5 rounded-lg text-[8px] uppercase font-extrabold tracking-wider text-center h-full flex items-center justify-center transition-all ${
-                            isActive
-                              ? "bg-emerald-500 text-white shadow-md font-black"
-                              : "text-zinc-500 hover:bg-white/5 hover:text-zinc-300"
-                          }`}
-                        >
-                          <span className="truncate px-1" title={typeText}>{typeText}</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {userWorlds.length >= 70 && !isBypassingWorldLimit && (
-                  <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-3 flex flex-col gap-2.5 text-red-400 font-semibold text-[9px] leading-relaxed uppercase tracking-wider">
-                    <div className="flex gap-2 items-center">
-                      <i className="fas fa-exclamation-triangle text-[11px] animate-pulse" />
-                      <span>Límite de 70 mundos alcanzado. Por favor, elimina algún mundo existente antes de poder crear uno nuevo.</span>
-                    </div>
-                    
-                    {!showBulkDeleteConfirm ? (
-                      <div className="border-t border-red-500/20 pt-2 flex justify-between items-center gap-2">
-                        <span className="text-zinc-400">¿Quieres liberar espacio rápidamente?</span>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            resumeAudio();
-                            setShowBulkDeleteConfirm(true);
-                          }}
-                          className="bg-red-500 hover:bg-red-400 text-white font-extrabold px-2.5 py-1.5 rounded-lg text-[8px] transition-all hover:scale-105 active:scale-95 flex items-center gap-1 shadow-md shadow-red-500/20 shrink-0"
-                        >
-                          <i className="fas fa-broom" /> Liberar espacio
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="border-t border-red-500/20 pt-2 flex flex-col gap-2">
-                        <span className="text-red-300 font-bold">⚠️ ¿Confirmas eliminar automáticamente los 5 mundos más antiguos?</span>
-                        <div className="flex gap-1.5 justify-end">
-                          <button
-                            type="button"
-                            disabled={isDeletingBulk}
-                            onClick={() => {
-                              resumeAudio();
-                              setShowBulkDeleteConfirm(false);
-                            }}
-                            className="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-bold px-2 py-1 rounded-lg text-[8px] transition-all active:scale-95 border border-white/5"
-                          >
-                            Cancelar
-                          </button>
-                          <button
-                            type="button"
-                            disabled={isDeletingBulk}
-                            onClick={() => {
-                              resumeAudio();
-                              handleBulkDeleteOldest(5);
-                            }}
-                            className="bg-red-600 hover:bg-red-500 text-white font-bold px-2.5 py-1 rounded-lg text-[8px] transition-all hover:scale-105 active:scale-95 flex items-center gap-1 shadow-md"
-                          >
-                            {isDeletingBulk ? (
-                              <>
-                                <i className="fas fa-spinner fa-spin" /> Borrando...
-                              </>
-                            ) : (
-                              <>
-                                <i className="fas fa-trash-alt" /> Sí, borrar 5
-                              </>
-                            )}
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                <button
-                  type="submit"
-                  onClick={(e) => {
-                    handleCreateWorld(e);
-                  }}
-                  disabled={userWorlds.length >= 70 && !isBypassingWorldLimit}
-                  className={`font-bold py-3.5 rounded-xl text-xs uppercase tracking-wide transition-all flex items-center justify-center gap-2 mt-2 ${
-                    userWorlds.length >= 70 && !isBypassingWorldLimit
-                      ? "bg-zinc-800 text-zinc-500 cursor-not-allowed border border-white/5"
-                      : "bg-emerald-500 hover:bg-emerald-400 text-white shadow-md shadow-emerald-500/10 hover:shadow-emerald-500/20 active:scale-95"
-                  }`}
-                >
-                  <i className="fas fa-plus text-[10px]" /> {t.create_btn}
-                </button>
-              </form>
-            </div>
-
-          </div>
-
-          {/* Footer Back Button */}
-          <div className="mt-8 border-t border-white/5 pt-4 flex justify-between items-center">
-            <button
-              onClick={() => {
-                resumeAudio();
-                setAppState("menu");
-              }}
-              className="bg-zinc-900 hover:bg-zinc-800 border border-white/10 text-white/80 font-bold py-2.5 px-6 rounded-xl text-center text-xs uppercase tracking-wider transition-all active:scale-95 flex items-center gap-1.5"
-            >
-              <i className="fas fa-arrow-left" /> VOLVER AL MENÚ
-            </button>
-            <p className="text-[10px] text-zinc-600 font-mono tracking-wider uppercase font-bold">Infinite World v2.1</p>
-          </div>
-          
-        </div>
-      </div>
-    );
-  }
 
   const handleJoinFriendWorld = async (
     worldId: string,
     targetPlayerPos?: Vector3D,
-    targetDimension?: "overworld" | "nether"
+    targetDimension?: "overworld" | "nether",
+    realmIdOverride?: string | null
   ) => {
     const cleanId = worldId.trim();
     if (!cleanId) return;
@@ -4056,7 +4448,9 @@ const App: React.FC = () => {
         }
 
         setIsFriendsOpen(false);
+        setIsRealmsOpen(false);
         setIsGameMenuOpen(false);
+        setActiveRealmId(realmIdOverride ?? null);
         setDimension(spawnDim);
         setPlayerPos(spawnPos);
         activePlayerPosRef.current = spawnPos;
@@ -4176,7 +4570,7 @@ const App: React.FC = () => {
         onClick={(e) => e.stopPropagation()}
         className="fixed inset-0 bg-black/85 backdrop-blur-md z-[100020] flex items-center justify-center p-4 overflow-y-auto pointer-events-auto text-left animate-in fade-in duration-200"
       >
-        <div className="bg-zinc-900 border-4 border-purple-600 p-6 sm:p-8 rounded-2xl w-full max-w-2xl shadow-2xl flex flex-col gap-4 relative text-white font-sans max-h-[90vh]">
+        <div className="bg-zinc-900 border-4 border-purple-600 p-6 sm:p-8 rounded-2xl w-full max-w-2xl shadow-2xl flex flex-col gap-4 relative text-white font-sans max-h-[90%]">
           
           {/* Header */}
           <div className="flex justify-between items-center border-b border-zinc-700 pb-3">
@@ -4194,16 +4588,31 @@ const App: React.FC = () => {
               </div>
             </div>
             
-            <button
-              onClick={() => {
-                setIsFriendsOpen(false);
-                setFriendshipError("");
-                setFriendshipSuccess("");
-              }}
-              className="bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white w-8 h-8 rounded-lg flex items-center justify-center border border-zinc-700 transition"
-            >
-              <i className="fas fa-times" />
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  resumeAudio();
+                  setIsFriendsOpen(false);
+                  setRealmStatusMsg(null);
+                  setIsRealmsOpen(true);
+                }}
+                className="bg-cyan-600/25 hover:bg-cyan-600/40 border border-cyan-400/40 text-cyan-200 px-2.5 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5 transition cursor-pointer"
+              >
+                <i className="fas fa-chess-rook" />
+                <span>Realms</span>
+              </button>
+              <button
+                onClick={() => {
+                  setIsFriendsOpen(false);
+                  setFriendshipError("");
+                  setFriendshipSuccess("");
+                }}
+                className="bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-white w-8 h-8 rounded-lg flex items-center justify-center border border-zinc-700 transition"
+              >
+                <i className="fas fa-times" />
+              </button>
+            </div>
           </div>
 
           {/* Error and Success alerts */}
@@ -4594,6 +5003,8 @@ const App: React.FC = () => {
       | "mvp_plus"
       | "aquatic_vip"
       | "unlocked_worlds"
+      | "realm_basic"
+      | "realm_plus"
       | "skin_dragon"
       | "skin_angel"
       | "skin_titan"
@@ -4603,7 +5014,7 @@ const App: React.FC = () => {
       | "kit_explorer_pro"
       | "kit_aquatic_starter"
       | "cape_royal";
-    category: "indefs" | "passes" | "skins" | "cosmetics";
+    category: "indefs" | "passes" | "realms" | "skins" | "cosmetics";
     name: string;
     priceUsd: number;
     priceIndefs?: number;
@@ -4847,6 +5258,34 @@ const App: React.FC = () => {
       owned: unlockedWorldsPass || vipActive || mvpActive,
     },
     {
+      id: "realm_basic",
+      category: "realms",
+      name: lang === "es" ? "Realm Básico (2 Amigos · 3 Mundos)" : "Basic Realm (2 Friends · 3 Worlds)",
+      priceUsd: 0,
+      priceIndefs: 0,
+      badge: lang === "es" ? "GRATIS" : "FREE",
+      desc: lang === "es"
+        ? "Primera opción 100% gratis: crea tu Realm en la nube con capacidad para 2 amigos y hasta 3 mundos compartidos."
+        : "First option 100% free: host your cloud Realm for up to 2 friends and 3 shared worlds.",
+      icon: "fa-chess-rook text-emerald-400",
+      accentColor: "#10b981",
+      owned: effectiveRealmPlan === "basic" || effectiveRealmPlan === "plus",
+    },
+    {
+      id: "realm_plus",
+      category: "realms",
+      name: lang === "es" ? "Realm Plus (4 Amigos · 6 Mundos)" : "Realm Plus (4 Friends · 6 Worlds)",
+      priceUsd: 0.99,
+      priceIndefs: 150,
+      badge: lang === "es" ? "BARATO" : "LOW PRICE",
+      desc: lang === "es"
+        ? "Plan económico ampliado: capacidad para 4 amigos y hasta 6 mundos en tu Realm (¡Lion Admin entra gratis!)."
+        : "Affordable expanded plan: capacity for 4 friends and up to 6 worlds in your Realm.",
+      icon: "fa-chess-queen text-cyan-400",
+      accentColor: "#06b6d4",
+      owned: effectiveRealmPlan === "plus",
+    },
+    {
       id: "skin_dragon",
       category: "skins",
       name: lang === "es" ? "Skin 3D: Dragón Carmesí" : "3D Skin: Crimson Dragon",
@@ -5076,6 +5515,12 @@ const App: React.FC = () => {
     const nextVip = vipActive || item.id === "vip_pass" || item.id === "mvp_plus";
     const nextMvp = mvpActive || item.id === "mvp_plus";
     const nextWorldsPass = unlockedWorldsPass || item.id === "unlocked_worlds" || nextVip;
+    const nextRealmPlan: RealmPlanTier =
+      isRealmAdmin || item.id === "realm_plus" || effectiveRealmPlan === "plus"
+        ? "plus"
+        : item.id === "realm_basic"
+          ? "basic"
+          : effectiveRealmPlan;
 
     const receiptRecord = {
       id: txId,
@@ -5096,6 +5541,7 @@ const App: React.FC = () => {
     setVipActive(nextVip);
     setMvpActive(nextMvp);
     setUnlockedWorldsPass(nextWorldsPass);
+    setRealmPlan(nextRealmPlan);
     setPurchaseHistory((prev) => {
       const nextHist = [receiptRecord, ...prev].slice(0, 30);
       localStorage.setItem("minecraft_purchase_history", JSON.stringify(nextHist));
@@ -5107,6 +5553,7 @@ const App: React.FC = () => {
     localStorage.setItem("minecraft_vip_active", String(nextVip));
     localStorage.setItem("minecraft_mvp_active", String(nextMvp));
     localStorage.setItem("minecraft_unlocked_worlds", String(nextWorldsPass));
+    localStorage.setItem("minecraft_realm_plan", nextRealmPlan);
 
     if (item.id === "cape_royal") {
       handleUpdateCustomSkin({ ...customSkin, backGear: "cape", capeColor: "#f59e0b" });
@@ -5129,9 +5576,28 @@ const App: React.FC = () => {
             vipActive: nextVip,
             mvpActive: nextMvp,
             unlockedWorldsPass: nextWorldsPass,
+            realmPlan: nextRealmPlan,
           },
           { merge: true }
         );
+        if (item.id === "realm_plus") {
+          for (const r of myRealms) {
+            if (r.tier !== "plus") {
+              await updateRealmInFirestore(r.id, {
+                tier: "plus",
+                maxFriends: 4,
+                maxWorlds: 6,
+                updatedAt: Date.now(),
+              }).catch(() => {});
+            }
+          }
+        }
+      } else if (item.id === "realm_plus") {
+        setMyRealms((prev) => {
+          const upgraded = prev.map((r) => ({ ...r, tier: "plus" as const, maxFriends: 4 as const, maxWorlds: 6 as const, updatedAt: Date.now() }));
+          localStorage.setItem("minecraft_local_realms", JSON.stringify(upgraded));
+          return upgraded;
+        });
       }
     } catch (err) {
       console.warn("Firestore sync deferred on purchase:", err);
@@ -5143,6 +5609,514 @@ const App: React.FC = () => {
       `🛍️ [Tienda] Compra verificada: ${item.name} (${method === "indefs" ? `${finalAmount} Indefs` : `$${item.priceUsd.toFixed(2)} USD`}) • Ref ${txId}`
     ]);
     setPaymentStep("success");
+  };
+
+  const handleActivateFreeRealmBasic = async () => {
+    const now = Date.now();
+    const txId = `REALM-FREE-${now.toString().slice(-6)}`;
+    const nextOwned = Array.from(new Set([...ownedShopItems, "realm_basic"]));
+    const nextPlan: RealmPlanTier = effectiveRealmPlan === "plus" ? "plus" : "basic";
+    const emailKey = googleUser?.email?.toLowerCase() || "";
+
+    setOwnedShopItems(nextOwned);
+    setRealmPlan(nextPlan);
+    localStorage.setItem("minecraft_owned_shop_items", JSON.stringify(nextOwned));
+    localStorage.setItem("minecraft_realm_plan", nextPlan);
+
+    const freeReceipt = {
+      id: txId,
+      email: emailKey || "guest@local",
+      productId: "realm_basic",
+      productName: lang === "es" ? "Realm Básico (2 Amigos · 3 Mundos)" : "Basic Realm (2 Friends · 3 Worlds)",
+      price: 0,
+      currency: "FREE",
+      paymentMethod: lang === "es" ? "Activación Gratuita" : "Free Activation",
+      indefAmount: 0,
+      timestamp: now,
+      status: "completed",
+    };
+    setPurchaseHistory((prev) => {
+      const nextHist = [freeReceipt, ...prev].slice(0, 30);
+      localStorage.setItem("minecraft_purchase_history", JSON.stringify(nextHist));
+      return nextHist;
+    });
+
+    try {
+      if (googleUser && emailKey) {
+        await setDoc(doc(db, "user_purchases", txId), freeReceipt);
+        await setDoc(
+          doc(db, "user_roles", emailKey),
+          {
+            ownedShopItems: nextOwned,
+            realmPlan: nextPlan,
+          },
+          { merge: true }
+        );
+      }
+    } catch (err) {
+      console.warn("Free Realm sync deferred:", err);
+    }
+
+    playPurchaseChime();
+    setRealmStatusMsg({
+      type: "ok",
+      text: lang === "es"
+        ? "¡Realm Básico activado gratis! Ya puedes crear tu Realm (2 amigos y 3 mundos)."
+        : "Basic Realm unlocked for free! You can now create your Realm (2 friends & 3 worlds).",
+    });
+    setChatMessages((p) => [
+      ...p,
+      `🏰 [Realms] ¡Realm Básico (2 amigos · 3 mundos) activado gratis!`,
+    ]);
+  };
+
+  const generateRealmCode = () => {
+    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    let code = "RLM-";
+    for (let i = 0; i < 6; i++) {
+      code += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return code;
+  };
+
+  const handleCreateRealm = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    resumeAudio();
+    setRealmStatusMsg(null);
+
+    const cleanName = newRealmName.trim().slice(0, 64) || (lang === "es" ? `Realm de ${currentUser || "Jugador"}` : `${currentUser || "Player"}'s Realm`);
+    const chosenTier: "basic" | "plus" =
+      newRealmTier === "plus" && effectiveRealmPlan === "plus" ? "plus" : "basic";
+
+    if (effectiveRealmPlan === "none" && chosenTier === "basic") {
+      await handleActivateFreeRealmBasic();
+    }
+
+    const now = Date.now();
+    const code = generateRealmCode();
+    const ownerUid = googleUser ? googleUser.uid : (activeSession || "guest_local");
+    const ownerEmail = googleUser ? (googleUser.email?.toLowerCase() || "guest@local") : "guest@local";
+    const ownerName = googleUser ? (googleUser.displayName || googleUser.email || "Jugador") : (currentUser || "Invitado");
+
+    const newRealm: RealmData = {
+      id: code,
+      joinCode: code,
+      name: cleanName,
+      tier: chosenTier,
+      maxFriends: chosenTier === "plus" ? 4 : 2,
+      maxWorlds: chosenTier === "plus" ? 6 : 3,
+      ownerUid,
+      ownerEmail,
+      ownerName,
+      invitedEmails: [],
+      memberEmails: [],
+      worldIds: [],
+      worldsMeta: [],
+      activeWorldId: "",
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    setRealmLoading(true);
+    try {
+      if (googleUser) {
+        await createRealmInFirestore(newRealm);
+      } else {
+        setMyRealms((prev) => {
+          const next = [newRealm, ...prev];
+          localStorage.setItem("minecraft_local_realms", JSON.stringify(next));
+          return next;
+        });
+      }
+      setNewRealmName("");
+      setSelectedRealmId(newRealm.id);
+      setRealmsTab("my");
+      playPurchaseChime();
+      setRealmStatusMsg({
+        type: "ok",
+        text: lang === "es"
+          ? `¡Realm "${cleanName}" creado! Código: ${code}`
+          : `Realm "${cleanName}" created! Code: ${code}`,
+      });
+    } catch (err: any) {
+      console.error("Error creating realm:", err);
+      setRealmStatusMsg({
+        type: "err",
+        text: lang === "es"
+          ? "No se pudo crear el Realm en la nube. Verifica tu conexión o inicia sesión con Google."
+          : "Could not create Realm in cloud. Check connection or Google sign-in.",
+      });
+    } finally {
+      setRealmLoading(false);
+    }
+  };
+
+  const handleUpgradeRealmToPlus = async (realm: RealmData) => {
+    if (effectiveRealmPlan !== "plus" && !isRealmAdmin) {
+      setIsRealmsOpen(false);
+      setShopCategory("realms");
+      setSelectedProduct("realm_plus");
+      setPaymentMethod("indefs");
+      setShopCheckoutError("");
+      setPaymentStep("form");
+      setIsShopOpen(true);
+      return;
+    }
+
+    setRealmLoading(true);
+    setRealmStatusMsg(null);
+    try {
+      if (googleUser) {
+        await updateRealmInFirestore(realm.id, {
+          tier: "plus",
+          maxFriends: 4,
+          maxWorlds: 6,
+          updatedAt: Date.now(),
+        });
+      } else {
+        setMyRealms((prev) => {
+          const next = prev.map((r) => (r.id === realm.id ? { ...r, tier: "plus" as const, maxFriends: 4 as const, maxWorlds: 6 as const, updatedAt: Date.now() } : r));
+          localStorage.setItem("minecraft_local_realms", JSON.stringify(next));
+          return next;
+        });
+      }
+      playPurchaseChime();
+      setRealmStatusMsg({
+        type: "ok",
+        text: lang === "es" ? `"${realm.name}" mejorado a Realm Plus (4 amigos · 6 mundos).` : `"${realm.name}" upgraded to Realm Plus (4 friends · 6 worlds).`,
+      });
+    } catch (err) {
+      setRealmStatusMsg({ type: "err", text: lang === "es" ? "Error al mejorar el Realm." : "Failed to upgrade Realm." });
+    } finally {
+      setRealmLoading(false);
+    }
+  };
+
+  const handleInviteFriendToRealm = async (realm: RealmData, emailRaw: string) => {
+    const cleanEmail = emailRaw.trim().toLowerCase();
+    setRealmStatusMsg(null);
+    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      setRealmStatusMsg({ type: "err", text: lang === "es" ? "Ingresa un correo electrónico válido." : "Enter a valid email address." });
+      return;
+    }
+    if (cleanEmail === realm.ownerEmail.toLowerCase()) {
+      setRealmStatusMsg({ type: "err", text: lang === "es" ? "Ya eres el dueño del Realm." : "You are already the Realm owner." });
+      return;
+    }
+    if (cleanEmail === "lionbastias18@gmail.com") {
+      setRealmStatusMsg({
+        type: "ok",
+        text: lang === "es"
+          ? "El admin (lionbastias18@gmail.com) puede unirse gratis con tu código sin gastar cupo de amigo."
+          : "Admin (lionbastias18@gmail.com) joins for free without taking a friend slot.",
+      });
+      return;
+    }
+    const currentInvited = (realm.invitedEmails || []).filter((e) => e.toLowerCase() !== "lionbastias18@gmail.com");
+    if (currentInvited.includes(cleanEmail)) {
+      setRealmStatusMsg({ type: "err", text: lang === "es" ? "Ese amigo ya está invitado a este Realm." : "Friend is already invited." });
+      return;
+    }
+    if (currentInvited.length >= realm.maxFriends) {
+      setRealmStatusMsg({
+        type: "err",
+        text: lang === "es"
+          ? `Límite de ${realm.maxFriends} amigos alcanzado en ${realm.tier === "basic" ? "Plan Básico" : "Plan Plus"}. ${realm.tier === "basic" ? "Mejora a Realm Plus (4 amigos) por $0.99 / 150 Indefs." : ""}`
+          : `Friend limit (${realm.maxFriends}) reached.`,
+      });
+      return;
+    }
+
+    setRealmLoading(true);
+    try {
+      const nextInvited = [...currentInvited, cleanEmail];
+      if (googleUser) {
+        await updateRealmInFirestore(realm.id, { invitedEmails: nextInvited, updatedAt: Date.now() });
+      } else {
+        setMyRealms((prev) => {
+          const next = prev.map((r) => (r.id === realm.id ? { ...r, invitedEmails: nextInvited, updatedAt: Date.now() } : r));
+          localStorage.setItem("minecraft_local_realms", JSON.stringify(next));
+          return next;
+        });
+      }
+      setInviteFriendEmailInput("");
+      setRealmStatusMsg({ type: "ok", text: lang === "es" ? `Invitación enviada a ${cleanEmail}` : `Invited ${cleanEmail}` });
+    } catch (err) {
+      setRealmStatusMsg({ type: "err", text: lang === "es" ? "No se pudo invitar al amigo." : "Failed to invite friend." });
+    } finally {
+      setRealmLoading(false);
+    }
+  };
+
+  const handleRemoveFriendFromRealm = async (realm: RealmData, emailToRemove: string) => {
+    const clean = emailToRemove.toLowerCase();
+    setRealmLoading(true);
+    setRealmStatusMsg(null);
+    try {
+      const nextInvited = (realm.invitedEmails || []).filter((e) => e.toLowerCase() !== clean);
+      const nextMembers = (realm.memberEmails || []).filter((e) => e.toLowerCase() !== clean);
+      if (googleUser) {
+        await updateRealmInFirestore(realm.id, {
+          invitedEmails: nextInvited,
+          memberEmails: nextMembers,
+          updatedAt: Date.now(),
+        });
+      } else {
+        setMyRealms((prev) => {
+          const next = prev.map((r) => (r.id === realm.id ? { ...r, invitedEmails: nextInvited, memberEmails: nextMembers, updatedAt: Date.now() } : r));
+          localStorage.setItem("minecraft_local_realms", JSON.stringify(next));
+          return next;
+        });
+      }
+      setRealmStatusMsg({ type: "ok", text: lang === "es" ? `Eliminado: ${clean}` : `Removed ${clean}` });
+    } catch (err) {
+      setRealmStatusMsg({ type: "err", text: lang === "es" ? "Error al quitar miembro." : "Failed to remove member." });
+    } finally {
+      setRealmLoading(false);
+    }
+  };
+
+  const handleCreateWorldInRealm = async (realm: RealmData, e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setRealmStatusMsg(null);
+    const currentWorlds = realm.worldsMeta || [];
+    if (currentWorlds.length >= realm.maxWorlds) {
+      setRealmStatusMsg({
+        type: "err",
+        text: lang === "es"
+          ? `Límite de ${realm.maxWorlds} mundos alcanzado en este Realm. ${realm.tier === "basic" ? "Mejora a Realm Plus para tener hasta 6 mundos." : ""}`
+          : `World limit (${realm.maxWorlds}) reached in this Realm.`,
+      });
+      return;
+    }
+
+    const name = realmWorldNameInput.trim().slice(0, 64) || `${realm.name} #${currentWorlds.length + 1}`;
+    const creator = googleUser ? googleUser.uid : (currentUser || "Invitado");
+    const creatorName = googleUser ? (googleUser.displayName || googleUser.email || "Jugador") : (currentUser || "Invitado");
+    const now = Date.now();
+    const newWorld: World = {
+      id: `world_${now}_${Math.floor(Math.random() * 10000)}`,
+      name,
+      creator,
+      creatorName,
+      createdAt: now,
+      playerPos: { x: 0, y: realmWorldType === "flat" ? 58 : 80, z: 0 },
+      gameMode: realmWorldMode,
+      worldType: realmWorldType,
+      edits: {},
+      blockColors: {},
+      survivalInventory: {
+        [BlockType.DIRT]: 16,
+        [BlockType.WOOD]: 8,
+        [BlockType.LOG]: 4,
+        [BlockType.CRAFTING_TABLE]: 1,
+      },
+    };
+
+    const meta: RealmWorldMeta = {
+      id: newWorld.id,
+      name: newWorld.name,
+      gameMode: newWorld.gameMode,
+      worldType: newWorld.worldType,
+      createdAt: newWorld.createdAt,
+    };
+
+    setRealmLoading(true);
+    try {
+      const nextWorlds = [...worlds, newWorld];
+      setWorlds(nextWorlds);
+      saveWorlds(nextWorlds);
+      if (googleUser) {
+        await saveWorldToFirestore(newWorld);
+      }
+
+      const nextWorldIds = [...(realm.worldIds || []), newWorld.id];
+      const nextWorldsMeta = [...currentWorlds, meta];
+      if (googleUser) {
+        await updateRealmInFirestore(realm.id, {
+          worldIds: nextWorldIds,
+          worldsMeta: nextWorldsMeta,
+          activeWorldId: newWorld.id,
+          updatedAt: now,
+        });
+      } else {
+        setMyRealms((prev) => {
+          const next = prev.map((r) => (r.id === realm.id ? { ...r, worldIds: nextWorldIds, worldsMeta: nextWorldsMeta, activeWorldId: newWorld.id, updatedAt: now } : r));
+          localStorage.setItem("minecraft_local_realms", JSON.stringify(next));
+          return next;
+        });
+      }
+
+      setRealmWorldNameInput("");
+      playPurchaseChime();
+      setRealmStatusMsg({
+        type: "ok",
+        text: lang === "es" ? `Mundo "${name}" añadido al Realm (${nextWorldsMeta.length}/${realm.maxWorlds}).` : `World "${name}" added (${nextWorldsMeta.length}/${realm.maxWorlds}).`,
+      });
+    } catch (err) {
+      setRealmStatusMsg({ type: "err", text: lang === "es" ? "No se pudo crear el mundo del Realm." : "Failed to create Realm world." });
+    } finally {
+      setRealmLoading(false);
+    }
+  };
+
+  const handleDeleteWorldFromRealm = async (realm: RealmData, worldId: string) => {
+    setRealmLoading(true);
+    setRealmStatusMsg(null);
+    try {
+      const nextIds = (realm.worldIds || []).filter((id) => id !== worldId);
+      const nextMeta = (realm.worldsMeta || []).filter((m) => m.id !== worldId);
+      const nextActive = realm.activeWorldId === worldId ? (nextIds[0] || "") : (realm.activeWorldId || "");
+      if (googleUser) {
+        await updateRealmInFirestore(realm.id, {
+          worldIds: nextIds,
+          worldsMeta: nextMeta,
+          activeWorldId: nextActive,
+          updatedAt: Date.now(),
+        });
+        await deleteWorldFromFirestore(worldId).catch(() => {});
+      } else {
+        setMyRealms((prev) => {
+          const next = prev.map((r) => (r.id === realm.id ? { ...r, worldIds: nextIds, worldsMeta: nextMeta, activeWorldId: nextActive, updatedAt: Date.now() } : r));
+          localStorage.setItem("minecraft_local_realms", JSON.stringify(next));
+          return next;
+        });
+      }
+      setWorlds((prev) => {
+        const next = prev.filter((w) => w.id !== worldId);
+        saveWorlds(next);
+        return next;
+      });
+      setRealmStatusMsg({ type: "ok", text: lang === "es" ? "Mundo eliminado del Realm." : "World removed from Realm." });
+    } catch (err) {
+      setRealmStatusMsg({ type: "err", text: lang === "es" ? "Error al eliminar mundo." : "Failed to delete world." });
+    } finally {
+      setRealmLoading(false);
+    }
+  };
+
+  const handlePlayRealmWorld = async (realm: RealmData, worldId: string) => {
+    const emailKey = googleUser?.email?.toLowerCase() || "";
+    const isOwner = googleUser ? realm.ownerUid === googleUser.uid : true;
+    const friendMembers = (realm.memberEmails || []).filter(
+      (e) => e.toLowerCase() !== realm.ownerEmail.toLowerCase() && e.toLowerCase() !== "lionbastias18@gmail.com"
+    );
+
+    if (!isOwner && !isRealmAdmin && emailKey && !friendMembers.includes(emailKey)) {
+      if (friendMembers.length >= realm.maxFriends) {
+        setRealmStatusMsg({
+          type: "err",
+          text: lang === "es"
+            ? `Este Realm alcanzó su límite de ${realm.maxFriends} amigos.`
+            : `This Realm reached its limit of ${realm.maxFriends} friends.`,
+        });
+        return;
+      }
+    }
+
+    if (googleUser && emailKey && !isOwner && !(realm.memberEmails || []).includes(emailKey)) {
+      try {
+        await updateRealmInFirestore(realm.id, {
+          memberEmails: [...(realm.memberEmails || []), emailKey],
+          updatedAt: Date.now(),
+        });
+      } catch {}
+    }
+
+    // Try local world fallback first if not in Firestore yet
+    const localMatch = worlds.find((w) => w.id === worldId);
+    if (!googleUser && localMatch) {
+      setIsRealmsOpen(false);
+      setActiveRealmId(realm.id);
+      setCurrentWorld(localMatch);
+      setPlayerPos(localMatch.playerPos || { x: 0, y: localMatch.worldType === "flat" ? 58 : 80, z: 0 });
+      setAppState("playing");
+      return;
+    }
+
+    await handleJoinFriendWorld(worldId, undefined, undefined, realm.id);
+    if (isRealmAdmin && !isOwner) {
+      setChatMessages((p) => [
+        ...p,
+        `👑 [Realm Admin] Te uniste gratis al Realm "${realm.name}" (${realm.maxFriends} amigos · ${realm.maxWorlds} mundos).`,
+      ]);
+    }
+  };
+
+  const handleJoinRealmByCode = async (codeOverride?: string, autoEnterFirstWorld = false) => {
+    const cleanCode = (codeOverride ?? joinRealmCodeInput).trim().toUpperCase();
+    if (!cleanCode) return;
+    setRealmStatusMsg(null);
+
+    if (!googleUser) {
+      setRealmStatusMsg({
+        type: "err",
+        text: lang === "es"
+          ? "Inicia sesión con Google para buscar y unirte a Realms en la nube."
+          : "Sign in with Google to join cloud Realms.",
+      });
+      return;
+    }
+
+    setRealmLoading(true);
+    try {
+      const realm = await getRealmByCodeFromFirestore(cleanCode);
+      if (!realm) {
+        setRealmStatusMsg({
+          type: "err",
+          text: lang === "es" ? `No se encontró ningún Realm con código "${cleanCode}".` : `Realm "${cleanCode}" not found.`,
+        });
+        return;
+      }
+
+      const emailKey = googleUser.email?.toLowerCase() || "";
+      const isOwner = realm.ownerUid === googleUser.uid;
+      const existingMembers = realm.memberEmails || [];
+      const friendMembers = existingMembers.filter(
+        (e) => e.toLowerCase() !== realm.ownerEmail.toLowerCase() && e.toLowerCase() !== "lionbastias18@gmail.com"
+      );
+
+      if (!isOwner && !isRealmAdmin && !friendMembers.includes(emailKey) && friendMembers.length >= realm.maxFriends) {
+        setRealmStatusMsg({
+          type: "err",
+          text: lang === "es"
+            ? `Realm "${realm.name}" lleno (${friendMembers.length}/${realm.maxFriends} amigos).`
+            : `Realm "${realm.name}" is full (${friendMembers.length}/${realm.maxFriends} friends).`,
+        });
+        return;
+      }
+
+      if (!isOwner && emailKey && !existingMembers.includes(emailKey)) {
+        await updateRealmInFirestore(realm.id, {
+          memberEmails: [...existingMembers, emailKey],
+          updatedAt: Date.now(),
+        });
+      }
+
+      setJoinRealmCodeInput("");
+      setSelectedRealmId(realm.id);
+      setRealmsTab("my");
+
+      if (autoEnterFirstWorld) {
+        const targetWorldId = realm.activeWorldId || realm.worldIds?.[0] || realm.worldsMeta?.[0]?.id;
+        if (targetWorldId) {
+          await handlePlayRealmWorld(realm, targetWorldId);
+          return;
+        }
+      }
+
+      playPurchaseChime();
+      setRealmStatusMsg({
+        type: "ok",
+        text: isRealmAdmin && !isOwner
+          ? (lang === "es" ? `👑 Te uniste gratis como Admin al Realm "${realm.name}".` : `👑 Joined Realm "${realm.name}" free as Admin.`)
+          : (lang === "es" ? `¡Te uniste al Realm "${realm.name}"!` : `Joined Realm "${realm.name}"!`),
+      });
+    } catch (err) {
+      setRealmStatusMsg({ type: "err", text: lang === "es" ? "Error al conectar con el Realm." : "Failed to join Realm." });
+    } finally {
+      setRealmLoading(false);
+    }
   };
 
   const handleOwnerGiftComplete = async () => {
@@ -5187,6 +6161,10 @@ const App: React.FC = () => {
       const curVip = existingData?.vipActive === true;
       const curMvp = existingData?.mvpActive === true;
       const curWorlds = existingData?.unlockedWorldsPass === true;
+      const curRealmPlan: RealmPlanTier =
+        existingData?.realmPlan === "plus" || curOwned.includes("realm_plus")
+          ? "plus"
+          : (existingData?.realmPlan === "basic" || curOwned.includes("realm_basic") ? "basic" : "none");
 
       const addedIndefs = item.indefGrant || 0;
       const nextIndefs = Math.max(0, curIndefs + addedIndefs);
@@ -5194,6 +6172,12 @@ const App: React.FC = () => {
       const nextVip = curVip || item.id === "vip_pass" || item.id === "mvp_plus";
       const nextMvp = curMvp || item.id === "mvp_plus";
       const nextWorldsPass = curWorlds || item.id === "unlocked_worlds" || nextVip;
+      const nextRealmPlan: RealmPlanTier =
+        item.id === "realm_plus" || curRealmPlan === "plus"
+          ? "plus"
+          : item.id === "realm_basic"
+            ? "basic"
+            : curRealmPlan;
       const resolvedRole =
         targetEmail === "lionbastias18@gmail.com"
           ? "owner"
@@ -5214,6 +6198,7 @@ const App: React.FC = () => {
           vipActive: nextVip,
           mvpActive: nextMvp,
           unlockedWorldsPass: nextWorldsPass,
+          realmPlan: nextRealmPlan,
         },
         { merge: true }
       );
@@ -5340,7 +6325,7 @@ const App: React.FC = () => {
         onClick={(e) => e.stopPropagation()}
         className="fixed inset-0 bg-black/90 backdrop-blur-md z-[100010] flex items-center justify-center p-2.5 sm:p-5 overflow-y-auto pointer-events-auto text-left"
       >
-        <div className="bg-zinc-950 border-2 border-amber-500/50 p-4 sm:p-6 rounded-2xl w-full max-w-5xl shadow-2xl flex flex-col gap-4 relative text-white font-sans max-h-[92vh] overflow-hidden">
+        <div className="bg-zinc-950 border-2 border-amber-500/50 p-4 sm:p-6 rounded-2xl w-full max-w-5xl shadow-2xl flex flex-col gap-4 relative text-white font-sans max-h-[92%] overflow-hidden">
           {/* Header */}
           <div className="flex flex-wrap justify-between items-center gap-3 border-b border-white/10 pb-3 shrink-0">
             <div className="flex items-center gap-3">
@@ -5471,6 +6456,7 @@ const App: React.FC = () => {
               <div className="flex items-center gap-1.5 overflow-x-auto pb-1 shrink-0">
                 {[
                   { id: "all", label: lang === "es" ? "Todo el Catálogo" : "All Items", icon: "fa-border-all" },
+                  { id: "realms", label: "Realms", icon: "fa-chess-rook" },
                   { id: "indefs", label: lang === "es" ? "Paquetes Indef" : "Indef Packs", icon: "fa-gem" },
                   { id: "passes", label: lang === "es" ? "Rangos y Pases" : "Ranks & Passes", icon: "fa-crown" },
                   { id: "skins", label: lang === "es" ? "Skins 3D" : "3D Skins", icon: "fa-user-astronaut" },
@@ -5592,7 +6578,11 @@ const App: React.FC = () => {
                                   </span>
                                 ) : (
                                   <span className="font-mono text-sm font-black text-white tabular-nums">
-                                    ${p.priceUsd.toFixed(2)} <span className="text-[10px] text-zinc-400">USD</span>
+                                    {p.priceUsd === 0 ? (lang === "es" ? "GRATIS" : "FREE") : (
+                                      <>
+                                        ${p.priceUsd.toFixed(2)} <span className="text-[10px] text-zinc-400">USD</span>
+                                      </>
+                                    )}
                                   </span>
                                 )}
                                 {p.badge && !p.owned && (
@@ -5648,6 +6638,18 @@ const App: React.FC = () => {
                                     ? (lang === "es" ? "✓ Kit Entregado" : "✓ Claimed Here")
                                     : (lang === "es" ? "Enviar Kit al Inventario" : "Send Kit to Inventory")}
                                 </button>
+                              ) : p.category === "realms" ? (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setIsShopOpen(false);
+                                    setRealmsTab("my");
+                                    setIsRealmsOpen(true);
+                                  }}
+                                  className="w-full bg-cyan-600 hover:bg-cyan-500 text-white font-black py-2 rounded-xl text-xs uppercase cursor-pointer transition"
+                                >
+                                  {lang === "es" ? "Abrir Mis Realms" : "Open My Realms"}
+                                </button>
                               ) : (
                                 <button
                                   type="button"
@@ -5657,6 +6659,17 @@ const App: React.FC = () => {
                                   {lang === "es" ? "Desbloqueado" : "Unlocked"}
                                 </button>
                               )
+                            ) : p.priceUsd === 0 ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  handleActivateFreeRealmBasic();
+                                }}
+                                className="w-full bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-black py-2.5 px-3 rounded-xl text-xs uppercase tracking-wider transition cursor-pointer flex items-center justify-center gap-1.5"
+                              >
+                                <i className="fas fa-gift" />
+                                <span>{lang === "es" ? "Adquirir Gratis ($0.00)" : "Claim Free ($0.00)"}</span>
+                              </button>
                             ) : (
                               <>
                                 {effectiveIndefs && (
@@ -6387,6 +7400,760 @@ const App: React.FC = () => {
     );
   };
 
+  const renderRealmsModal = () => {
+    if (!isRealmsOpen) return null;
+
+    const combinedVisibleRealms: RealmData[] = [
+      ...myRealms,
+      ...joinedRealms.filter((jr) => !myRealms.some((mr) => mr.id === jr.id)),
+    ];
+    const activeInspectRealm =
+      combinedVisibleRealms.find((r) => r.id === selectedRealmId) ||
+      allAdminRealms.find((r) => r.id === selectedRealmId) ||
+      combinedVisibleRealms[0] ||
+      null;
+
+    const acceptedFriends = friendships.filter((f) => f.status === "accepted");
+
+    return (
+      <div
+        onPointerDown={(e) => e.stopPropagation()}
+        onPointerUp={(e) => e.stopPropagation()}
+        onPointerMove={(e) => e.stopPropagation()}
+        onTouchStart={(e) => e.stopPropagation()}
+        onTouchEnd={(e) => e.stopPropagation()}
+        onTouchMove={(e) => e.stopPropagation()}
+        onMouseDown={(e) => e.stopPropagation()}
+        onMouseUp={(e) => e.stopPropagation()}
+        onMouseMove={(e) => e.stopPropagation()}
+        onClick={(e) => e.stopPropagation()}
+        className="fixed inset-0 bg-black/85 backdrop-blur-md z-[100025] flex items-center justify-center p-2.5 sm:p-4 overflow-y-auto pointer-events-auto text-left"
+      >
+        <div className="bg-zinc-950 border-4 border-cyan-500/70 p-4 sm:p-6 rounded-3xl w-full max-w-4xl shadow-2xl flex flex-col gap-3.5 text-white font-sans max-h-[92%]">
+          {/* Header */}
+          <div className="flex flex-wrap items-center justify-between gap-2.5 border-b border-white/10 pb-3 shrink-0">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-cyan-500/20 rounded-xl flex items-center justify-center border border-cyan-400/40">
+                <i className="fas fa-chess-rook text-cyan-300 text-lg" />
+              </div>
+              <div>
+                <h2 className="text-xl sm:text-2xl font-black minecraft-font uppercase tracking-wide text-cyan-300 flex items-center gap-2 flex-wrap">
+                  <span>REALMS</span>
+                  {isRealmAdmin && (
+                    <span className="text-[9px] bg-yellow-500/20 text-yellow-300 border border-yellow-400/40 px-2 py-0.5 rounded-full font-mono">
+                      👑 ADMIN GRATIS ∞
+                    </span>
+                  )}
+                </h2>
+                <p className="text-[10px] sm:text-xs text-zinc-400 font-mono font-bold">
+                  {lang === "es"
+                    ? "Plan 1 Gratis (2 Amigos · 3 Mundos) • Plan 2 Plus (4 Amigos · 6 Mundos)"
+                    : "Plan 1 Free (2 Friends · 3 Worlds) • Plan 2 Plus (4 Friends · 6 Worlds)"}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <span
+                className={`text-[10px] font-mono font-black px-2.5 py-1 rounded-lg border uppercase ${
+                  effectiveRealmPlan === "plus"
+                    ? "bg-cyan-500/20 border-cyan-400/40 text-cyan-200"
+                    : effectiveRealmPlan === "basic"
+                      ? "bg-emerald-500/20 border-emerald-400/40 text-emerald-200"
+                      : "bg-zinc-900 border-white/10 text-zinc-400"
+                }`}
+              >
+                {effectiveRealmPlan === "plus"
+                  ? "PLAN PLUS (4A / 6M)"
+                  : effectiveRealmPlan === "basic"
+                    ? "PLAN BÁSICO (2A / 3M)"
+                    : (lang === "es" ? "SIN PLAN" : "NO PLAN")}
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsRealmsOpen(false);
+                  setRealmStatusMsg(null);
+                }}
+                className="bg-zinc-900 hover:bg-zinc-800 text-zinc-300 hover:text-white w-9 h-9 rounded-xl flex items-center justify-center border border-white/10 transition cursor-pointer"
+              >
+                <i className="fas fa-times" />
+              </button>
+            </div>
+          </div>
+
+          {/* Google Sign-In Notice for Guests */}
+          {!googleUser && (
+            <div className="bg-amber-500/10 border border-amber-400/35 rounded-xl px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 shrink-0">
+              <p className="text-[11px] text-amber-200 font-medium">
+                {lang === "es"
+                  ? "Conecta tu cuenta Google para guardar Realms en la nube, invitar amigos y permitir que el admin se una."
+                  : "Sign in with Google to sync Realms in the cloud and invite friends."}
+              </p>
+              <button
+                type="button"
+                onClick={handleGoogleLogin}
+                className="bg-white hover:bg-zinc-200 text-zinc-950 font-black text-[10px] uppercase px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition cursor-pointer shrink-0"
+              >
+                <i className="fab fa-google text-red-500" />
+                <span>{lang === "es" ? "Conectar Google" : "Sign in Google"}</span>
+              </button>
+            </div>
+          )}
+
+          {/* Status Message */}
+          {realmStatusMsg && (
+            <div
+              className={`px-3.5 py-2 rounded-xl text-xs font-mono font-bold flex items-center gap-2 shrink-0 border ${
+                realmStatusMsg.type === "ok"
+                  ? "bg-emerald-500/15 border-emerald-400/40 text-emerald-200"
+                  : "bg-red-500/15 border-red-400/40 text-red-200"
+              }`}
+            >
+              <i className={`fas ${realmStatusMsg.type === "ok" ? "fa-circle-check" : "fa-circle-exclamation"}`} />
+              <span>{realmStatusMsg.text}</span>
+            </div>
+          )}
+
+          {/* Navigation Tabs */}
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-1 shrink-0">
+            {[
+              { id: "my", label: lang === "es" ? `Mis Realms (${combinedVisibleRealms.length})` : `My Realms (${combinedVisibleRealms.length})`, icon: "fa-fort-awesome" },
+              { id: "join", label: lang === "es" ? "Unirse por Código" : "Join by Code", icon: "fa-door-open" },
+              { id: "plans", label: lang === "es" ? "Planes (Gratis / Plus)" : "Plans (Free / Plus)", icon: "fa-tags" },
+              ...(isRealmAdmin ? [{ id: "admin", label: `👑 Admin Gratis (${allAdminRealms.length})`, icon: "fa-crown" }] : []),
+            ].map((tab) => {
+              const active = realmsTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => {
+                    setRealmsTab(tab.id as any);
+                    setRealmStatusMsg(null);
+                  }}
+                  className={`px-3 py-2 rounded-xl text-xs font-black uppercase tracking-wider whitespace-nowrap flex items-center gap-1.5 border transition cursor-pointer ${
+                    active
+                      ? tab.id === "admin"
+                        ? "bg-yellow-500 border-yellow-300 text-zinc-950"
+                        : "bg-cyan-500 border-cyan-300 text-zinc-950"
+                      : "bg-zinc-900 border-white/10 text-zinc-300 hover:bg-zinc-800"
+                  }`}
+                >
+                  <i className={`fas ${tab.icon === "fa-fort-awesome" ? "fa-chess-rook" : tab.icon} text-xs`} />
+                  <span>{tab.label}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Tab Body */}
+          <div className="flex-1 overflow-y-auto pr-1 flex flex-col gap-4">
+            {realmsTab === "plans" && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* Plan 1: FREE */}
+                <div className="bg-zinc-900/80 border-2 border-emerald-500/40 rounded-2xl p-5 flex flex-col justify-between gap-4">
+                  <div className="flex flex-col gap-2.5">
+                    <div className="flex items-center justify-between">
+                      <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-400/40 text-[10px] font-black px-2.5 py-1 rounded-full uppercase font-mono">
+                        OPCIÓN 1 • GRATIS
+                      </span>
+                      <span className="text-xl font-black text-emerald-400 font-mono">$0.00</span>
+                    </div>
+                    <h3 className="text-lg font-black text-white uppercase minecraft-font">
+                      Realm Básico
+                    </h3>
+                    <ul className="text-xs text-zinc-300 flex flex-col gap-1.5 font-mono">
+                      <li className="flex items-center gap-2">
+                        <i className="fas fa-users text-emerald-400" />
+                        <span>Capacidad de <strong>2 Amigos</strong></span>
+                      </li>
+                      <li className="flex items-center gap-2">
+                        <i className="fas fa-globe text-emerald-400" />
+                        <span>Capacidad de <strong>3 Mundos</strong></span>
+                      </li>
+                      <li className="flex items-center gap-2">
+                        <i className="fas fa-crown text-yellow-400" />
+                        <span>Admin (lionbastias18@gmail.com) entra gratis</span>
+                      </li>
+                    </ul>
+                  </div>
+
+                  {effectiveRealmPlan === "basic" || effectiveRealmPlan === "plus" ? (
+                    <button
+                      type="button"
+                      onClick={() => setRealmsTab("my")}
+                      className="w-full py-2.5 rounded-xl bg-emerald-600/25 border border-emerald-400/50 text-emerald-300 font-black text-xs uppercase cursor-pointer"
+                    >
+                      ✓ Desbloqueado — Ir a Mis Realms
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={handleActivateFreeRealmBasic}
+                      className="w-full py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-black text-xs uppercase tracking-wider transition cursor-pointer shadow-lg"
+                    >
+                      Adquirir Gratis ($0.00)
+                    </button>
+                  )}
+                </div>
+
+                {/* Plan 2: CHEAP PLUS */}
+                <div className="bg-zinc-900/80 border-2 border-cyan-500/50 rounded-2xl p-5 flex flex-col justify-between gap-4">
+                  <div className="flex flex-col gap-2.5">
+                    <div className="flex items-center justify-between">
+                      <span className="bg-cyan-500/20 text-cyan-300 border border-cyan-400/40 text-[10px] font-black px-2.5 py-1 rounded-full uppercase font-mono">
+                        OPCIÓN 2 • ECONÓMICO
+                      </span>
+                      <div className="text-right font-mono">
+                        <span className="text-xl font-black text-cyan-300">$0.99</span>
+                        <span className="text-[10px] text-emerald-300 block font-bold">o 150 Indefs</span>
+                      </div>
+                    </div>
+                    <h3 className="text-lg font-black text-white uppercase minecraft-font">
+                      Realm Plus
+                    </h3>
+                    <ul className="text-xs text-zinc-300 flex flex-col gap-1.5 font-mono">
+                      <li className="flex items-center gap-2">
+                        <i className="fas fa-users text-cyan-400" />
+                        <span>Capacidad de <strong>4 Amigos</strong></span>
+                      </li>
+                      <li className="flex items-center gap-2">
+                        <i className="fas fa-globe text-cyan-400" />
+                        <span>Capacidad de <strong>6 Mundos</strong></span>
+                      </li>
+                      <li className="flex items-center gap-2">
+                        <i className="fas fa-crown text-yellow-400" />
+                        <span>Admin (lionbastias18@gmail.com) entra gratis</span>
+                      </li>
+                    </ul>
+                  </div>
+
+                  {effectiveRealmPlan === "plus" ? (
+                    <button
+                      type="button"
+                      onClick={() => setRealmsTab("my")}
+                      className="w-full py-2.5 rounded-xl bg-cyan-600/25 border border-cyan-400/50 text-cyan-200 font-black text-xs uppercase cursor-pointer"
+                    >
+                      ✓ {isRealmAdmin ? "Admin Gratis Activado" : "Plan Plus Desbloqueado"}
+                    </button>
+                  ) : (
+                    <div className="flex flex-col gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsRealmsOpen(false);
+                          setShopCategory("realms");
+                          setSelectedProduct("realm_plus");
+                          setPaymentMethod("indefs");
+                          setShopCheckoutError("");
+                          setPaymentStep("form");
+                          setIsShopOpen(true);
+                        }}
+                        className="w-full py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs uppercase tracking-wider cursor-pointer transition"
+                      >
+                        ◈ Canjear {getEffectiveIndefPrice(150)} Indefs
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsRealmsOpen(false);
+                          setShopCategory("realms");
+                          setSelectedProduct("realm_plus");
+                          setPaymentMethod("card");
+                          setShopCheckoutError("");
+                          setPaymentStep("form");
+                          setIsShopOpen(true);
+                        }}
+                        className="w-full py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-zinc-950 font-black text-xs uppercase tracking-wider cursor-pointer transition"
+                      >
+                        Comprar Barato ($0.99 USD)
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {realmsTab === "join" && (
+              <div className="flex flex-col gap-4">
+                <div className="bg-zinc-900/70 border border-white/10 rounded-2xl p-4 flex flex-col gap-3">
+                  <h3 className="text-xs font-black uppercase tracking-wider text-cyan-300 flex items-center gap-2">
+                    <i className="fas fa-key" />
+                    <span>{lang === "es" ? "Ingresar Código de Realm" : "Enter Realm Code"}</span>
+                  </h3>
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      handleJoinRealmByCode();
+                    }}
+                    className="flex gap-2"
+                  >
+                    <input
+                      type="text"
+                      placeholder="RLM-XXXXXX"
+                      value={joinRealmCodeInput}
+                      onChange={(e) => setJoinRealmCodeInput(e.target.value.toUpperCase())}
+                      className="flex-1 bg-zinc-950 border border-white/15 focus:border-cyan-400 rounded-xl px-3.5 py-2.5 text-sm font-mono uppercase text-white focus:outline-none"
+                    />
+                    <button
+                      type="submit"
+                      disabled={realmLoading || !joinRealmCodeInput.trim()}
+                      className="bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-zinc-950 font-black px-4 py-2.5 rounded-xl text-xs uppercase tracking-wider cursor-pointer transition shrink-0"
+                    >
+                      {isRealmAdmin ? "Unirse Gratis (Admin)" : (lang === "es" ? "Unirse" : "Join")}
+                    </button>
+                  </form>
+                  {isRealmAdmin && (
+                    <p className="text-[10px] font-mono text-yellow-300/90">
+                      👑 Como admin (lionbastias18@gmail.com) te unes gratis a cualquier Realm sin ocupar cupo de amigo.
+                    </p>
+                  )}
+                </div>
+
+                {joinedRealms.length > 0 && (
+                  <div className="flex flex-col gap-2">
+                    <h4 className="text-xs font-bold uppercase text-zinc-400 tracking-wider">
+                      Realms donde eres miembro o invitado ({joinedRealms.length})
+                    </h4>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      {joinedRealms.map((r) => (
+                        <div key={r.id} className="bg-zinc-900/70 border border-white/10 rounded-xl p-3 flex items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="text-sm font-black text-white truncate">{r.name}</p>
+                            <p className="text-[10px] font-mono text-zinc-400 truncate">
+                              {r.joinCode} • {(r.worldsMeta || []).length}/{r.maxWorlds} mundos
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedRealmId(r.id);
+                              setRealmsTab("my");
+                            }}
+                            className="bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-black text-[10px] uppercase px-3 py-1.5 rounded-lg cursor-pointer shrink-0"
+                          >
+                            Ver Mundos
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {realmsTab === "admin" && isRealmAdmin && (
+              <div className="flex flex-col gap-3">
+                <div className="bg-yellow-500/10 border border-yellow-400/35 rounded-xl p-3 text-xs text-yellow-200 font-mono">
+                  👑 Panel Admin (lionbastias18@gmail.com): puedes unirte gratis a cualquiera de los Realms creados sin costo ni límite de cupos.
+                </div>
+                {allAdminRealms.length === 0 ? (
+                  <div className="py-10 text-center text-zinc-500 text-xs">No hay Realms registrados aún en Firestore.</div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {allAdminRealms.map((r) => {
+                      const worldCount = (r.worldsMeta || []).length;
+                      const friendCount = (r.memberEmails || []).filter(
+                        (e) => e.toLowerCase() !== r.ownerEmail.toLowerCase() && e.toLowerCase() !== "lionbastias18@gmail.com"
+                      ).length;
+                      const targetWorldId = r.activeWorldId || r.worldIds?.[0] || r.worldsMeta?.[0]?.id;
+                      return (
+                        <div key={r.id} className="bg-zinc-900/80 border border-yellow-500/30 rounded-2xl p-3.5 flex flex-col gap-2.5">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="text-sm font-black text-white truncate">{r.name}</p>
+                              <p className="text-[10px] font-mono text-zinc-400 truncate">
+                                Dueño: {r.ownerName || r.ownerEmail}
+                              </p>
+                              <p className="text-[10px] font-mono text-cyan-300">
+                                {r.joinCode} • {r.tier === "plus" ? "PLUS" : "BÁSICO"} • {friendCount}/{r.maxFriends} amigos • {worldCount}/{r.maxWorlds} mundos
+                              </p>
+                            </div>
+                          </div>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedRealmId(r.id);
+                                setRealmsTab("my");
+                              }}
+                              className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-white font-bold text-[10px] uppercase py-2 rounded-lg cursor-pointer"
+                            >
+                              Inspeccionar
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleJoinRealmByCode(r.id, Boolean(targetWorldId))}
+                              className="flex-1 bg-yellow-500 hover:bg-yellow-400 text-zinc-950 font-black text-[10px] uppercase py-2 rounded-lg cursor-pointer"
+                            >
+                              👑 Unirse Gratis
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {realmsTab === "my" && (
+              <div className="flex flex-col gap-4">
+                {/* Quick Create Realm Bar */}
+                <form
+                  onSubmit={handleCreateRealm}
+                  className="bg-zinc-900/70 border border-white/10 rounded-2xl p-3.5 flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5"
+                >
+                  <input
+                    type="text"
+                    placeholder={lang === "es" ? "Nombre de tu nuevo Realm..." : "New Realm name..."}
+                    value={newRealmName}
+                    onChange={(e) => setNewRealmName(e.target.value)}
+                    maxLength={48}
+                    className="flex-1 bg-zinc-950 border border-white/15 focus:border-emerald-400 rounded-xl px-3 py-2 text-xs text-white focus:outline-none"
+                  />
+                  <select
+                    value={effectiveRealmPlan === "plus" ? newRealmTier : "basic"}
+                    onChange={(e) => setNewRealmTier(e.target.value as "basic" | "plus")}
+                    className="bg-zinc-950 border border-white/15 rounded-xl px-2.5 py-2 text-xs text-white font-mono focus:outline-none"
+                  >
+                    <option value="basic">Básico (2 Amigos · 3 Mundos — Gratis)</option>
+                    {effectiveRealmPlan === "plus" && (
+                      <option value="plus">Plus (4 Amigos · 6 Mundos)</option>
+                    )}
+                  </select>
+                  <button
+                    type="submit"
+                    disabled={realmLoading}
+                    className="bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-black px-4 py-2 rounded-xl text-xs uppercase tracking-wider cursor-pointer transition shrink-0"
+                  >
+                    {effectiveRealmPlan === "none" ? "+ Crear Realm Gratis" : "+ Crear Realm"}
+                  </button>
+                </form>
+
+                {/* Selected Realm Selector Strip */}
+                {combinedVisibleRealms.length === 0 && !activeInspectRealm ? (
+                  <div className="bg-zinc-900/40 border border-white/5 rounded-2xl py-10 px-4 text-center flex flex-col items-center gap-2.5">
+                    <i className="fas fa-chess-rook text-3xl text-cyan-400/70" />
+                    <p className="text-sm font-black text-white">
+                      {lang === "es" ? "Aún no tienes ningún Realm" : "You don't have a Realm yet"}
+                    </p>
+                    <p className="text-xs text-zinc-400 max-w-md">
+                      {lang === "es"
+                        ? "Activa gratis el Plan 1 (2 amigos y 3 mundos) arriba o adquiere Plan 2 Plus (4 amigos y 6 mundos) a precio económico."
+                        : "Create your first Realm for free above (2 friends & 3 worlds) or upgrade to Plus (4 friends & 6 worlds)."}
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex gap-2 overflow-x-auto pb-1">
+                      {(isRealmAdmin && activeInspectRealm && !combinedVisibleRealms.some((r) => r.id === activeInspectRealm.id)
+                        ? [activeInspectRealm, ...combinedVisibleRealms]
+                        : combinedVisibleRealms
+                      ).map((r) => {
+                        const isSel = activeInspectRealm?.id === r.id;
+                        return (
+                          <button
+                            key={r.id}
+                            type="button"
+                            onClick={() => setSelectedRealmId(r.id)}
+                            className={`px-3 py-2 rounded-xl border text-left shrink-0 transition cursor-pointer ${
+                              isSel
+                                ? "bg-cyan-500/20 border-cyan-400 text-white"
+                                : "bg-zinc-900/70 border-white/10 text-zinc-400 hover:text-white"
+                            }`}
+                          >
+                            <p className="text-xs font-black truncate max-w-[140px]">{r.name}</p>
+                            <p className="text-[9px] font-mono text-cyan-300">
+                              {r.joinCode} • {r.tier === "plus" ? "PLUS" : "BÁSICO"}
+                            </p>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {activeInspectRealm && (() => {
+                      const realm = activeInspectRealm;
+                      const isOwner = googleUser ? realm.ownerUid === googleUser.uid : realm.ownerEmail === "guest@local";
+                      const canManage = isOwner || isRealmAdmin;
+                      const invitedList = (realm.invitedEmails || []).filter((e) => e.toLowerCase() !== "lionbastias18@gmail.com");
+                      const friendMembers = (realm.memberEmails || []).filter(
+                        (e) => e.toLowerCase() !== realm.ownerEmail.toLowerCase() && e.toLowerCase() !== "lionbastias18@gmail.com"
+                      );
+                      const hasAdminJoined = (realm.memberEmails || []).some((e) => e.toLowerCase() === "lionbastias18@gmail.com");
+                      const realmWorlds = realm.worldsMeta || [];
+
+                      return (
+                        <div className="bg-zinc-900/75 border border-cyan-500/30 rounded-2xl p-4 flex flex-col gap-4">
+                          {/* Realm Top Summary */}
+                          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 pb-3">
+                            <div>
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <h3 className="text-base font-black text-white uppercase">{realm.name}</h3>
+                                <span
+                                  className={`text-[9px] font-mono font-black px-2 py-0.5 rounded uppercase ${
+                                    realm.tier === "plus"
+                                      ? "bg-cyan-500/25 text-cyan-200 border border-cyan-400/40"
+                                      : "bg-emerald-500/25 text-emerald-200 border border-emerald-400/40"
+                                  }`}
+                                >
+                                  {realm.tier === "plus" ? "PLUS · 4 Amigos · 6 Mundos" : "BÁSICO · 2 Amigos · 3 Mundos"}
+                                </span>
+                              </div>
+                              <p className="text-[10px] font-mono text-zinc-400 mt-0.5">
+                                Dueño: {realm.ownerName || realm.ownerEmail} • Código:{" "}
+                                <strong className="text-cyan-300">{realm.joinCode}</strong>
+                              </p>
+                            </div>
+
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  navigator.clipboard?.writeText(realm.joinCode);
+                                  setRealmStatusMsg({ type: "ok", text: `Código ${realm.joinCode} copiado.` });
+                                }}
+                                className="bg-zinc-800 hover:bg-zinc-700 text-white text-[10px] font-bold px-2.5 py-1.5 rounded-lg border border-white/10 cursor-pointer"
+                              >
+                                <i className="fas fa-copy mr-1" /> Copiar Código
+                              </button>
+                              {isOwner && realm.tier === "basic" && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleUpgradeRealmToPlus(realm)}
+                                  className="bg-cyan-500 hover:bg-cyan-400 text-zinc-950 text-[10px] font-black px-2.5 py-1.5 rounded-lg uppercase cursor-pointer"
+                                >
+                                  ⬆ Mejorar a Plus (4A · 6M)
+                                </button>
+                              )}
+                              {canManage && (
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    if (googleUser) {
+                                      await deleteRealmFromFirestore(realm.id).catch(() => {});
+                                    } else {
+                                      setMyRealms((prev) => {
+                                        const next = prev.filter((x) => x.id !== realm.id);
+                                        localStorage.setItem("minecraft_local_realms", JSON.stringify(next));
+                                        return next;
+                                      });
+                                    }
+                                    setSelectedRealmId(null);
+                                  }}
+                                  className="bg-red-950/60 hover:bg-red-600 text-red-300 hover:text-white text-[10px] font-bold px-2.5 py-1.5 rounded-lg border border-red-500/30 cursor-pointer"
+                                >
+                                  <i className="fas fa-trash-alt" />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+                            {/* Friends Capacity Column */}
+                            <div className="lg:col-span-5 bg-zinc-950/70 border border-white/10 rounded-xl p-3 flex flex-col gap-2.5">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[11px] font-black uppercase text-purple-300 flex items-center gap-1.5">
+                                  <i className="fas fa-users" /> Amigos ({Math.max(invitedList.length, friendMembers.length)} / {realm.maxFriends})
+                                </span>
+                                {hasAdminJoined && (
+                                  <span className="text-[9px] font-mono bg-yellow-500/20 text-yellow-300 px-1.5 py-0.5 rounded">
+                                    👑 Admin Unido
+                                  </span>
+                                )}
+                              </div>
+
+                              {canManage && (
+                                <form
+                                  onSubmit={(e) => {
+                                    e.preventDefault();
+                                    handleInviteFriendToRealm(realm, inviteFriendEmailInput);
+                                  }}
+                                  className="flex gap-1.5"
+                                >
+                                  <input
+                                    type="email"
+                                    placeholder="correo-amigo@gmail.com"
+                                    value={inviteFriendEmailInput}
+                                    onChange={(e) => setInviteFriendEmailInput(e.target.value)}
+                                    className="flex-1 bg-zinc-900 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-purple-400"
+                                  />
+                                  <button
+                                    type="submit"
+                                    disabled={realmLoading}
+                                    className="bg-purple-600 hover:bg-purple-500 text-white text-[10px] font-black px-2.5 py-1.5 rounded-lg uppercase cursor-pointer"
+                                  >
+                                    Invitar
+                                  </button>
+                                </form>
+                              )}
+
+                              {canManage && acceptedFriends.length > 0 && (
+                                <div className="flex flex-wrap gap-1">
+                                  {acceptedFriends.slice(0, 6).map((f) => {
+                                    const fEmail = (f.senderId === activeSession ? f.receiverId : f.senderId).toLowerCase();
+                                    if (!fEmail.includes("@")) return null;
+                                    return (
+                                      <button
+                                        key={f.id}
+                                        type="button"
+                                        onClick={() => handleInviteFriendToRealm(realm, fEmail)}
+                                        className="text-[9px] bg-zinc-900 hover:bg-purple-600/30 border border-white/10 text-zinc-300 px-2 py-0.5 rounded-full cursor-pointer"
+                                      >
+                                        + {fEmail.split("@")[0]}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              )}
+
+                              <div className="flex flex-col gap-1 max-h-36 overflow-y-auto">
+                                {Array.from(new Set([...invitedList, ...friendMembers])).length === 0 ? (
+                                  <p className="text-[11px] text-zinc-500 italic py-2">
+                                    Sin amigos invitados aún. Comparte el código {realm.joinCode}.
+                                  </p>
+                                ) : (
+                                  Array.from(new Set([...invitedList, ...friendMembers])).map((em) => {
+                                    const joined = friendMembers.includes(em);
+                                    return (
+                                      <div key={em} className="bg-zinc-900/80 border border-white/5 rounded-lg px-2.5 py-1.5 flex items-center justify-between gap-2">
+                                        <div className="min-w-0">
+                                          <p className="text-[11px] font-mono text-white truncate">{em}</p>
+                                          <p className="text-[9px] text-zinc-400">
+                                            {joined ? "✓ Miembro activo" : "⏳ Invitado"}
+                                          </p>
+                                        </div>
+                                        {canManage && (
+                                          <button
+                                            type="button"
+                                            onClick={() => handleRemoveFriendFromRealm(realm, em)}
+                                            className="text-zinc-500 hover:text-red-400 text-xs px-1 cursor-pointer"
+                                          >
+                                            ✕
+                                          </button>
+                                        )}
+                                      </div>
+                                    );
+                                  })
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Worlds Capacity Column */}
+                            <div className="lg:col-span-7 bg-zinc-950/70 border border-white/10 rounded-xl p-3 flex flex-col gap-2.5">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[11px] font-black uppercase text-emerald-300 flex items-center gap-1.5">
+                                  <i className="fas fa-globe" /> Mundos del Realm ({realmWorlds.length} / {realm.maxWorlds})
+                                </span>
+                              </div>
+
+                              {canManage && realmWorlds.length < realm.maxWorlds && (
+                                <form
+                                  onSubmit={(e) => handleCreateWorldInRealm(realm, e)}
+                                  className="flex flex-wrap gap-1.5"
+                                >
+                                  <input
+                                    type="text"
+                                    placeholder="Nombre del mundo..."
+                                    value={realmWorldNameInput}
+                                    onChange={(e) => setRealmWorldNameInput(e.target.value)}
+                                    maxLength={48}
+                                    className="flex-1 min-w-[130px] bg-zinc-900 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-emerald-400"
+                                  />
+                                  <select
+                                    value={realmWorldMode}
+                                    onChange={(e) => setRealmWorldMode(e.target.value as any)}
+                                    className="bg-zinc-900 border border-white/10 rounded-lg px-2 py-1.5 text-[11px] text-white"
+                                  >
+                                    <option value="survival">Supervivencia</option>
+                                    <option value="creative">Creativo</option>
+                                    <option value="adventure">Aventura</option>
+                                  </select>
+                                  <select
+                                    value={realmWorldType}
+                                    onChange={(e) => setRealmWorldType(e.target.value as any)}
+                                    className="bg-zinc-900 border border-white/10 rounded-lg px-2 py-1.5 text-[11px] text-white"
+                                  >
+                                    <option value="normal">Normal</option>
+                                    <option value="flat">Plano</option>
+                                    <option value="edge_farlands">Far Lands</option>
+                                  </select>
+                                  <button
+                                    type="submit"
+                                    disabled={realmLoading}
+                                    className="bg-emerald-500 hover:bg-emerald-400 text-zinc-950 text-[10px] font-black px-3 py-1.5 rounded-lg uppercase cursor-pointer"
+                                  >
+                                    + Crear Mundo
+                                  </button>
+                                </form>
+                              )}
+
+                              {realmWorlds.length >= realm.maxWorlds && realm.tier === "basic" && isOwner && (
+                                <div className="bg-cyan-500/10 border border-cyan-400/30 rounded-lg px-3 py-2 flex items-center justify-between gap-2 text-[11px]">
+                                  <span className="text-cyan-200">Límite de 3 mundos alcanzado en Plan Básico.</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleUpgradeRealmToPlus(realm)}
+                                    className="bg-cyan-500 text-zinc-950 font-black text-[10px] px-2.5 py-1 rounded uppercase cursor-pointer shrink-0"
+                                  >
+                                    Ampliar a 6 Mundos
+                                  </button>
+                                </div>
+                              )}
+
+                              <div className="flex flex-col gap-1.5 max-h-44 overflow-y-auto">
+                                {realmWorlds.length === 0 ? (
+                                  <p className="text-[11px] text-zinc-500 italic py-4 text-center">
+                                    No hay mundos en este Realm aún. ¡Crea el primero arriba!
+                                  </p>
+                                ) : (
+                                  realmWorlds.map((w) => (
+                                    <div key={w.id} className="bg-zinc-900/90 border border-white/10 rounded-xl p-2.5 flex items-center justify-between gap-2">
+                                      <div className="min-w-0">
+                                        <p className="text-xs font-black text-white truncate">{w.name}</p>
+                                        <p className="text-[9px] font-mono text-zinc-400 uppercase">
+                                          {w.gameMode} • {w.worldType}
+                                        </p>
+                                      </div>
+                                      <div className="flex items-center gap-1.5 shrink-0">
+                                        <button
+                                          type="button"
+                                          onClick={() => handlePlayRealmWorld(realm, w.id)}
+                                          className="bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-black text-[10px] uppercase px-3 py-1.5 rounded-lg cursor-pointer flex items-center gap-1"
+                                        >
+                                          <i className="fas fa-play text-[9px]" />
+                                          <span>{isRealmAdmin && !isOwner ? "Entrar Gratis" : "Jugar"}</span>
+                                        </button>
+                                        {canManage && (
+                                          <button
+                                            type="button"
+                                            onClick={() => handleDeleteWorldFromRealm(realm, w.id)}
+                                            className="bg-zinc-800 hover:bg-red-900/60 text-zinc-400 hover:text-red-300 text-[10px] px-2 py-1.5 rounded-lg cursor-pointer"
+                                          >
+                                            <i className="fas fa-trash-alt" />
+                                          </button>
+                                        )}
+                                      </div>
+                                    </div>
+                                  ))
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const renderLeaderboardModal = () => {
     if (!isLeaderboardOpen) return null;
     return (
@@ -6403,7 +8170,7 @@ const App: React.FC = () => {
         onClick={(e) => e.stopPropagation()}
         className="fixed inset-0 bg-black/85 backdrop-blur-md z-[100010] flex items-center justify-center p-4 overflow-y-auto pointer-events-auto text-left"
       >
-        <div className="bg-zinc-900 border-4 border-yellow-600 p-6 sm:p-8 rounded-2xl w-full max-w-4xl shadow-2xl flex flex-col gap-4 relative animate-in fade-in zoom-in-95 duration-200 text-white font-sans max-h-[90vh]">
+        <div className="bg-zinc-900 border-4 border-yellow-600 p-6 sm:p-8 rounded-2xl w-full max-w-4xl shadow-2xl flex flex-col gap-4 relative animate-in fade-in zoom-in-95 duration-200 text-white font-sans max-h-[90%]">
           
           {/* Header with Trophy */}
           <div className="flex justify-between items-center border-b border-zinc-700 pb-3">
@@ -6644,6 +8411,370 @@ const App: React.FC = () => {
     );
   };
 
+  if (appState === "worlds-list") {
+    const filteredWorlds = userWorlds.filter((w) =>
+      w.name.toLowerCase().includes(worldSearchQuery.toLowerCase())
+    );
+
+    return (
+      <div className="w-full h-full bg-slate-900 flex flex-col items-center justify-start sm:justify-center p-4 sm:p-8 relative overflow-y-auto select-none">
+        {/* 3D Rotating Voxel Panorama */}
+        <MenuPanorama3D showLogo={false} />
+
+        <div className="z-10 bg-zinc-950/90 backdrop-blur-2xl p-6 sm:p-8 rounded-[32px] border border-white/10 flex flex-col w-full max-w-4xl shadow-3xl my-auto">
+          {/* Header */}
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6 border-b border-white/5 pb-4">
+            <div>
+              <h2 className="text-white text-3xl font-extrabold minecraft-font tracking-tighter uppercase flex items-center gap-2">
+                <span className="text-emerald-400">⚡ MUNDOS</span> DE EXPLORACIÓN
+              </h2>
+              <div className="text-zinc-400 text-xs mt-0.5 font-medium flex items-center gap-2 flex-wrap">
+                <span>Gestiona y crea tus tierras infinitas personalizadas</span>
+                <span className={`text-[9px] font-bold px-2 py-0.5 rounded-md font-mono uppercase ${
+                  isBypassingWorldLimit
+                    ? "bg-gradient-to-r from-yellow-500/20 to-amber-500/20 border border-yellow-500/30 text-yellow-300 animate-pulse"
+                    : worlds.length >= 70 
+                      ? "bg-red-500/10 border border-red-500/20 text-red-400"
+                      : "bg-zinc-900 border border-white/5 text-zinc-500"
+                }`}>
+                  {worlds.length} / {isBypassingWorldLimit ? "ILIMITADOS" : "70"} MUNDOS
+                </span>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={() => {
+                  resumeAudio();
+                  setRealmStatusMsg(null);
+                  setIsRealmsOpen(true);
+                }}
+                className="bg-gradient-to-r from-cyan-600 to-emerald-600 hover:brightness-110 border border-cyan-300/40 text-white px-3.5 py-1.5 rounded-full text-xs font-black uppercase tracking-wider shadow-lg flex items-center gap-1.5 transition active:scale-95 cursor-pointer"
+              >
+                <i className="fas fa-chess-rook text-cyan-200" />
+                <span>Realms</span>
+                {effectiveRealmPlan === "none" ? (
+                  <span className="text-[9px] bg-black/40 text-emerald-300 px-1.5 py-0.5 rounded-full font-mono">GRATIS</span>
+                ) : (
+                  <span className="text-[9px] bg-black/40 text-cyan-200 px-1.5 py-0.5 rounded-full font-mono uppercase">
+                    {isRealmAdmin ? "ADMIN" : effectiveRealmPlan}
+                  </span>
+                )}
+              </button>
+              <div className="flex items-center gap-2 bg-zinc-900 border border-white/10 px-3 py-1.5 rounded-full shadow-inner">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
+                <span className="text-xs uppercase font-mono font-bold text-emerald-300">
+                  {currentUser || "Invitado"}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Dual Pane Layout */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+            
+            {/* LEFT PANE: Worlds Scroll List (7 columns) */}
+            <div className="lg:col-span-7 flex flex-col gap-4">
+              <div className="flex flex-col gap-2">
+                <label className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider">
+                  🔎 Buscar mundo guardado
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3.5 top-2.5 text-zinc-400 text-sm">
+                    <i className="fas fa-search" />
+                  </span>
+                  <input
+                    type="text"
+                    placeholder="Filtrar por nombre..."
+                    value={worldSearchQuery}
+                    onChange={(e) => setWorldSearchQuery(e.target.value)}
+                    className="w-full bg-zinc-900 border border-white/10 hover:border-white/20 focus:border-emerald-400 rounded-xl py-2 px-3 pl-10 text-white text-xs focus:outline-none placeholder-zinc-500 font-semibold transition-all"
+                  />
+                  {worldSearchQuery && (
+                    <button 
+                      onClick={() => setWorldSearchQuery("")}
+                      className="absolute right-3.5 top-2 text-zinc-400 hover:text-white text-xs font-bold"
+                    >
+                      <i className="fas fa-times-circle" />
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Worlds Scrollbox */}
+              <div className="bg-zinc-900/30 rounded-2xl border border-white/5 p-2 max-h-[380px] overflow-y-auto pr-1 flex flex-col gap-2.5">
+                {filteredWorlds.length === 0 ? (
+                  <div className="text-center py-12 text-zinc-500 text-sm flex flex-col items-center justify-center">
+                    <div className="w-16 h-16 rounded-2xl bg-zinc-900 border border-white/10 flex items-center justify-center mb-3 text-zinc-400">
+                      <i className="fas fa-globe text-3xl" />
+                    </div>
+                    <p className="font-extrabold text-zinc-400">{t.no_worlds_found}</p>
+                    <p className="text-zinc-600 text-[11px] mt-1 px-4">Utiliza el panel de la derecha para colonizar tu primer terreno.</p>
+                  </div>
+                ) : (
+                  filteredWorlds.map((world) => {
+                    const formattedDate = new Date(world.createdAt).toLocaleDateString(undefined, {
+                      day: "numeric",
+                      month: "short",
+                      year: "numeric"
+                    });
+
+                    return (
+                      <div
+                        key={world.id}
+                        className="bg-zinc-900/60 p-3.5 rounded-2xl border border-white/5 flex gap-3.5 items-center transition hover:bg-zinc-900/90 hover:border-white/10 hover:shadow-lg hover:scale-[1.01]"
+                      >
+                        {/* CSS Isometric 3D Voxel Grass Icon placeholder */}
+                        <div className="relative w-11 h-11 shrink-0 flex items-center justify-center bg-zinc-800 rounded-lg overflow-hidden border border-white/10">
+                          {world.worldType === "flat" ? (
+                            <div className="w-full h-full bg-gradient-to-b from-lime-500 to-green-700 flex flex-col items-center justify-center">
+                              <i className="fas fa-layer-group text-white/50 text-xs" />
+                            </div>
+                          ) : (
+                            <div className="w-full h-full bg-gradient-to-b from-emerald-500 to-amber-970 flex flex-col items-center justify-center">
+                              <i className="fas fa-mountain text-white/60 text-xs" />
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Text and stats */}
+                        <div className="flex-1 min-w-0">
+                          <p className="text-white text-[13px] font-bold truncate uppercase tracking-tight">
+                            {world.name}
+                          </p>
+                          <div className="flex gap-1 mt-1 flex-wrap items-center">
+                            <span className="text-[8px] font-bold uppercase tracking-wider bg-zinc-900 text-emerald-400 px-2 py-0.5 rounded-md border border-white/5">
+                              {world.gameMode === "creative" ? t.creative_mode : world.gameMode === "adventure" ? t.adventure_mode : world.gameMode === "spectator" ? t.spectator_mode : t.survival_mode}
+                            </span>
+                            <span className="text-[8px] font-bold uppercase tracking-wider bg-zinc-900 text-sky-400 px-2 py-0.5 rounded-md border border-white/5">
+                              {world.worldType === "flat" ? t.world_type_flat : world.worldType === "edge_farlands" ? t.world_type_edge_farlands : t.world_type_normal}
+                            </span>
+                            <span className="text-[8px] font-bold uppercase tracking-wider text-zinc-500 ml-1">
+                              • {formattedDate}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Action buttons */}
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => {
+                              resumeAudio();
+                              setActiveRealmId(null);
+                              setCurrentWorld(world);
+                              setSurvivalInventory(world.survivalInventory || {
+                                [BlockType.DIRT]: 16,
+                                [BlockType.WOOD]: 8,
+                                [BlockType.LOG]: 4,
+                                [BlockType.CRAFTING_TABLE]: 1,
+                              });
+                              setPlayerPos(world.playerPos || { x: 0, y: 80, z: 0 });
+                              setAppState("playing");
+                            }}
+                            className="bg-emerald-500 hover:bg-emerald-400 text-white font-bold h-9 px-3.5 rounded-xl text-[10px] uppercase tracking-wider shadow-md hover:shadow-emerald-500/20 transition-all active:scale-95 flex items-center justify-center gap-1.5"
+                          >
+                            <i className="fas fa-play text-[9px]" /> JUGAR
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => handleDeleteWorld(world.id, e)}
+                            className="bg-zinc-800 hover:bg-red-950/40 hover:text-red-400 border border-white/5 hover:border-red-500/20 text-zinc-400 h-9 w-9 rounded-xl transition-all active:scale-95 flex items-center justify-center"
+                            title="Borrar Mundo"
+                          >
+                            <i className="fas fa-trash-alt text-xs" />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+
+            {/* RIGHT PANE: Create World Form (5 columns) */}
+            <div className="lg:col-span-5 bg-zinc-900/30 p-5 rounded-2xl border border-white/5 flex flex-col gap-4">
+              <h3 className="text-white text-xs font-black uppercase tracking-wider border-b border-white/5 pb-2 flex items-center gap-1.5">
+                <i className="fas fa-hammer text-emerald-400" /> CREAR NUEVA TIERRA
+              </h3>
+
+              <form onSubmit={handleCreateWorld} className="flex flex-col gap-4">
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider flex justify-between">
+                    <span>{t.world_name}</span>
+                    <span className="text-[9px] text-zinc-600">Corto y descriptivo</span>
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Escribe el nombre del mundo..."
+                    value={worldNameInput}
+                    onChange={(e) => setWorldNameInput(e.target.value)}
+                    className="w-full bg-zinc-950 border border-white/10 hover:border-white/20 focus:border-emerald-400 rounded-xl py-2 px-3 text-white text-xs focus:outline-none placeholder-zinc-600 font-semibold transition"
+                  />
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider">
+                    {t.game_mode}
+                  </label>
+                  <div className="grid grid-cols-4 gap-1 bg-zinc-950 p-1.5 rounded-xl border border-white/5">
+                    {(["survival", "creative", "adventure", "spectator"] as const).map((mode) => {
+                      const isActive = newWorldGameMode === mode;
+                      const modeText = mode === "survival" ? t.survival_mode : mode === "creative" ? t.creative_mode : mode === "adventure" ? t.adventure_mode : t.spectator_mode;
+                      return (
+                        <button
+                          key={mode}
+                          type="button"
+                          onClick={() => {
+                            resumeAudio();
+                            setNewWorldGameMode(mode);
+                          }}
+                          className={`py-2 px-1 rounded-lg text-[9px] uppercase font-extrabold tracking-wider text-center transition-all ${
+                            isActive
+                              ? "bg-emerald-500 text-white shadow-md font-black"
+                              : "text-zinc-500 hover:bg-white/5 hover:text-zinc-300"
+                          }`}
+                        >
+                          {modeText}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10px] uppercase font-bold text-zinc-400 tracking-wider">
+                    {t.world_type}
+                  </label>
+                  <div className="grid grid-cols-3 gap-1 bg-zinc-950 p-1.2 rounded-xl border border-white/5">
+                    {(["normal", "flat", "edge_farlands"] as const).map((type) => {
+                      const isActive = newWorldType === type;
+                      const typeText = type === "normal" 
+                        ? t.world_type_normal 
+                        : type === "flat" 
+                          ? t.world_type_flat 
+                          : t.world_type_edge_farlands;
+                      return (
+                        <button
+                          key={type}
+                          type="button"
+                          onClick={() => {
+                            resumeAudio();
+                            setNewWorldType(type);
+                          }}
+                          className={`py-2 px-0.5 rounded-lg text-[8px] uppercase font-extrabold tracking-wider text-center h-full flex items-center justify-center transition-all ${
+                            isActive
+                              ? "bg-emerald-500 text-white shadow-md font-black"
+                              : "text-zinc-500 hover:bg-white/5 hover:text-zinc-300"
+                          }`}
+                        >
+                          <span className="truncate px-1" title={typeText}>{typeText}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {userWorlds.length >= 70 && !isBypassingWorldLimit && (
+                  <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-3 flex flex-col gap-2.5 text-red-400 font-semibold text-[9px] leading-relaxed uppercase tracking-wider">
+                    <div className="flex gap-2 items-center">
+                      <i className="fas fa-exclamation-triangle text-[11px] animate-pulse" />
+                      <span>Límite de 70 mundos alcanzado. Por favor, elimina algún mundo existente antes de poder crear uno nuevo.</span>
+                    </div>
+                    
+                    {!showBulkDeleteConfirm ? (
+                      <div className="border-t border-red-500/20 pt-2 flex justify-between items-center gap-2">
+                        <span className="text-zinc-400">¿Quieres liberar espacio rápidamente?</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            resumeAudio();
+                            setShowBulkDeleteConfirm(true);
+                          }}
+                          className="bg-red-500 hover:bg-red-400 text-white font-extrabold px-2.5 py-1.5 rounded-lg text-[8px] transition-all hover:scale-105 active:scale-95 flex items-center gap-1 shadow-md shadow-red-500/20 shrink-0"
+                        >
+                          <i className="fas fa-broom" /> Liberar espacio
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="border-t border-red-500/20 pt-2 flex flex-col gap-2">
+                        <span className="text-red-300 font-bold">⚠️ ¿Confirmas eliminar automáticamente los 5 mundos más antiguos?</span>
+                        <div className="flex gap-1.5 justify-end">
+                          <button
+                            type="button"
+                            disabled={isDeletingBulk}
+                            onClick={() => {
+                              resumeAudio();
+                              setShowBulkDeleteConfirm(false);
+                            }}
+                            className="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-bold px-2 py-1 rounded-lg text-[8px] transition-all active:scale-95 border border-white/5"
+                          >
+                            Cancelar
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isDeletingBulk}
+                            onClick={() => {
+                              resumeAudio();
+                              handleBulkDeleteOldest(5);
+                            }}
+                            className="bg-red-600 hover:bg-red-500 text-white font-bold px-2.5 py-1 rounded-lg text-[8px] transition-all hover:scale-105 active:scale-95 flex items-center gap-1 shadow-md"
+                          >
+                            {isDeletingBulk ? (
+                              <>
+                                <i className="fas fa-spinner fa-spin" /> Borrando...
+                              </>
+                            ) : (
+                              <>
+                                <i className="fas fa-trash-alt" /> Sí, borrar 5
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  onClick={(e) => {
+                    handleCreateWorld(e);
+                  }}
+                  disabled={userWorlds.length >= 70 && !isBypassingWorldLimit}
+                  className={`font-bold py-3.5 rounded-xl text-xs uppercase tracking-wide transition-all flex items-center justify-center gap-2 mt-2 ${
+                    userWorlds.length >= 70 && !isBypassingWorldLimit
+                      ? "bg-zinc-800 text-zinc-500 cursor-not-allowed border border-white/5"
+                      : "bg-emerald-500 hover:bg-emerald-400 text-white shadow-md shadow-emerald-500/10 hover:shadow-emerald-500/20 active:scale-95"
+                  }`}
+                >
+                  <i className="fas fa-plus text-[10px]" /> {t.create_btn}
+                </button>
+              </form>
+            </div>
+
+          </div>
+
+          {/* Footer Back Button */}
+          <div className="mt-8 border-t border-white/5 pt-4 flex justify-between items-center">
+            <button
+              onClick={() => {
+                resumeAudio();
+                setAppState("menu");
+              }}
+              className="bg-zinc-900 hover:bg-zinc-800 border border-white/10 text-white/80 font-bold py-2.5 px-6 rounded-xl text-center text-xs uppercase tracking-wider transition-all active:scale-95 flex items-center gap-1.5"
+            >
+              <i className="fas fa-arrow-left" /> VOLVER AL MENÚ
+            </button>
+            <p className="text-[10px] text-zinc-600 font-mono tracking-wider uppercase font-bold">Infinite World v2.1</p>
+          </div>
+          
+        </div>
+        {renderShopModal()}
+        {renderRealmsModal()}
+      </div>
+    );
+  }
+
   // Removing old definition location
   if (appState === "menu") {
     const unlockedSkinsList: CharacterSkinId[] = [];
@@ -6663,7 +8794,7 @@ const App: React.FC = () => {
         />
 
         {/* Top-Left Floating User Profile & Indef Wallet Bar */}
-        <div className={`absolute top-3 sm:top-4 left-3 sm:left-4 z-20 flex flex-wrap items-center gap-2 transition-all duration-300 ${isCinemaMode ? "opacity-0 pointer-events-none -translate-y-4" : "opacity-100 translate-y-0"}`}>
+        <div className={`absolute top-3 sm:top-4 left-3 sm:left-4 pr-28 sm:pr-4 z-20 flex flex-wrap items-center gap-2 transition-all duration-300 ${isCinemaMode ? "opacity-0 pointer-events-none -translate-y-4" : "opacity-100 translate-y-0"}`}>
           <div className="flex items-center gap-2.5 bg-black/60 hover:bg-black/80 backdrop-blur-md border border-white/20 py-1.5 px-3.5 rounded-full shadow-xl transition-all">
             <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 shadow-[0_0_8px_#34d399]" />
             <div className="flex items-center gap-1.5">
@@ -6722,6 +8853,22 @@ const App: React.FC = () => {
           </button>
         </div>
 
+        {/* Mobile Quick Rotate Button on Main Menu */}
+        {(isTouchDevice || isSmallScreen) && !isCinemaMode && (
+          <button
+            type="button"
+            onClick={() => {
+              resumeAudio();
+              toggleManualScreenRotation();
+            }}
+            className="absolute top-3 sm:top-4 right-3 sm:right-4 z-30 flex items-center gap-1.5 bg-black/70 hover:bg-black/90 border border-emerald-400/40 text-emerald-300 px-3 py-1.5 rounded-full text-[10px] font-mono font-bold shadow-lg active:scale-95 transition"
+            title={lang === "es" ? "Girar Pantalla (Vertical / Horizontal)" : "Rotate Screen"}
+          >
+            <i className="fas fa-rotate text-xs" />
+            <span>{isPortrait ? (lang === "es" ? "Horizontal" : "Landscape") : (lang === "es" ? "Vertical" : "Portrait")}</span>
+          </button>
+        )}
+
         {/* Music Track Mini Badge */}
         <div className={`absolute top-3 sm:top-4 right-36 z-20 hidden lg:flex items-center gap-2 bg-black/55 hover:bg-black/75 backdrop-blur-md border border-white/15 px-3 py-1.5 rounded-full shadow-lg transition-all duration-300 ${isCinemaMode ? "opacity-0 pointer-events-none -translate-y-4" : "opacity-100 translate-y-0"}`}>
           <span className="flex items-center gap-0.5 h-3 text-emerald-400">
@@ -6777,22 +8924,46 @@ const App: React.FC = () => {
 
         {/* 3D Textured Minecraft Menu Buttons (Centered Bottom) */}
         <div className={`absolute bottom-3 sm:bottom-5 left-1/2 -translate-x-1/2 w-full max-w-[300px] sm:max-w-sm px-3 flex flex-col gap-2 z-20 transition-all duration-300 ${isCinemaMode ? "opacity-0 pointer-events-none translate-y-12" : "opacity-100 translate-y-0"}`}>
-          {/* 1. PLAY BUTTON */}
-          <button
-            onClick={() => {
-              resumeAudio();
-              setAppState("worlds-list");
-            }}
-            className="w-full relative group py-3 sm:py-3.5 px-4 rounded-lg text-white font-black text-base sm:text-lg uppercase tracking-widest minecraft-font transition-all duration-75 flex items-center justify-center gap-2.5 border-t-2 border-l-2 border-emerald-300/90 border-b-4 border-r-4 border-emerald-950 bg-gradient-to-b from-emerald-500 via-emerald-600 to-emerald-800 shadow-[0_5px_0_#064e3b,0_10px_20px_rgba(0,0,0,0.65)] active:translate-y-[4px] active:shadow-[0_1px_0_#064e3b,0_4px_10px_rgba(0,0,0,0.5)] hover:brightness-110 select-none cursor-pointer"
-            style={{
-              textShadow: "2px 2px 0px #000, -1px -1px 0px #000, 1px -1px 0px #000, -1px 1px 0px #000",
-              backgroundImage: "linear-gradient(rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(to bottom, #10b981, #059669, #065f46)",
-              backgroundSize: "4px 4px, 4px 4px, 100% 100%"
-            }}
-          >
-            <i className="fas fa-play text-emerald-200 text-xs sm:text-sm group-hover:scale-110 transition-transform" />
-            <span>{t.play}</span>
-          </button>
+          {/* 1. PLAY & REALMS ROW */}
+          <div className="grid grid-cols-12 gap-2 w-full">
+            <button
+              onClick={() => {
+                resumeAudio();
+                setAppState("worlds-list");
+              }}
+              className="col-span-7 relative group py-3 sm:py-3.5 px-3 rounded-lg text-white font-black text-sm sm:text-base uppercase tracking-widest minecraft-font transition-all duration-75 flex items-center justify-center gap-2 border-t-2 border-l-2 border-emerald-300/90 border-b-4 border-r-4 border-emerald-950 bg-gradient-to-b from-emerald-500 via-emerald-600 to-emerald-800 shadow-[0_5px_0_#064e3b,0_10px_20px_rgba(0,0,0,0.65)] active:translate-y-[4px] active:shadow-[0_1px_0_#064e3b,0_4px_10px_rgba(0,0,0,0.5)] hover:brightness-110 select-none cursor-pointer"
+              style={{
+                textShadow: "2px 2px 0px #000, -1px -1px 0px #000, 1px -1px 0px #000, -1px 1px 0px #000",
+                backgroundImage: "linear-gradient(rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(to bottom, #10b981, #059669, #065f46)",
+                backgroundSize: "4px 4px, 4px 4px, 100% 100%"
+              }}
+            >
+              <i className="fas fa-play text-emerald-200 text-xs sm:text-sm group-hover:scale-110 transition-transform" />
+              <span>{t.play}</span>
+            </button>
+
+            <button
+              onClick={() => {
+                resumeAudio();
+                setRealmStatusMsg(null);
+                setIsRealmsOpen(true);
+              }}
+              className="col-span-5 relative group py-3 sm:py-3.5 px-2.5 rounded-lg text-white font-black text-xs sm:text-sm uppercase tracking-wider minecraft-font transition-all duration-75 flex items-center justify-center gap-1.5 border-t-2 border-l-2 border-cyan-300/90 border-b-4 border-r-4 border-cyan-950 bg-gradient-to-b from-cyan-500 via-teal-600 to-cyan-900 shadow-[0_5px_0_#164e63,0_10px_20px_rgba(0,0,0,0.65)] active:translate-y-[4px] active:shadow-[0_1px_0_#164e63,0_4px_10px_rgba(0,0,0,0.5)] hover:brightness-110 select-none cursor-pointer"
+              style={{
+                textShadow: "1px 1px 0px #000, -1px -1px 0px #000",
+                backgroundImage: "linear-gradient(rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(to bottom, #06b6d4, #0d9488, #164e63)",
+                backgroundSize: "4px 4px, 4px 4px, 100% 100%"
+              }}
+            >
+              <i className="fas fa-chess-rook text-cyan-100 text-xs group-hover:scale-110 transition-transform" />
+              <span>Realms</span>
+              {effectiveRealmPlan === "none" && (
+                <span className="bg-emerald-400 text-zinc-950 text-[7px] px-1 py-0.5 rounded font-mono font-black leading-none">
+                  GRATIS
+                </span>
+              )}
+            </button>
+          </div>
 
           {/* 2. DUAL ROW: LEADERBOARD & FRIENDS */}
           <div className="grid grid-cols-2 gap-2 w-full">
@@ -6897,20 +9068,34 @@ const App: React.FC = () => {
         {renderLeaderboardModal()}
         {renderFriendsModal()}
         {renderShopModal()}
+        {renderRealmsModal()}
       </div>
     );
   }
 
 
-  if (appState === "settings") {
+  const renderSettingsModal = (asOverlay: boolean) => {
     const currentUniqueId = googleUser ? googleUser.uid : (activeSession ? `${activeSession}_guest` : "invitado_local");
 
     return (
-      <div className="w-full h-full bg-slate-950 flex flex-col items-center justify-start sm:justify-center p-3 sm:p-6 relative overflow-y-auto select-none">
-        {/* 3D Rotating Voxel Panorama */}
-        <MenuPanorama3D showLogo={false} />
+      <div
+        className={`fixed inset-0 w-full h-full flex flex-col items-center justify-start sm:justify-center p-2.5 sm:p-6 overflow-y-auto overscroll-contain select-none ${
+          asOverlay ? "z-[100005] bg-slate-950/90 backdrop-blur-md" : "bg-slate-950"
+        }`}
+        onPointerDown={asOverlay ? (e) => e.stopPropagation() : undefined}
+        onPointerMove={asOverlay ? (e) => e.stopPropagation() : undefined}
+        onPointerUp={asOverlay ? (e) => e.stopPropagation() : undefined}
+        onTouchStart={asOverlay ? (e) => e.stopPropagation() : undefined}
+        onTouchMove={asOverlay ? (e) => e.stopPropagation() : undefined}
+        onTouchEnd={asOverlay ? (e) => e.stopPropagation() : undefined}
+        onMouseDown={asOverlay ? (e) => e.stopPropagation() : undefined}
+        onMouseMove={asOverlay ? (e) => e.stopPropagation() : undefined}
+        onMouseUp={asOverlay ? (e) => e.stopPropagation() : undefined}
+      >
+        {/* 3D Rotating Voxel Panorama only in menu mode */}
+        {!asOverlay && <MenuPanorama3D showLogo={false} />}
 
-        <div className="z-10 bg-black/85 backdrop-blur-2xl p-5 sm:p-8 rounded-3xl border border-white/15 flex flex-col items-center shadow-2xl max-w-2xl w-full my-auto transition-all">
+        <div className="z-10 bg-black/85 backdrop-blur-2xl p-4 sm:p-8 rounded-3xl border border-white/15 flex flex-col items-center shadow-2xl max-w-2xl w-full max-h-[94%] my-auto transition-all overflow-hidden">
           {/* Header */}
           <div className="flex flex-col items-center justify-center w-full mb-5">
             <h1 className="text-white text-2xl sm:text-3xl font-black minecraft-font uppercase tracking-tight text-center drop-shadow-lg flex items-center gap-2.5">
@@ -6954,7 +9139,7 @@ const App: React.FC = () => {
 
           {/* Tab 1: 🎮 JUEGO & CONTROLES */}
           {settingsSection === "game" && (
-            <div className="flex flex-col w-full gap-4 max-h-[58vh] overflow-y-auto pr-1">
+            <div className="flex flex-col w-full gap-4 flex-1 min-h-0 overflow-y-auto pr-1">
               {/* Apariencia del Personaje (6 Skins 3D) */}
               <div className="bg-zinc-900/60 p-3.5 rounded-2xl border border-white/5 flex flex-col gap-2">
                 <div className="flex items-center justify-between">
@@ -7182,12 +9367,62 @@ const App: React.FC = () => {
                   })}
                 </div>
               </div>
+
+              {/* Rotación Automática en Teléfonos (Web) */}
+              <div className="bg-zinc-900/60 p-3.5 rounded-2xl border border-white/5 flex flex-col gap-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-emerald-400 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5">
+                    <i className="fas fa-rotate text-xs" />
+                    <span>{lang === "es" ? "Rotación en Teléfonos (Web)" : "Mobile Web Auto-Rotation"}</span>
+                  </label>
+                  <span className="text-[10px] font-mono text-zinc-400">
+                    {isPortrait ? (lang === "es" ? "Vertical" : "Portrait") : (lang === "es" ? "Horizontal" : "Landscape")}
+                  </span>
+                </div>
+                <div className="grid grid-cols-3 gap-2">
+                  {([
+                    { mode: "auto", labelEs: "Automática", labelEn: "Auto" },
+                    { mode: "landscape", labelEs: "Horizontal", labelEn: "Landscape" },
+                    { mode: "portrait", labelEs: "Vertical", labelEn: "Portrait" },
+                  ] as const).map((item) => {
+                    const isActive = webAutoRotateMode === item.mode;
+                    return (
+                      <button
+                        key={item.mode}
+                        onClick={() => {
+                          resumeAudio();
+                          applyMobileRotationSelection(item.mode, item.mode !== "auto");
+                        }}
+                        className={`text-[10px] sm:text-xs py-2 rounded-xl font-bold border transition-all ${
+                          isActive
+                            ? "bg-emerald-500 border-transparent text-white shadow-md font-extrabold"
+                            : "bg-zinc-850 border-white/5 text-zinc-400 hover:text-white"
+                        }`}
+                      >
+                        {lang === "es" ? item.labelEs : item.labelEn}
+                      </button>
+                    );
+                  })}
+                </div>
+                {sensorStatus === "needs_permission" && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      resumeAudio();
+                      applyMobileRotationSelection("auto", false);
+                    }}
+                    className="w-full py-1.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-[10px] font-bold uppercase tracking-wider transition"
+                  >
+                    {lang === "es" ? "Activar Sensor de Giro en iPhone/Web" : "Enable Gyroscope Sensor"}
+                  </button>
+                )}
+              </div>
             </div>
           )}
 
           {/* Tab 2: 🖼️ GRÁFICOS & RENDIMIENTO */}
           {settingsSection === "graphics" && (
-            <div className="flex flex-col w-full gap-4 max-h-[58vh] overflow-y-auto pr-1">
+            <div className="flex flex-col w-full gap-4 flex-1 min-h-0 overflow-y-auto pr-1">
               {/* Ultra Optimización */}
               <div className="bg-zinc-900/60 p-3.5 rounded-2xl border border-white/5 flex items-center justify-between">
                 <div className="flex flex-col">
@@ -7372,7 +9607,7 @@ const App: React.FC = () => {
 
           {/* Tab 3: 🎵 AUDIO & MÚSICA */}
           {settingsSection === "audio" && (
-            <div className="flex flex-col w-full gap-4 max-h-[58vh] overflow-y-auto pr-1">
+            <div className="flex flex-col w-full gap-4 flex-1 min-h-0 overflow-y-auto pr-1">
               {/* Selector de Modo de Música */}
               <div className="bg-zinc-900/60 p-3.5 rounded-2xl border border-white/5 flex flex-col gap-2.5">
                 <label className="text-emerald-400 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5">
@@ -7569,7 +9804,7 @@ const App: React.FC = () => {
 
           {/* Tab 4: 🌍 MUNDO & GENERACIÓN PROCEDURAL */}
           {settingsSection === "world" && (
-            <div className="flex flex-col w-full gap-4 max-h-[58vh] overflow-y-auto pr-1">
+            <div className="flex flex-col w-full gap-4 flex-1 min-h-0 overflow-y-auto pr-1">
               {/* Acciones de Guardado y Archivos */}
               <div className="bg-zinc-900/60 p-3.5 rounded-2xl border border-white/5 flex flex-col gap-2.5">
                 <label className="text-emerald-400 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5">
@@ -7694,7 +9929,7 @@ const App: React.FC = () => {
 
           {/* Tab 5: 🌐 MULTIJUGADOR & CUENTA */}
           {settingsSection === "multiplayer" && (
-            <div className="flex flex-col w-full gap-4 max-h-[58vh] overflow-y-auto pr-1">
+            <div className="flex flex-col w-full gap-4 flex-1 min-h-0 overflow-y-auto pr-1">
               {/* Estado de Conexión */}
               <div className="bg-zinc-900/60 p-3.5 rounded-2xl border border-white/5 flex items-center justify-between">
                 <div className="flex items-center gap-2.5">
@@ -7858,8 +10093,16 @@ const App: React.FC = () => {
             </button>
           </div>
         </div>
+        {!asOverlay && renderLeaderboardModal()}
+        {!asOverlay && renderFriendsModal()}
+        {!asOverlay && renderShopModal()}
+        {!asOverlay && renderRealmsModal()}
       </div>
     );
+  };
+
+  if (appState === "settings" && !currentWorld) {
+    return renderSettingsModal(false);
   }
 
   // --- NEW INTERACTIVE SCREENS FOR COFRES, HORNOS, CARTOGRAFIA, MAPAS ---
@@ -8321,7 +10564,7 @@ const App: React.FC = () => {
 
   return (
     <div
-      className={`fixed inset-0 w-full h-full overflow-hidden touch-none ${dimension === "nether" ? "bg-[#240606]" : "bg-[#87ceeb]"} ${maxAbsCoord >= 2000 ? "glitch-heavy" : maxAbsCoord >= 1500 ? "glitch-moderate" : ""}`}
+      className={`fixed inset-0 w-full h-full overflow-hidden touch-none ${dimension === "nether" ? "bg-[#240606]" : "bg-[#09090b]"} ${maxAbsCoord >= 2000 ? "glitch-heavy" : maxAbsCoord >= 1500 ? "glitch-moderate" : ""}`}
       onContextMenu={(e) => e.preventDefault()}
       onMouseDown={handleTouchStart}
       onMouseMove={handleTouchMove}
@@ -8512,6 +10755,12 @@ const App: React.FC = () => {
         aiCompanionBagRef={aiCompanionBagRef}
         onAICompanionBuildComplete={handleCompanionBuildComplete}
         onAICompanionSpeak={handleCompanionSpeak}
+        initialBlockColors={dimensionBlockColors}
+        onBatchWorldEdit={handleBatchWorldEdit}
+        virtualRotationDeg={virtualRotationDeg}
+        realmEditorConfig={activeRealmId ? { ...realmEditorConfig, enabled: true } : undefined}
+        realmActionRequest={realmActionRequest}
+        onRealmUndoChange={setRealmCanUndo}
       />
 
       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none opacity-30">
@@ -8520,74 +10769,537 @@ const App: React.FC = () => {
         </div>
       </div>
 
-      <div className={`absolute inset-0 pointer-events-none flex flex-col justify-between transition-all duration-300 ${uiScaleConfig.containerPadding}`}>
-        <div className="flex justify-between items-start w-full mt-14 sm:mt-12">
-          <div className="flex flex-col gap-2 items-start max-w-[280px]">
+      <div className="fixed inset-0 z-20 pointer-events-none overflow-hidden select-none">
+        {/* Top-Left: Stats + Chat */}
+        <div className={`absolute top-0 left-0 flex flex-col gap-1.5 items-start ${isPortrait ? "max-w-[calc(100vw-72px)]" : "max-w-[230px] sm:max-w-[280px]"} pointer-events-none ${uiScaleConfig.containerPadding}`}>
+          <div
+            className={`bg-black/80 rounded-xl border border-white/15 pointer-events-auto transition-all duration-300 ${uiScaleConfig.statsPadding}`}
+            onPointerDown={(e) => e.stopPropagation()}
+            onTouchStart={(e) => e.stopPropagation()}
+          >
+            <h1 className={`text-white font-bold minecraft-font uppercase tracking-tighter flex items-center gap-1.5 flex-wrap ${uiScaleConfig.statsTitle}`}>
+              ALPHA <span className="text-emerald-400">MOBILE 1.0.2</span>
+              {activeRealmId && (
+                <span className="text-[8px] font-mono bg-cyan-500/25 border border-cyan-400/40 text-cyan-200 px-1.5 py-0.5 rounded uppercase">
+                  🏰 Realm
+                </span>
+              )}
+            </h1>
+            <p className={`text-white/40 mt-1 font-mono break-words leading-normal ${uiScaleConfig.statsText}`}>
+              <span id="player-coordinates-hud">
+                X:{playerPos.x.toFixed(0)} Y:{(playerPos.y - 55).toFixed(0)} Z:{playerPos.z.toFixed(0)}
+              </span>
+              <br/>
+              Chunks: {Object.keys(currentWorld?.edits || {}).length} | <FpsCounter />
+            </p>
+
+            {/* REAL-TIME SCREEN RESOLUTION & PRESET HUD - CLICK TO CYCLE */}
+            <div 
+              onClick={(e) => {
+                e.stopPropagation();
+                resumeAudio();
+                const presets: ("auto" | "redmi" | "funtouch" | "galaxy")[] = ["auto", "redmi", "funtouch", "galaxy"];
+                const nextIndex = (presets.indexOf(devicePreset) + 1) % presets.length;
+                const nextPreset = presets[nextIndex];
+                setDevicePreset(nextPreset);
+                localStorage.setItem("minecraft_device_preset", nextPreset);
+              }}
+              className={`mt-2 px-2 py-1.5 rounded-lg text-[8px] font-mono leading-tight transition-all flex flex-col gap-0.5 pointer-events-auto cursor-pointer select-none hover:bg-white/5 active:scale-97 border ${uiScaleConfig.badge}`}
+              title="Toca para cambiar perfil de pantalla"
+            >
+              <div className="flex items-center justify-between gap-1 font-bold uppercase">
+                <div className="flex items-center gap-1">
+                  <i className="fas fa-tablet-screen-button text-[9px] animate-pulse" />
+                  <span>Soporte de Pantalla</span>
+                </div>
+                <span className="text-[7px] bg-white/20 px-1 rounded uppercase tracking-tighter">Tap 🔄</span>
+              </div>
+              <div>
+                Tam: {screenSize.width}x{screenSize.height} (R: {screenSize.aspectRatio.toFixed(2)})
+              </div>
+              <div className="text-[7.5px] opacity-90 border-t border-white/5 pt-0.5 mt-0.5 flex justify-between items-center">
+                <span>Perfil: <strong>{uiScaleConfig.name}</strong></span>
+                <span className="text-[6.5px] text-white/50 lowercase">({lang === "es" ? "tocar" : "cycle"})</span>
+              </div>
+            </div>
+
+            {activeRealmId && (
+              <div className="mt-2 flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    resumeAudio();
+                    setIsRealmEditorOpen((prev) => !prev);
+                  }}
+                  className={`flex-1 py-1.5 px-2 rounded-lg font-bold text-[9.5px] uppercase tracking-wider flex items-center justify-center gap-1.5 border transition active:scale-95 ${
+                    isRealmEditorOpen || realmEditorConfig.tool !== "none"
+                      ? "bg-fuchsia-600/90 hover:bg-fuchsia-500 border-fuchsia-300/60 text-white shadow-lg"
+                      : "bg-cyan-700/80 hover:bg-cyan-600 border-cyan-400/40 text-cyan-50"
+                  }`}
+                >
+                  <i className="fas fa-wand-magic-sparkles" />
+                  <span>{isRealmEditorOpen ? "Cerrar Editor" : "Herramientas Realm"}</span>
+                </button>
+                {realmCanUndo && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      resumeAudio();
+                      setRealmActionRequest({ seq: Date.now(), action: "undo" });
+                    }}
+                    className="py-1.5 px-2 rounded-lg bg-zinc-800 hover:bg-zinc-700 border border-white/15 text-amber-300 font-bold text-[9.5px] transition active:scale-95"
+                    title="Deshacer último cambio"
+                  >
+                    ↩️
+                  </button>
+                )}
+              </div>
+            )}
+
+            <button
+              onClick={handleSaveAndExit}
+              className="mt-2 w-full bg-red-600/85 hover:bg-red-500 py-1 rounded-lg text-white font-bold text-[9px] uppercase tracking-wider flex items-center justify-center gap-1 transition active:scale-95"
+            >
+              <i className="fas fa-sign-out-alt" /> {t.save_n_exit}
+            </button>
+          </div>
+
+          {/* Active Realm Tool Quick Pill when panel is collapsed */}
+          {activeRealmId && !isRealmEditorOpen && realmEditorConfig.tool !== "none" && (
             <div
-              className={`bg-black/80 rounded-xl border border-white/15 pointer-events-auto transition-all duration-300 ${uiScaleConfig.statsPadding}`}
               onPointerDown={(e) => e.stopPropagation()}
               onTouchStart={(e) => e.stopPropagation()}
+              className="pointer-events-auto bg-zinc-950/95 border border-fuchsia-500/50 rounded-xl px-2.5 py-1.5 text-white flex flex-wrap items-center gap-1.5 shadow-xl"
             >
-              <h1 className={`text-white font-bold minecraft-font uppercase tracking-tighter flex items-center gap-1.5 flex-wrap ${uiScaleConfig.statsTitle}`}>
-                ALPHA <span className="text-emerald-400">MOBILE 1.0.2</span>
-              </h1>
-              <p className={`text-white/40 mt-1 font-mono break-words leading-normal ${uiScaleConfig.statsText}`}>
-                <span id="player-coordinates-hud">
-                  X:{playerPos.x.toFixed(0)} Y:{(playerPos.y - 55).toFixed(0)} Z:{playerPos.z.toFixed(0)}
-                </span>
-                <br/>
-                Chunks: {Object.keys(currentWorld?.edits || {}).length} | <FpsCounter />
-              </p>
-
-              {/* REAL-TIME SCREEN RESOLUTION & PRESET HUD - CLICK TO CYCLE */}
-              <div 
-                onClick={(e) => {
-                  e.stopPropagation();
+              <span className="text-[9.5px] font-black uppercase text-fuchsia-300">
+                {realmEditorConfig.tool === "sphere" && `🔵 Esfera r=${realmEditorConfig.radius} (${realmEditorConfig.fillPercent}%)`}
+                {realmEditorConfig.tool === "erase_sphere" && `🕳️ Vaciar r=${realmEditorConfig.radius} (${realmEditorConfig.fillPercent}%)`}
+                {realmEditorConfig.tool === "platform" && `🟦 Disco r=${realmEditorConfig.radius} (${realmEditorConfig.fillPercent}%)`}
+                {realmEditorConfig.tool === "paint" && (realmEditorConfig.eraseColorMode ? "🧹 Quitar Color" : `🎨 Pintar ${realmEditorConfig.selectedColor}`)}
+              </span>
+              <button
+                type="button"
+                onClick={() => {
                   resumeAudio();
-                  const presets: ("auto" | "redmi" | "funtouch" | "galaxy")[] = ["auto", "redmi", "funtouch", "galaxy"];
-                  const nextIndex = (presets.indexOf(devicePreset) + 1) % presets.length;
-                  const nextPreset = presets[nextIndex];
-                  setDevicePreset(nextPreset);
-                  localStorage.setItem("minecraft_device_preset", nextPreset);
+                  setRealmActionRequest({
+                    seq: Date.now(),
+                    action: realmEditorConfig.tool === "paint" ? "paint_aimed" : "place_front",
+                  });
                 }}
-                className={`mt-2 px-2 py-1.5 rounded-lg text-[8px] font-mono leading-tight transition-all flex flex-col gap-0.5 pointer-events-auto cursor-pointer select-none hover:bg-white/5 active:scale-97 border ${uiScaleConfig.badge}`}
-                title="Toca para cambiar perfil de pantalla"
+                className="px-2 py-0.5 rounded bg-emerald-600 hover:bg-emerald-500 text-[9px] font-bold uppercase"
               >
-                <div className="flex items-center justify-between gap-1 font-bold uppercase">
-                  <div className="flex items-center gap-1">
-                    <i className="fas fa-tablet-screen-button text-[9px] animate-pulse" />
-                    <span>Soporte de Pantalla</span>
-                  </div>
-                  <span className="text-[7px] bg-white/20 px-1 rounded uppercase tracking-tighter">Tap 🔄</span>
+                {realmEditorConfig.tool === "paint" ? "Pintar Aquí" : "Aplicar Frente"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setRealmEditorConfig((prev) => ({ ...prev, tool: "none" }))}
+                className="px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-[9px] font-bold text-zinc-300"
+              >
+                ✋ Mano
+              </button>
+            </div>
+          )}
+
+          {/* Collapsible Realm World Editor Drawer */}
+          {activeRealmId && isRealmEditorOpen && (
+            <div
+              onPointerDown={(e) => e.stopPropagation()}
+              onPointerMove={(e) => e.stopPropagation()}
+              onPointerUp={(e) => e.stopPropagation()}
+              onTouchStart={(e) => e.stopPropagation()}
+              onTouchMove={(e) => e.stopPropagation()}
+              onTouchEnd={(e) => e.stopPropagation()}
+              className="pointer-events-auto bg-zinc-950/95 border border-fuchsia-500/45 rounded-2xl p-3 w-[290px] sm:w-[330px] max-w-[calc(100%-20px)] max-h-[calc(100%-210px)] overflow-y-auto shadow-2xl text-white flex flex-col gap-2.5"
+            >
+              <div className="flex items-center justify-between border-b border-white/10 pb-1.5">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-sm">🛠️</span>
+                  <span className="text-xs font-black uppercase tracking-wider text-fuchsia-300">
+                    Editor del Realm
+                  </span>
                 </div>
-                <div>
-                  Tam: {screenSize.width}x{screenSize.height} (R: {screenSize.aspectRatio.toFixed(2)})
-                </div>
-                <div className="text-[7.5px] opacity-90 border-t border-white/5 pt-0.5 mt-0.5 flex justify-between items-center">
-                  <span>Perfil: <strong>{uiScaleConfig.name}</strong></span>
-                  <span className="text-[6.5px] text-white/50 lowercase">({lang === "es" ? "tocar" : "cycle"})</span>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    disabled={!realmCanUndo}
+                    onClick={() => setRealmActionRequest({ seq: Date.now(), action: "undo" })}
+                    className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase transition ${
+                      realmCanUndo
+                        ? "bg-amber-600 hover:bg-amber-500 text-white"
+                        : "bg-zinc-800 text-zinc-500 cursor-not-allowed"
+                    }`}
+                  >
+                    ↩️ Deshacer
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsRealmEditorOpen(false)}
+                    className="text-zinc-400 hover:text-white px-1 text-xs"
+                  >
+                    ✕
+                  </button>
                 </div>
               </div>
 
-              <button
-                onClick={handleSaveAndExit}
-                className="mt-2 w-full bg-red-600/85 hover:bg-red-500 py-1 rounded-lg text-white font-bold text-[9px] uppercase tracking-wider flex items-center justify-center gap-1 transition active:scale-95"
-              >
-                <i className="fas fa-sign-out-alt" /> {t.save_n_exit}
-              </button>
-            </div>
+              {/* Tool Selector */}
+              <div className="grid grid-cols-2 gap-1">
+                {([
+                  { id: "none", label: "✋ Mano (Normal)" },
+                  { id: "sphere", label: "🔵 Esfera" },
+                  { id: "paint", label: "🎨 Pintar Bloque" },
+                  { id: "erase_sphere", label: "🕳️ Vaciar Esfera" },
+                  { id: "platform", label: "🟦 Disco / Piso" },
+                ] as { id: RealmEditorTool; label: string }[]).map((toolItem) => (
+                  <button
+                    key={toolItem.id}
+                    type="button"
+                    onClick={() => {
+                      resumeAudio();
+                      setRealmEditorConfig((prev) => ({ ...prev, tool: toolItem.id }));
+                      if (toolItem.id !== "none") {
+                        setInteractionMode("place");
+                      }
+                    }}
+                    className={`px-2 py-1.5 rounded-lg text-[10px] font-bold transition text-left ${
+                      toolItem.id === "none" ? "col-span-2 text-center" : ""
+                    } ${
+                      realmEditorConfig.tool === toolItem.id
+                        ? "bg-fuchsia-600 text-white border border-fuchsia-300/60 shadow"
+                        : "bg-zinc-900 text-zinc-300 border border-white/10 hover:bg-zinc-800"
+                    }`}
+                  >
+                    {toolItem.label}
+                  </button>
+                ))}
+              </div>
 
-            {/* Persistent Minecraft-style HUD Chat Overlay - Grouped vertically below stats box to avoid any overlap! */}
-            <div className="w-64 max-h-[140px] sm:max-h-48 flex flex-col gap-1 overflow-hidden pointer-events-none transition-opacity duration-300">
+              {/* Sphere / Platform Controls: Any Size & 0% - 100% Fill */}
+              {(realmEditorConfig.tool === "sphere" ||
+                realmEditorConfig.tool === "erase_sphere" ||
+                realmEditorConfig.tool === "platform" ||
+                realmEditorConfig.tool === "none") && (
+                <div className="bg-zinc-900/90 border border-white/10 rounded-xl p-2.5 flex flex-col gap-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-black uppercase text-sky-300">
+                      Tamaño (Radio)
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="number"
+                        min={1}
+                        max={25}
+                        value={realmEditorConfig.radius}
+                        onChange={(e) => {
+                          const val = Math.max(1, Math.min(25, Number(e.target.value) || 1));
+                          setRealmEditorConfig((prev) => ({ ...prev, radius: val }));
+                        }}
+                        className="w-12 bg-zinc-950 border border-white/20 rounded px-1.5 py-0.5 text-[10px] font-mono text-center text-white"
+                      />
+                      <span className="text-[9px] font-mono text-zinc-400">
+                        ({realmEditorConfig.radius * 2 + 1}m)
+                      </span>
+                    </div>
+                  </div>
+                  <input
+                    type="range"
+                    min={1}
+                    max={25}
+                    value={realmEditorConfig.radius}
+                    onChange={(e) =>
+                      setRealmEditorConfig((prev) => ({ ...prev, radius: Number(e.target.value) }))
+                    }
+                    className="w-full accent-sky-400 cursor-pointer"
+                  />
+                  <div className="flex gap-1">
+                    {[2, 5, 8, 12, 18, 25].map((rPreset) => (
+                      <button
+                        key={rPreset}
+                        type="button"
+                        onClick={() => setRealmEditorConfig((prev) => ({ ...prev, radius: rPreset }))}
+                        className={`flex-1 py-0.5 rounded text-[9px] font-mono font-bold border ${
+                          realmEditorConfig.radius === rPreset
+                            ? "bg-sky-600 border-sky-300 text-white"
+                            : "bg-zinc-950 border-white/10 text-zinc-300 hover:bg-zinc-800"
+                        }`}
+                      >
+                        r{rPreset}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Fill Percentage 0% - 100% */}
+                  <div className="flex items-center justify-between pt-1 border-t border-white/10">
+                    <span className="text-[10px] font-black uppercase text-emerald-300">
+                      Relleno Interior
+                    </span>
+                    <span className="text-[10px] font-mono font-bold text-white">
+                      {realmEditorConfig.fillPercent}%{" "}
+                      {realmEditorConfig.fillPercent === 0
+                        ? "(Hueca)"
+                        : realmEditorConfig.fillPercent === 100
+                          ? "(Sólida)"
+                          : "(Porosa)"}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    step={5}
+                    value={realmEditorConfig.fillPercent}
+                    onChange={(e) =>
+                      setRealmEditorConfig((prev) => ({ ...prev, fillPercent: Number(e.target.value) }))
+                    }
+                    className="w-full accent-emerald-400 cursor-pointer"
+                  />
+                  <div className="grid grid-cols-4 gap-1">
+                    {[
+                      { pct: 0, label: "0% Hueca" },
+                      { pct: 25, label: "25%" },
+                      { pct: 50, label: "50%" },
+                      { pct: 100, label: "100% Sólida" },
+                    ].map((preset) => (
+                      <button
+                        key={preset.pct}
+                        type="button"
+                        onClick={() =>
+                          setRealmEditorConfig((prev) => ({ ...prev, fillPercent: preset.pct }))
+                        }
+                        className={`py-1 px-1 rounded text-[8.5px] font-bold border ${
+                          realmEditorConfig.fillPercent === preset.pct
+                            ? "bg-emerald-600 border-emerald-300 text-white"
+                            : "bg-zinc-950 border-white/10 text-zinc-300 hover:bg-zinc-800"
+                        }`}
+                      >
+                        {preset.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Replace existing & Material quick bar */}
+                  <div className="flex items-center justify-between gap-2 pt-1 border-t border-white/10">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setRealmEditorConfig((prev) => ({
+                          ...prev,
+                          replaceExisting: !prev.replaceExisting,
+                        }))
+                      }
+                      className={`flex-1 py-1 px-2 rounded text-[9px] font-bold border ${
+                        realmEditorConfig.replaceExisting
+                          ? "bg-amber-600/80 border-amber-400 text-white"
+                          : "bg-zinc-950 border-white/15 text-zinc-300"
+                      }`}
+                    >
+                      {realmEditorConfig.replaceExisting ? "🔁 Reemplaza bloques" : "🫧 Solo en aire"}
+                    </button>
+                    <span className="text-[9px] text-zinc-300 truncate max-w-[110px]">
+                      Bloque: <strong>{BLOCK_NAMES[currentBlock] || "Concreto"}</strong>
+                    </span>
+                  </div>
+
+                  {/* Quick shape materials */}
+                  <div className="flex flex-wrap gap-1">
+                    {[
+                      { type: BlockType.CONCRETE, label: "Concreto" },
+                      { type: BlockType.WOOL, label: "Lana" },
+                      { type: BlockType.STONE, label: "Piedra" },
+                      { type: BlockType.WOOD, label: "Madera" },
+                      { type: BlockType.GLOWSTONE, label: "Luz" },
+                      { type: BlockType.OBSIDIAN, label: "Obsid." },
+                    ].map((mat) => (
+                      <button
+                        key={mat.type}
+                        type="button"
+                        onClick={() => setCurrentBlock(mat.type)}
+                        className={`px-1.5 py-0.5 rounded text-[8.5px] font-bold border ${
+                          currentBlock === mat.type
+                            ? "bg-white text-zinc-950 border-white"
+                            : "bg-zinc-950 text-zinc-300 border-white/10 hover:bg-zinc-800"
+                        }`}
+                      >
+                        {mat.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      resumeAudio();
+                      setRealmEditorConfig((prev) => ({
+                        ...prev,
+                        tool: prev.tool === "erase_sphere" || prev.tool === "platform" ? prev.tool : "sphere",
+                      }));
+                      setRealmActionRequest({ seq: Date.now(), action: "place_front" });
+                    }}
+                    className={`w-full py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wide shadow transition active:scale-95 ${
+                      realmEditorConfig.tool === "erase_sphere"
+                        ? "bg-rose-600 hover:bg-rose-500 text-white"
+                        : "bg-sky-600 hover:bg-sky-500 text-white"
+                    }`}
+                  >
+                    {realmEditorConfig.tool === "erase_sphere"
+                      ? "🕳️ Vaciar Esfera Frente a Mí"
+                      : realmEditorConfig.tool === "platform"
+                        ? "🟦 Colocar Plataforma Bajo/Frente"
+                        : "🔵 Colocar Esfera Frente a Mí"}
+                  </button>
+                </div>
+              )}
+
+              {/* Block Color Painter Section */}
+              <div className="bg-zinc-900/90 border border-white/10 rounded-xl p-2.5 flex flex-col gap-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-black uppercase text-pink-300">
+                    🎨 Colores de Bloques
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      type="color"
+                      value={realmEditorConfig.selectedColor}
+                      onChange={(e) =>
+                        setRealmEditorConfig((prev) => ({
+                          ...prev,
+                          selectedColor: e.target.value,
+                          eraseColorMode: false,
+                        }))
+                      }
+                      className="w-6 h-6 rounded border border-white/25 bg-transparent cursor-pointer"
+                      title="Elegir cualquier color personalizado"
+                    />
+                    <span className="text-[9px] font-mono text-zinc-300 uppercase">
+                      {realmEditorConfig.eraseColorMode ? "ORIGINAL" : realmEditorConfig.selectedColor}
+                    </span>
+                  </div>
+                </div>
+
+                {/* 16 Color Swatches */}
+                <div className="grid grid-cols-8 gap-1">
+                  {[
+                    "#ffffff", "#94a3b8", "#334155", "#09090b",
+                    "#ef4444", "#f97316", "#facc15", "#84cc16",
+                    "#22c55e", "#14b8a6", "#06b6d4", "#3b82f6",
+                    "#6366f1", "#a855f7", "#ec4899", "#ff2a6d",
+                  ].map((hex) => (
+                    <button
+                      key={hex}
+                      type="button"
+                      onClick={() =>
+                        setRealmEditorConfig((prev) => ({
+                          ...prev,
+                          selectedColor: hex,
+                          eraseColorMode: false,
+                          tool: prev.tool === "none" ? "paint" : prev.tool,
+                        }))
+                      }
+                      style={{ backgroundColor: hex }}
+                      className={`h-5 rounded border transition ${
+                        !realmEditorConfig.eraseColorMode && realmEditorConfig.selectedColor.toLowerCase() === hex
+                          ? "border-white ring-2 ring-fuchsia-400 scale-105"
+                          : "border-white/25 hover:scale-105"
+                      }`}
+                      title={hex}
+                    />
+                  ))}
+                </div>
+
+                {/* Paint Brush Radius */}
+                <div className="flex items-center justify-between gap-1 pt-0.5">
+                  <span className="text-[9px] text-zinc-400 uppercase font-bold">Brocha:</span>
+                  <div className="flex gap-1 flex-1 justify-end">
+                    {[1, 2, 3, 5].map((pr) => (
+                      <button
+                        key={pr}
+                        type="button"
+                        onClick={() =>
+                          setRealmEditorConfig((prev) => ({ ...prev, paintRadius: pr }))
+                        }
+                        className={`px-2 py-0.5 rounded text-[9px] font-bold border ${
+                          realmEditorConfig.paintRadius === pr
+                            ? "bg-pink-600 border-pink-300 text-white"
+                            : "bg-zinc-950 border-white/10 text-zinc-300"
+                        }`}
+                      >
+                        {pr === 1 ? "1 Blq" : `R${pr}`}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Color Options */}
+                <div className="flex flex-col gap-1">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setRealmEditorConfig((prev) => ({
+                        ...prev,
+                        applyColorToShapes: !prev.applyColorToShapes,
+                        eraseColorMode: false,
+                      }))
+                    }
+                    className={`w-full py-1 px-2 rounded text-[9px] font-bold border text-left ${
+                      realmEditorConfig.applyColorToShapes
+                        ? "bg-fuchsia-700/80 border-fuchsia-400 text-white"
+                        : "bg-zinc-950 border-white/10 text-zinc-300"
+                    }`}
+                  >
+                    {realmEditorConfig.applyColorToShapes
+                      ? "✅ Esferas y discos salen con este color"
+                      : "⬜ Aplicar color a nuevas esferas (Desactivado)"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setRealmEditorConfig((prev) => ({
+                        ...prev,
+                        eraseColorMode: !prev.eraseColorMode,
+                        tool: "paint",
+                      }))
+                    }
+                    className={`w-full py-1 px-2 rounded text-[9px] font-bold border text-left ${
+                      realmEditorConfig.eraseColorMode
+                        ? "bg-slate-200 text-zinc-950 border-white"
+                        : "bg-zinc-950 border-white/10 text-zinc-300"
+                    }`}
+                  >
+                    {realmEditorConfig.eraseColorMode
+                      ? "🧹 Modo Quitar Color (Restaura textura original)"
+                      : "🧹 Restaurar textura original al pintar"}
+                  </button>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    resumeAudio();
+                    setRealmEditorConfig((prev) => ({ ...prev, tool: "paint" }));
+                    setRealmActionRequest({ seq: Date.now(), action: "paint_aimed" });
+                  }}
+                  className="w-full py-1.5 rounded-lg bg-pink-600 hover:bg-pink-500 text-white text-[10px] font-black uppercase tracking-wide shadow transition active:scale-95"
+                >
+                  🎨 Pintar Bloque Apuntado
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Persistent Minecraft-style HUD Chat Overlay - Grouped vertically below stats box to avoid any overlap! */}
+          {(!activeRealmId || !isRealmEditorOpen) && (
+            <div className="w-56 sm:w-64 max-h-[100px] sm:max-h-44 flex flex-col gap-1 overflow-hidden pointer-events-none transition-opacity duration-300">
               {chatMessages.slice(isCompactHeight ? -2 : -4).map((msg, idx) => (
                 <div key={idx} className="bg-black/55 px-2 py-0.5 rounded text-[8px] sm:text-[9px] text-white font-mono border-l-2 border-sky-400">
                   {msg}
                 </div>
               ))}
             </div>
-          </div>
+          )}
+        </div>
 
-          <div className="flex flex-col gap-1.5 pointer-events-auto">
+        {/* Top-Right: Utility Buttons + Companion Quick Panel */}
+        <div className={`absolute top-0 right-0 flex flex-col items-end gap-1.5 pointer-events-none ${uiScaleConfig.containerPadding}`}>
+          <div className={`${useCompactUI || isCompactHeight ? "grid grid-cols-2 gap-1.5" : "flex flex-col gap-1.5"} pointer-events-auto`}>
             <button
               onClick={handleGetBuildingSuggestion}
               onPointerDown={(e) => e.stopPropagation()}
@@ -8668,6 +11380,26 @@ const App: React.FC = () => {
             >
               <i className={`fas fa-cog text-emerald-400 ${uiScaleConfig.btnIcon}`} />
             </button>
+            {showTouchControls && (
+              <button
+                type="button"
+                onClick={() => {
+                  resumeAudio();
+                  toggleManualScreenRotation();
+                }}
+                onPointerDown={(e) => e.stopPropagation()}
+                onTouchStart={(e) => e.stopPropagation()}
+                className={`rounded-2xl shadow-xl active:scale-90 text-white flex items-center justify-center transition-all border ${
+                  virtualRotationDeg !== 0
+                    ? "bg-emerald-600/95 hover:bg-emerald-500 border-emerald-300/60"
+                    : "bg-zinc-800/95 hover:bg-zinc-700 border-emerald-500/30"
+                } ${uiScaleConfig.btnSize}`}
+                title={lang === "es" ? "Girar Pantalla (Vertical / Horizontal)" : "Rotate Screen"}
+                id="hud-rotate-btn"
+              >
+                <i className={`fas fa-rotate ${virtualRotationDeg !== 0 ? "text-white" : "text-emerald-300"} ${uiScaleConfig.btnIcon}`} />
+              </button>
+            )}
             <button
               onClick={() => {
                 resumeAudio();
@@ -8682,96 +11414,97 @@ const App: React.FC = () => {
               <i className={`fas fa-pause text-amber-400 ${uiScaleConfig.btnIcon}`} />
             </button>
           </div>
+
+          {/* Compact AI Companion Quick Panel */}
+          {isCompanionPanelOpen && (
+            <div
+              onPointerDown={(e) => e.stopPropagation()}
+              onPointerMove={(e) => e.stopPropagation()}
+              onPointerUp={(e) => e.stopPropagation()}
+              onTouchStart={(e) => e.stopPropagation()}
+              onTouchMove={(e) => e.stopPropagation()}
+              onTouchEnd={(e) => e.stopPropagation()}
+              className="pointer-events-auto bg-zinc-950/95 backdrop-blur-md border border-cyan-500/40 rounded-2xl p-3 w-64 sm:w-72 max-w-[calc(100vw-16px)] max-h-[calc(100dvh-150px)] overflow-y-auto shadow-2xl text-white flex flex-col gap-2"
+            >
+              <div className="flex items-center justify-between border-b border-white/10 pb-1.5">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm">🤖</span>
+                  <span className="text-xs font-black uppercase tracking-wider text-cyan-300 truncate max-w-[130px]">
+                    {aiCompanionConfig.name || "Alex IA"}
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setAiCompanionConfig((prev) => ({ ...prev, enabled: !prev.enabled }))}
+                    className={`px-2 py-0.5 rounded text-[9px] font-black uppercase transition ${
+                      aiCompanionConfig.enabled ? "bg-rose-600 text-white" : "bg-cyan-600 text-white"
+                    }`}
+                  >
+                    {aiCompanionConfig.enabled ? "OFF" : "ON"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsCompanionPanelOpen(false)}
+                    className="text-zinc-400 hover:text-white px-1 text-xs"
+                  >
+                    ✕
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-1">
+                {([
+                  { id: "follow", label: "🤝 Seguir" },
+                  { id: "gather", label: "⛏️ Minar" },
+                  { id: "build", label: "🏠 Casa" },
+                  { id: "guard", label: "⚔️ Defensa" },
+                  { id: "explore", label: "🧭 Explorar" },
+                  { id: "stay", label: "🛑 Esperar" },
+                ] as { id: AICompanionMode; label: string }[]).map((m) => (
+                  <button
+                    key={m.id}
+                    type="button"
+                    onClick={() => setAiCompanionConfig((prev) => ({ ...prev, enabled: true, mode: m.id }))}
+                    className={`px-1.5 py-1.5 rounded-lg text-[10px] font-bold transition active:scale-95 ${
+                      aiCompanionConfig.enabled && aiCompanionConfig.mode === m.id
+                        ? "bg-emerald-600 text-white border border-emerald-400/50"
+                        : "bg-zinc-900 text-zinc-300 border border-white/10 hover:bg-zinc-800"
+                    }`}
+                  >
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAiCompanionConfig((prev) => ({ ...prev, enabled: true }));
+                    setAiCompanionTpTrigger((t) => t + 1);
+                  }}
+                  className="flex-1 bg-sky-600 hover:bg-sky-500 text-white text-[10px] font-bold py-1.5 rounded-lg transition active:scale-95"
+                >
+                  📍 Venir aquí
+                </button>
+                <button
+                  type="button"
+                  onClick={handleShareCompanionBag}
+                  className="flex-1 bg-amber-600 hover:bg-amber-500 text-white text-[10px] font-bold py-1.5 rounded-lg transition active:scale-95"
+                >
+                  🎁 Dar bloques
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
-        {/* Compact AI Companion Quick Panel */}
-        {isCompanionPanelOpen && (
-          <div
-            onPointerDown={(e) => e.stopPropagation()}
-            onPointerMove={(e) => e.stopPropagation()}
-            onPointerUp={(e) => e.stopPropagation()}
-            onTouchStart={(e) => e.stopPropagation()}
-            onTouchMove={(e) => e.stopPropagation()}
-            onTouchEnd={(e) => e.stopPropagation()}
-            className="pointer-events-auto self-end mr-2 bg-zinc-950/95 backdrop-blur-md border border-cyan-500/40 rounded-2xl p-3 w-72 shadow-2xl text-white flex flex-col gap-2"
-          >
-            <div className="flex items-center justify-between border-b border-white/10 pb-1.5">
-              <div className="flex items-center gap-2">
-                <span className="text-sm">🤖</span>
-                <span className="text-xs font-black uppercase tracking-wider text-cyan-300 truncate max-w-[130px]">
-                  {aiCompanionConfig.name || "Alex IA"}
-                </span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => setAiCompanionConfig((prev) => ({ ...prev, enabled: !prev.enabled }))}
-                  className={`px-2 py-0.5 rounded text-[9px] font-black uppercase transition ${
-                    aiCompanionConfig.enabled ? "bg-rose-600 text-white" : "bg-cyan-600 text-white"
-                  }`}
-                >
-                  {aiCompanionConfig.enabled ? "OFF" : "ON"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setIsCompanionPanelOpen(false)}
-                  className="text-zinc-400 hover:text-white px-1 text-xs"
-                >
-                  ✕
-                </button>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-3 gap-1">
-              {([
-                { id: "follow", label: "🤝 Seguir" },
-                { id: "gather", label: "⛏️ Minar" },
-                { id: "build", label: "🏠 Casa" },
-                { id: "guard", label: "⚔️ Defensa" },
-                { id: "explore", label: "🧭 Explorar" },
-                { id: "stay", label: "🛑 Esperar" },
-              ] as { id: AICompanionMode; label: string }[]).map((m) => (
-                <button
-                  key={m.id}
-                  type="button"
-                  onClick={() => setAiCompanionConfig((prev) => ({ ...prev, enabled: true, mode: m.id }))}
-                  className={`px-1.5 py-1.5 rounded-lg text-[10px] font-bold transition active:scale-95 ${
-                    aiCompanionConfig.enabled && aiCompanionConfig.mode === m.id
-                      ? "bg-emerald-600 text-white border border-emerald-400/50"
-                      : "bg-zinc-900 text-zinc-300 border border-white/10 hover:bg-zinc-800"
-                  }`}
-                >
-                  {m.label}
-                </button>
-              ))}
-            </div>
-
-            <div className="flex gap-1.5">
-              <button
-                type="button"
-                onClick={() => {
-                  setAiCompanionConfig((prev) => ({ ...prev, enabled: true }));
-                  setAiCompanionTpTrigger((t) => t + 1);
-                }}
-                className="flex-1 bg-sky-600 hover:bg-sky-500 text-white text-[10px] font-bold py-1.5 rounded-lg transition active:scale-95"
-              >
-                📍 Venir aquí
-              </button>
-              <button
-                type="button"
-                onClick={handleShareCompanionBag}
-                className="flex-1 bg-amber-600 hover:bg-amber-500 text-white text-[10px] font-bold py-1.5 rounded-lg transition active:scale-95"
-              >
-                🎁 Dar bloques
-              </button>
-            </div>
-          </div>
-        )}
-
-        <div className={`flex justify-between items-end transition-all duration-300 w-full ${uiScaleConfig.gapClass} ${uiScaleConfig.marginClass}`}>
+        {/* Bottom Bar: Joystick + Center Hotbar + Action Cluster (wraps cleanly in Portrait) */}
+        <div className={`absolute inset-x-0 bottom-0 flex ${isPortrait && showTouchControls ? "flex-wrap gap-y-1.5" : ""} justify-between items-end transition-all duration-300 w-full ${uiScaleConfig.gapClass} ${uiScaleConfig.controlPadding}`}>
           {showTouchControls ? (
             <div
-              className="pointer-events-auto flex items-end mb-2 select-none"
+              className={`pointer-events-auto flex items-end ${isPortrait ? "order-1 mb-0.5" : (isCompactHeight ? "mb-0.5" : "mb-1.5")} select-none shrink-0`}
               style={{ touchAction: "none" }}
               onPointerDown={(e) => e.stopPropagation()}
               onPointerMove={(e) => e.stopPropagation()}
@@ -8786,6 +11519,7 @@ const App: React.FC = () => {
                 onMove={handleJoystickMove}
                 onEnd={handleJoystickEnd}
                 size={uiScaleConfig.joystickSize}
+                screenRotationDeg={virtualRotationDeg}
               />
             </div>
           ) : (
@@ -8830,15 +11564,15 @@ const App: React.FC = () => {
             </div>
           )}
 
-          <div className="flex flex-col gap-5 items-center pointer-events-none">
+          <div className={`flex flex-col gap-1.5 sm:gap-3 items-center pointer-events-none min-w-0 ${isPortrait && showTouchControls ? "order-3 basis-full w-full max-w-full" : "flex-1 max-w-[calc(100vw-180px)] sm:max-w-lg"}`}>
             {/* HUD de Oxígeno, Vida y Comida */}
             <div
-              className="flex flex-col gap-1 items-center drop-shadow-md w-full px-2 mb-2 pointer-events-auto"
+              className="flex flex-col gap-0.5 sm:gap-1 items-center drop-shadow-md w-full px-1 sm:px-2 mb-0.5 sm:mb-1 pointer-events-auto"
               onPointerDown={(e) => e.stopPropagation()}
               onTouchStart={(e) => e.stopPropagation()}
             >
               {(isInWater || air < 20) && !isCreativeMode && !isSpectatorMode && (
-                <div className="flex gap-1 justify-center items-center w-full mb-0.5">
+                <div className="flex gap-0.5 sm:gap-1 justify-center items-center w-full mb-0.5">
                   {aquaticPerk ? (
                     <span className="text-[9px] font-mono font-black text-cyan-300 bg-cyan-950/75 border border-cyan-400/50 px-2 py-0.5 rounded-full flex items-center gap-1 shadow">
                       <i className="fas fa-water text-cyan-400" />
@@ -8852,7 +11586,7 @@ const App: React.FC = () => {
                       return (
                         <i
                           key={`air${i}`}
-                          className={`fas fa-droplet text-xs transition-all duration-150 ${
+                          className={`fas fa-droplet text-[10px] sm:text-xs transition-all duration-150 ${
                             filled
                               ? "text-cyan-400 drop-shadow-[0_0_5px_rgba(34,211,238,0.85)]"
                               : half
@@ -8865,14 +11599,14 @@ const App: React.FC = () => {
                   )}
                 </div>
               )}
-              <div className="flex gap-1 justify-center w-full relative">
+              <div className="flex gap-0.5 sm:gap-1 justify-center w-full relative">
                 {[...Array(10)].map((_, i) => {
                   const isHeartFilled = i < Math.ceil(health / 2);
                   const isRegenTarget = isRegenerating && i === Math.ceil(health / 2) - 1;
                   return (
                     <i
                       key={`h${i}`}
-                      className={`fas fa-heart text-sm transition-all duration-200 ${
+                      className={`fas fa-heart text-[11px] sm:text-sm transition-all duration-200 ${
                         isHeartFilled
                           ? isRegenerating 
                             ? "text-red-500 animate-pulse drop-shadow-[0_0_6px_rgba(239,68,68,0.7)]" 
@@ -8888,18 +11622,18 @@ const App: React.FC = () => {
                   </span>
                 )}
               </div>
-              <div className="flex gap-1 justify-center w-full">
+              <div className="flex gap-0.5 sm:gap-1 justify-center w-full">
                 {[...Array(10)].map((_, i) => (
                   <i
                     key={`f${i}`}
-                    className={`fas fa-drumstick-bite text-sm ${i < Math.ceil(food / 2) ? "text-amber-500" : "text-amber-950 opacity-50"}`}
+                    className={`fas fa-drumstick-bite text-[11px] sm:text-sm ${i < Math.ceil(food / 2) ? "text-amber-500" : "text-amber-950 opacity-50"}`}
                   />
                 ))}
               </div>
             </div>
 
             <div
-              className={`flex flex-col gap-2 items-center pointer-events-auto transition-transform duration-300 ${uiScaleConfig.hotbarScale}`}
+              className={`flex flex-col gap-1.5 sm:gap-2 items-center w-full pointer-events-auto transition-transform duration-300 ${uiScaleConfig.hotbarScale}`}
               onPointerDown={(e) => e.stopPropagation()}
               onTouchStart={(e) => e.stopPropagation()}
             >
@@ -8981,7 +11715,7 @@ const App: React.FC = () => {
               </div>
 
               {/* Advanced Horizontal Swipeable Scroll Hotbar */}
-              <div className="bg-black/80 p-1.5 rounded-2xl flex flex-row items-center gap-1.5 border border-white/10 shadow-2xl min-w-0 max-w-[170px] xs:max-w-[230px] sm:max-w-[320px] md:max-w-[420px] lg:max-w-[500px] pointer-events-auto">
+              <div className="bg-black/80 p-1.5 rounded-2xl flex flex-row items-center gap-1.5 border border-white/10 shadow-2xl min-w-0 max-w-full pointer-events-auto">
                 <div 
                   className="flex flex-row gap-1.5 overflow-x-auto scrollbar-none py-0.5 px-0.5 min-w-0" 
                   style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
@@ -9047,7 +11781,7 @@ const App: React.FC = () => {
           {/* Action cluster on mobile: Build/Place, Attack/Break, and Jump buttons */}
           {showTouchControls ? (
             <div
-              className="pointer-events-auto flex flex-col gap-2.5 items-center mb-2 select-none"
+              className={`pointer-events-auto flex ${isPortrait ? "order-2 flex-row gap-2 mb-1" : `flex-col ${isCompactHeight ? "gap-1.5 mb-0.5" : "gap-2.5 mb-1.5"}`} items-center select-none shrink-0`}
               onPointerDown={(e) => e.stopPropagation()}
               onTouchStart={(e) => e.stopPropagation()}
             >
@@ -9633,6 +12367,52 @@ const App: React.FC = () => {
         </div>
       )}
 
+      {/* Firestore Free Daily Quota Guard Notice */}
+      {firestoreQuotaPaused && !quotaBannerDismissed && (
+        <div className="fixed inset-x-0 bottom-4 px-3 sm:px-4 flex justify-center z-[210] pointer-events-none">
+          <div className="pointer-events-auto max-w-lg w-full bg-zinc-950/95 text-white border border-amber-500/50 px-3.5 py-2.5 rounded-xl shadow-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+            <div className="flex items-start gap-2">
+              <i className="fas fa-exclamation-triangle text-amber-400 text-sm mt-0.5 shrink-0" />
+              <div className="leading-snug">
+                <p className="font-bold text-amber-300">
+                  {lang === "es" ? "Límite diario gratuito de Firebase alcanzado" : "Firebase free daily write quota reached"}
+                </p>
+                <p className="text-[11px] text-zinc-300">
+                  {lang === "es"
+                    ? "Los guardados en la nube se pausaron para evitar errores; tu progreso sigue guardándose en este dispositivo hasta el reinicio diario."
+                    : "Cloud writes paused temporarily; progress is saved locally until the daily quota resets."}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0 self-end sm:self-center">
+              <a
+                href={FIRESTORE_QUOTA_CONSOLE_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="bg-amber-600/80 hover:bg-amber-500 text-white px-2.5 py-1 rounded-lg font-bold text-[10px] transition"
+              >
+                {lang === "es" ? "Ver Consola" : "Console"}
+              </a>
+              <button
+                type="button"
+                onClick={() => clearFirestoreQuotaPause()}
+                className="bg-zinc-800 hover:bg-zinc-700 text-zinc-200 px-2 py-1 rounded-lg font-bold text-[10px] transition"
+              >
+                {lang === "es" ? "Reintentar" : "Retry"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setQuotaBannerDismissed(true)}
+                className="text-zinc-400 hover:text-white px-1.5 py-1 rounded-lg font-bold text-[11px] transition"
+                aria-label="Cerrar"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Interactive Chat & Command Console Modal */}
       {isChatOpen && (
         <div
@@ -10203,12 +12983,39 @@ const App: React.FC = () => {
         </div>
       )}
 
+      {/* In-World Settings Overlay (keeps VoxelWorld mounted) */}
+      {appState === "settings" && renderSettingsModal(true)}
+      {/* Realms Modal */}
+      {renderRealmsModal()}
       {/* Leaderboard Modal (Tabla de Clasificación) */}
       {renderLeaderboardModal()}
       {/* Friends Modal */}
       {renderFriendsModal()}
       {/* VIP Shop Modal */}
       {renderShopModal()}
+    </div>
+  );
+  };
+
+  const rootViewportStyle: React.CSSProperties | undefined =
+    virtualRotationDeg !== 0
+      ? {
+          width: `${physicalViewport.height}px`,
+          height: `${physicalViewport.width}px`,
+          transform: `translate(-50%, -50%) rotate(${virtualRotationDeg}deg)`,
+        }
+      : undefined;
+
+  return (
+    <div
+      style={rootViewportStyle}
+      className={
+        virtualRotationDeg !== 0
+          ? "fixed top-1/2 left-1/2 origin-center overflow-hidden bg-[#09090b]"
+          : "fixed inset-0 w-full h-full overflow-hidden bg-[#09090b]"
+      }
+    >
+      {renderAppScreen()}
     </div>
   );
 };

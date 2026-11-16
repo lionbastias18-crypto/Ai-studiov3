@@ -15,6 +15,7 @@ export interface World {
   gameMode: "creative" | "survival" | "adventure" | "spectator";
   worldType: "flat" | "normal" | "edge_farlands";
   edits: Record<string, number>; // Key: "x,y,z", Value: BlockType (0 for air)
+  blockColors?: Record<string, string>; // Key: "x,y,z", Value: "#RRGGBB" custom block color
   survivalInventory?: Record<number, number>;
 }
 

@@ -66,8 +66,41 @@ service cloud.firestore {
              (!('goldCoins' in data) || data.goldCoins is number) &&
              (!('indefCoins' in data) || (data.indefCoins is number && data.indefCoins >= 0)) &&
              (!('ownedShopItems' in data) || (data.ownedShopItems is list && data.ownedShopItems.size() <= 100)) &&
-             (!('characterSkin' in data) || (data.characterSkin is string && data.characterSkin.size() <= 64)) &&
-             (!('customSkin' in data) || data.customSkin is map);
+              (!('characterSkin' in data) || (data.characterSkin is string && data.characterSkin.size() <= 64)) &&
+              (!('customSkin' in data) || data.customSkin is map) &&
+              (!('realmPlan' in data) || (data.realmPlan is string && (data.realmPlan == "none" || data.realmPlan == "basic" || data.realmPlan == "plus")));
+    }
+
+    // Validates a Realm document (Basic: 2 friends / 3 worlds, Plus: 4 friends / 6 worlds)
+    function isValidRealm(data) {
+      return data.keys().hasAll(['id', 'joinCode', 'name', 'tier', 'maxFriends', 'maxWorlds', 'ownerUid', 'ownerEmail', 'createdAt', 'updatedAt']) &&
+             data.keys().hasOnly(['id', 'joinCode', 'name', 'tier', 'maxFriends', 'maxWorlds', 'ownerUid', 'ownerEmail', 'ownerName', 'invitedEmails', 'memberEmails', 'worldIds', 'worldsMeta', 'activeWorldId', 'createdAt', 'updatedAt']) &&
+             data.id is string &&
+             data.id.size() > 0 &&
+             data.id.size() <= 128 &&
+             isValidId(data.id) &&
+             data.joinCode is string &&
+             data.joinCode.size() >= 4 &&
+             data.joinCode.size() <= 24 &&
+             data.name is string &&
+             data.name.size() >= 1 &&
+             data.name.size() <= 64 &&
+             data.tier is string &&
+             ((data.tier == "basic" && data.maxFriends == 2 && data.maxWorlds == 3) ||
+              (data.tier == "plus" && data.maxFriends == 4 && data.maxWorlds == 6)) &&
+             data.ownerUid is string &&
+             data.ownerUid.size() > 0 &&
+             data.ownerUid.size() <= 128 &&
+             data.ownerEmail is string &&
+             data.ownerEmail.size() <= 128 &&
+             (!('ownerName' in data) || (data.ownerName is string && data.ownerName.size() <= 128)) &&
+             (!('invitedEmails' in data) || (data.invitedEmails is list && data.invitedEmails.size() <= data.maxFriends && (data.invitedEmails.size() == 0 || data.invitedEmails[0] is string))) &&
+             (!('memberEmails' in data) || (data.memberEmails is list && data.memberEmails.size() <= 10 && (data.memberEmails.size() == 0 || data.memberEmails[0] is string))) &&
+             (!('worldIds' in data) || (data.worldIds is list && data.worldIds.size() <= data.maxWorlds && (data.worldIds.size() == 0 || data.worldIds[0] is string))) &&
+             (!('worldsMeta' in data) || (data.worldsMeta is list && data.worldsMeta.size() <= data.maxWorlds && (data.worldsMeta.size() == 0 || data.worldsMeta[0] is map))) &&
+             (!('activeWorldId' in data) || (data.activeWorldId is string && data.activeWorldId.size() <= 128)) &&
+             data.createdAt is number &&
+             data.updatedAt is number;
     }
 
     // Validates a UserPurchase / Gift document
@@ -152,6 +185,7 @@ service cloud.firestore {
              (data.worldType == "flat" || data.worldType == "normal" || data.worldType == "edge_farlands") &&
              (!('playerPos' in data) || data.playerPos is map) &&
              (!('edits' in data) || data.edits is map) &&
+             (!('blockColors' in data) || data.blockColors is map) &&
              (!('survivalInventory' in data) || data.survivalInventory is map);
     }
 
@@ -182,6 +216,48 @@ service cloud.firestore {
         allow create, update: if isValidWorldMessage(incoming());
         allow delete: if isLion();
       }
+    }
+
+    match /realms/{realmId} {
+      allow get: if isSignedIn() && isValidId(realmId);
+      allow list: if isSignedIn() &&
+        'email' in request.auth.token &&
+        request.auth.token.email_verified == true && (
+          isLion() ||
+          resource.data.ownerUid == request.auth.uid ||
+          ('memberEmails' in resource.data && request.auth.token.email in resource.data.memberEmails) ||
+          ('invitedEmails' in resource.data && request.auth.token.email in resource.data.invitedEmails)
+        );
+      allow create: if isSignedIn() &&
+        request.auth.token.email_verified == true &&
+        isValidId(realmId) &&
+        isValidRealm(incoming()) &&
+        incoming().id == realmId &&
+        (isLion() || incoming().ownerUid == request.auth.uid);
+      allow update: if isSignedIn() &&
+        request.auth.token.email_verified == true &&
+        isValidId(realmId) &&
+        isValidRealm(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().ownerUid == existing().ownerUid &&
+        incoming().createdAt == existing().createdAt && (
+          isLion() ||
+          (
+            existing().ownerUid == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['name', 'tier', 'maxFriends', 'maxWorlds', 'invitedEmails', 'memberEmails', 'worldIds', 'worldsMeta', 'activeWorldId', 'updatedAt'])
+          ) ||
+          (
+            incoming().diff(existing()).affectedKeys().hasOnly(['memberEmails', 'updatedAt']) &&
+            'email' in request.auth.token &&
+            request.auth.token.email in incoming().memberEmails &&
+            (!('memberEmails' in existing()) || incoming().memberEmails.size() <= existing().memberEmails.size() + 1) &&
+            incoming().memberEmails.size() <= existing().maxFriends + 2
+          )
+        );
+      allow delete: if isSignedIn() &&
+        request.auth.token.email_verified == true &&
+        isValidId(realmId) &&
+        (isLion() || existing().ownerUid == request.auth.uid);
     }
 
     match /friendships/{friendshipId} {

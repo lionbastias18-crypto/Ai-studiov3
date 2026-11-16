@@ -4,9 +4,10 @@ interface JoystickProps {
   onMove: (vector: { x: number; y: number }) => void;
   onEnd: () => void;
   size?: number;
+  screenRotationDeg?: 0 | 90 | -90;
 }
 
-const Joystick: React.FC<JoystickProps> = ({ onMove, onEnd, size = 140 }) => {
+const Joystick: React.FC<JoystickProps> = ({ onMove, onEnd, size = 140, screenRotationDeg = 0 }) => {
   const [isActive, setIsActive] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const thumbRef = useRef<HTMLDivElement>(null);
@@ -17,6 +18,8 @@ const Joystick: React.FC<JoystickProps> = ({ onMove, onEnd, size = 140 }) => {
     maxRadius: Math.max(20, size / 2 - 15),
   });
   const lastSentRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const screenRotationDegRef = useRef<0 | 90 | -90>(screenRotationDeg);
+  screenRotationDegRef.current = screenRotationDeg;
   const onMoveRef = useRef(onMove);
   const onEndRef = useRef(onEnd);
   onMoveRef.current = onMove;
@@ -30,8 +33,11 @@ const Joystick: React.FC<JoystickProps> = ({ onMove, onEnd, size = 140 }) => {
 
   const updatePosition = useCallback((clientX: number, clientY: number) => {
     const { cx, cy, maxRadius } = centerRef.current;
-    const relX = clientX - cx;
-    const relY = clientY - cy;
+    const rawDx = clientX - cx;
+    const rawDy = clientY - cy;
+    const rot = screenRotationDegRef.current;
+    const relX = rot === 90 ? rawDy : rot === -90 ? -rawDy : rawDx;
+    const relY = rot === 90 ? -rawDx : rot === -90 ? rawDx : rawDy;
     const distance = Math.hypot(relX, relY);
 
     let moveX = relX;
@@ -99,7 +105,7 @@ const Joystick: React.FC<JoystickProps> = ({ onMove, onEnd, size = 140 }) => {
     centerRef.current = {
       cx: rect.left + rect.width / 2,
       cy: rect.top + rect.height / 2,
-      maxRadius: Math.max(20, rect.width / 2 - 15),
+      maxRadius: Math.max(20, size / 2 - 15),
     };
 
     activePointerIdRef.current = e.pointerId;
@@ -158,6 +164,11 @@ const Joystick: React.FC<JoystickProps> = ({ onMove, onEnd, size = 140 }) => {
       document.removeEventListener('visibilitychange', handleVisibilityOrBlur);
     };
   }, [isActive, updatePosition, resetStick]);
+
+  useEffect(() => {
+    centerRef.current.maxRadius = Math.max(20, size / 2 - 15);
+    resetStick();
+  }, [size, screenRotationDeg, resetStick]);
 
   useEffect(() => {
     return () => {

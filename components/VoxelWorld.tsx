@@ -4,10 +4,10 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Stars, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { CHUNK_SIZE, WORLD_HEIGHT, BLOCK_COLORS, VIEW_DISTANCE, BLOCK_NAMES } from '../constants';
-import { BlockType, EntityType, EntityData, Vector3D, NoiseConfig, PerformanceConfig, CharacterSkinId, CustomCharacterConfig, ActivePlayerInfo, AICompanionConfig } from '../types';
+import { BlockType, EntityType, EntityData, Vector3D, NoiseConfig, PerformanceConfig, CharacterSkinId, CustomCharacterConfig, ActivePlayerInfo, AICompanionConfig, RealmEditorConfig, RealmBatchEditPayload } from '../types';
 import { playPlaceSound, playBreakSound, playStepSound, resumeAudio, playSleepSound, playHurtSound, playZombieSound, playCreeperSizzle, playExplosionSound, playBowShootSound, updateAmbientEnvironment, playJukeboxMusic, stopJukeboxMusic, stopAllJukeboxMusic, playCatSound, playAttackSwingSound } from '../services/audioService';
 import { CharacterModel, FirstPersonHand, CHARACTER_SKINS, resolveCharacterSkin } from './CharacterModel';
-import AICompanion from './AICompanion';
+import AICompanion, { AICompanionCombatState, HitEntityOptions } from './AICompanion';
 import { gameState } from '../store';
 import { createNoise2D, createNoise3D } from 'simplex-noise';
 
@@ -637,6 +637,12 @@ interface VoxelWorldProps {
   aiCompanionBagRef?: React.MutableRefObject<Record<number, number>>;
   onAICompanionBuildComplete?: () => void;
   onAICompanionSpeak?: (msg: string) => void;
+  initialBlockColors?: Record<string, string>;
+  onBatchWorldEdit?: (payload: RealmBatchEditPayload) => void;
+  realmEditorConfig?: RealmEditorConfig;
+  realmActionRequest?: { seq: number; action: 'place_front' | 'paint_aimed' | 'undo' } | null;
+  onRealmUndoChange?: (canUndo: boolean) => void;
+  virtualRotationDeg?: 0 | 90 | -90;
 }
 
 // Exact physical collision bounds aligned cleanly with each entity model so NO part of any mob penetrates blocks
@@ -749,7 +755,7 @@ export const getMaxEntityHealth = (type: EntityType): number => {
 };
 
 // Global registry mapping entity ID to its handleHit callback for melee assist
-const globalEntityHitHandlers = new Map<string, () => void>();
+const globalEntityHitHandlers = new Map<string, (opts?: HitEntityOptions) => void>();
 
 // Animal: Componente controlador de todo tipo de entidades (Pasivas y Hostiles), optimizado al maximo
 const Animal = React.memo<{ 
@@ -768,7 +774,8 @@ const Animal = React.memo<{
   onBlockEditRef?: React.MutableRefObject<any>;
   entitiesRef?: React.MutableRefObject<any>;
   weatherRef?: React.MutableRefObject<'clear' | 'rain' | 'snow' | 'thunderstorm' | 'snow_rain'>;
-}>(({ data, checkSolid, playerPosRef, removeEntity, spawnArrow, chunksRef, setChunks, editsRef, particlesRef, gameTimeRef, currentBlockRef, perfConfig, onBlockEditRef, entitiesRef, weatherRef }) => {
+  companionCombatRef?: React.MutableRefObject<AICompanionCombatState>;
+}>(({ data, checkSolid, playerPosRef, removeEntity, spawnArrow, chunksRef, setChunks, editsRef, particlesRef, gameTimeRef, currentBlockRef, perfConfig, onBlockEditRef, entitiesRef, weatherRef, companionCombatRef }) => {
   const meshRef = useRef<THREE.Group>(null);
   const velocityY = useRef(0);
   const knockbackRef = useRef({ x: 0, y: 0, z: 0 });
@@ -813,8 +820,8 @@ const Animal = React.memo<{
   const checkSolidRef = useRef(checkSolid);
   checkSolidRef.current = checkSolid;
 
-  // Hurt handler when player left clicks/hits the entity
-  const handleHit = () => {
+  // Hurt handler when player or companion hits the entity
+  const handleHit = (opts?: HitEntityOptions) => {
     if (entityHealth.current <= 0) return;
 
     // Red flash highlight
@@ -824,47 +831,51 @@ const Animal = React.memo<{
     // Play entity hurt sound
     playHurtSound();
 
-    // Neutral mobs retaliate when struck in non-creative modes
+    // Neutral mobs retaliate when struck by non-creative players or AI companion
     const gm = (gameState as any).gameMode;
     const isPlayerImmune = gm === 'creative' || gm === 'creativo' || gm === 'spectator' || gm === 'espectador';
-    if (!isPlayerImmune && (data.type === EntityType.ZOMBIFIED_PIGLIN || data.type === EntityType.ENDERMAN)) {
+    if ((opts?.isCompanion || !isPlayerImmune) && (data.type === EntityType.ZOMBIFIED_PIGLIN || data.type === EntityType.ENDERMAN)) {
       (data as any).isAngry = true;
     }
 
-    // Damage calculation based on crafted tool tier & category
-    const held = currentBlockRef.current;
+    // Damage calculation based on explicit attacker damage or player's held tool tier
     let damage = 4;
-    switch (held) {
-      case BlockType.DIAMOND_SWORD: damage = 20; break;
-      case BlockType.SWORD: damage = 15; break; // Espada de Hierro
-      case BlockType.GOLD_SWORD: damage = 14; break;
-      case BlockType.STONE_SWORD: damage = 11; break;
-      case BlockType.WOOD_SWORD: damage = 8; break;
-      case BlockType.DIAMOND_AXE: damage = 16; break;
-      case BlockType.IRON_AXE: damage = 12; break;
-      case BlockType.GOLD_AXE: damage = 11; break;
-      case BlockType.STONE_AXE: damage = 9; break;
-      case BlockType.AXE: damage = 7; break; // Hacha de Madera
-      case BlockType.DIAMOND_PICKAXE: damage = 12; break;
-      case BlockType.IRON_PICKAXE: damage = 10; break;
-      case BlockType.GOLD_PICKAXE: damage = 9; break;
-      case BlockType.PICKAXE: damage = 8; break; // Pico de Piedra
-      case BlockType.WOOD_PICKAXE: damage = 6; break;
-      case BlockType.DIAMOND_SHOVEL: damage = 10; break;
-      case BlockType.IRON_SHOVEL: damage = 8; break;
-      case BlockType.GOLD_SHOVEL: damage = 7; break;
-      case BlockType.SHOVEL: damage = 6; break; // Pala de Piedra
-      case BlockType.WOOD_SHOVEL: damage = 5; break;
-      default: damage = 4;
+    if (typeof opts?.damage === 'number') {
+      damage = opts.damage;
+    } else {
+      const held = currentBlockRef.current;
+      switch (held) {
+        case BlockType.DIAMOND_SWORD: damage = 20; break;
+        case BlockType.SWORD: damage = 15; break; // Espada de Hierro
+        case BlockType.GOLD_SWORD: damage = 14; break;
+        case BlockType.STONE_SWORD: damage = 11; break;
+        case BlockType.WOOD_SWORD: damage = 8; break;
+        case BlockType.DIAMOND_AXE: damage = 16; break;
+        case BlockType.IRON_AXE: damage = 12; break;
+        case BlockType.GOLD_AXE: damage = 11; break;
+        case BlockType.STONE_AXE: damage = 9; break;
+        case BlockType.AXE: damage = 7; break; // Hacha de Madera
+        case BlockType.DIAMOND_PICKAXE: damage = 12; break;
+        case BlockType.IRON_PICKAXE: damage = 10; break;
+        case BlockType.GOLD_PICKAXE: damage = 9; break;
+        case BlockType.PICKAXE: damage = 8; break; // Pico de Piedra
+        case BlockType.WOOD_PICKAXE: damage = 6; break;
+        case BlockType.DIAMOND_SHOVEL: damage = 10; break;
+        case BlockType.IRON_SHOVEL: damage = 8; break;
+        case BlockType.GOLD_SHOVEL: damage = 7; break;
+        case BlockType.SHOVEL: damage = 6; break; // Pala de Piedra
+        case BlockType.WOOD_SHOVEL: damage = 5; break;
+        default: damage = 4;
+      }
     }
     
     entityHealth.current -= damage;
 
-    // Calculate realistic knockback away from player
-    const pPos = playerPosRef.current;
-    if (pPos) {
-      const dx = data.pos.x - pPos.x;
-      const dz = data.pos.z - pPos.z;
+    // Calculate realistic knockback away from attacker (player or companion)
+    const originPos = opts?.attackerPos || playerPosRef.current;
+    if (originPos) {
+      const dx = data.pos.x - originPos.x;
+      const dz = data.pos.z - originPos.z;
       const len = Math.sqrt(dx * dx + dz * dz);
       if (len > 0.01) {
         const kbFactor = data.type === EntityType.IRON_GOLEM ? 0.35 : 1.0;
@@ -1005,7 +1016,7 @@ const Animal = React.memo<{
       particlesRef.current.push(...exParticles);
     }
 
-    // 2. Blow damage to player
+    // 2. Blow damage to player & AI companion
     const playerPos = playerPosRef.current;
     if (playerPos) {
       const dist = Math.sqrt(
@@ -1025,23 +1036,36 @@ const Animal = React.memo<{
       }
     }
 
+    const compState = companionCombatRef?.current;
+    if (compState && compState.alive) {
+      const cDist = Math.sqrt(
+        Math.pow(ex - compState.pos.x, 2) +
+        Math.pow(ey - (compState.pos.y - 1.5), 2) +
+        Math.pow(ez - compState.pos.z, 2)
+      );
+      if (cDist < 4.8) {
+        const cDmg = Math.max(2, Math.round((4.8 - cDist) * 3.2));
+        compState.damage(cDmg, ex, ez, 'Creeper');
+      }
+    }
+
     removeEntity(data.id);
   };
 
   // Skeleton archery bow fire
-  const shootBow = () => {
+  const shootBow = (targetPos?: Vector3D, targetIsCompanion = false) => {
     if (!spawnArrow) return;
     playBowShootSound();
 
     const headPos = { x: data.pos.x, y: data.pos.y + 1.2, z: data.pos.z };
-    const playerPos = playerPosRef.current;
-    if (!playerPos) return;
+    const aimTarget = targetPos || playerPosRef.current;
+    if (!aimTarget) return;
 
     // Standard normalized vectors pointing to target (reusing scratch vector)
     ANIMAL_BOW_DIR.set(
-      playerPos.x - headPos.x,
-      playerPos.y + 0.35 - headPos.y,
-      playerPos.z - headPos.z
+      aimTarget.x - headPos.x,
+      aimTarget.y + (targetIsCompanion ? -0.1 : 0.35) - headPos.y,
+      aimTarget.z - headPos.z
     ).normalize();
 
     spawnArrow(headPos, ANIMAL_BOW_DIR);
@@ -1056,12 +1080,20 @@ const Animal = React.memo<{
     const rawDelta = Math.min(delta, 0.1);
     const gm = (gameState as any).gameMode;
     const isPlayerImmune = gm === 'creative' || gm === 'creativo' || gm === 'spectator' || gm === 'espectador';
+    const compCombat = companionCombatRef?.current;
+    const canTargetCompanion = Boolean(compCombat && compCombat.alive);
+    const compPos = compCombat?.pos;
 
     // --- Entity Distance Culling & LOD Throttling ---
     const ddx = data.pos.x - pPos.x;
     const ddz = data.pos.z - pPos.z;
     const distSq = ddx * ddx + ddz * ddz;
+    const cdx = canTargetCompanion && compPos ? data.pos.x - compPos.x : 9999;
+    const cdz = canTargetCompanion && compPos ? data.pos.z - compPos.z : 9999;
+    const compDistSq = cdx * cdx + cdz * cdz;
     const simBlocks = (perfConfig?.simulationDistance ?? 2) * CHUNK_SIZE;
+    const compSimRadius = 24;
+    const nearCompanionSim = canTargetCompanion && compDistSq <= compSimRadius * compSimRadius;
     const isHostileAny =
       data.type === EntityType.ZOMBIE ||
       data.type === EntityType.SKELETON ||
@@ -1077,20 +1109,20 @@ const Animal = React.memo<{
       data.type === EntityType.SNOW_SKELETON ||
       data.type === EntityType.SWAMP_SKELETON;
 
-    if (distSq > simBlocks * simBlocks) {
+    if (distSq > simBlocks * simBlocks && !nearCompanionSim) {
       meshRef.current.visible = false;
-      // Auto despawn far away hostile mobs to save performance
+      // Auto despawn far away hostile mobs to save performance (unless near companion)
       const despawnLim = simBlocks + 32;
-      if (isHostileAny && distSq > despawnLim * despawnLim) {
+      if (isHostileAny && distSq > despawnLim * despawnLim && (!canTargetCompanion || compDistSq > despawnLim * despawnLim)) {
         removeEntity(data.id);
       }
       return;
     }
     meshRef.current.visible = true;
 
-    // Distant mobs (>16 blocks) simulate every 3rd frame cleanly with accumulated delta
+    // Distant mobs (>16 blocks from both player and companion) simulate every 3rd frame cleanly
     accumDeltaRef.current += rawDelta;
-    if (distSq > 256 && data.type !== EntityType.ARROW) {
+    if (Math.min(distSq, compDistSq) > 256 && data.type !== EntityType.ARROW) {
       aiFrameSkipRef.current = (aiFrameSkipRef.current + 1) % 3;
       if (aiFrameSkipRef.current !== 0) return;
     }
@@ -1098,6 +1130,29 @@ const Animal = React.memo<{
     accumDeltaRef.current = 0;
 
     const dist = Math.sqrt(distSq);
+    const compDist = canTargetCompanion ? Math.sqrt(compDistSq) : Infinity;
+
+    // Pick closest valid combat target (non-immune player or living AI companion)
+    let combatTargetPos: Vector3D | null = null;
+    let combatTargetDist = Infinity;
+    let combatTargetingCompanion = false;
+    if (!isPlayerImmune && canTargetCompanion && compPos) {
+      if (compDist < dist) {
+        combatTargetPos = compPos;
+        combatTargetDist = compDist;
+        combatTargetingCompanion = true;
+      } else {
+        combatTargetPos = pPos;
+        combatTargetDist = dist;
+      }
+    } else if (!isPlayerImmune) {
+      combatTargetPos = pPos;
+      combatTargetDist = dist;
+    } else if (canTargetCompanion && compPos) {
+      combatTargetPos = compPos;
+      combatTargetDist = compDist;
+      combatTargetingCompanion = true;
+    }
 
     const getBlockAtWorld = (bx: number, by: number, bz: number): BlockType => {
       if (!chunksRef?.current || by < 0 || by >= WORLD_HEIGHT) return BlockType.AIR;
@@ -1251,6 +1306,20 @@ const Animal = React.memo<{
         }
       }
 
+      // Check AI companion hits
+      if (canTargetCompanion && compPos && compCombat) {
+        const cd3d = Math.sqrt(
+          Math.pow(nextX - compPos.x, 2) +
+          Math.pow(nextY - (compPos.y - 0.5), 2) +
+          Math.pow(nextZ - compPos.z, 2)
+        );
+        if (cd3d < 1.15) {
+          compCombat.damage(2, data.pos.x - vx, data.pos.z - vz, 'Esqueleto');
+          removeEntity(data.id);
+          return;
+        }
+      }
+
       // Projectile max life
       const remainingLife = ((data as any).life || 5.0) - minDelta;
       (data as any).life = remainingLife;
@@ -1344,17 +1413,18 @@ const Animal = React.memo<{
       }
     }
 
-    // --- Enderman teleport, water-fearing & attack logic (ignores Creative/Spectator players) ---
+    // --- Enderman teleport, water-fearing & attack logic (targets non-immune player or AI companion) ---
     let endermanWetPanic = false;
     if (data.type === EntityType.ENDERMAN) {
       endermanFleeCdRef.current = Math.max(0, endermanFleeCdRef.current - minDelta);
 
-      const teleportEndermanToDryLand = (minRadius = 4, maxRadius = 11, preferSheltered = false): boolean => {
+      const teleportEndermanToDryLand = (minRadius = 4, maxRadius = 11, preferSheltered = false, anchorPos?: Vector3D): boolean => {
+        const targetOrigin = anchorPos || combatTargetPos || pPos;
         for (let attempt = 0; attempt < 18; attempt++) {
           const angle = Math.random() * Math.PI * 2;
           const rDist = minRadius + Math.random() * (maxRadius - minRadius);
-          const originX = preferSheltered ? data.pos.x : pPos.x;
-          const originZ = preferSheltered ? data.pos.z : pPos.z;
+          const originX = preferSheltered ? data.pos.x : targetOrigin.x;
+          const originZ = preferSheltered ? data.pos.z : targetOrigin.z;
           const tx = Math.round(originX + Math.cos(angle) * rDist);
           const tz = Math.round(originZ + Math.sin(angle) * rDist);
           const tInfo = getWorldHeight(tx, tz);
@@ -1486,20 +1556,20 @@ const Animal = React.memo<{
           teleportEndermanToDryLand(4, 13, isWetByRain);
         }
       } else {
-        if (isPlayerImmune) {
+        if (!combatTargetPos) {
           (data as any).isAngry = false;
         } else {
-          const isAngry = dist < 11 && ((data as any).isAngry || Math.random() < 0.03);
+          const isAngry = combatTargetDist < 11 && ((data as any).isAngry || Math.random() < 0.03);
           if (isAngry) {
             (data as any).isAngry = true;
             isAggro = true;
-            targetRot = Math.atan2(pPos.x - data.pos.x, pPos.z - data.pos.z);
+            targetRot = Math.atan2(combatTargetPos.x - data.pos.x, combatTargetPos.z - data.pos.z);
             speed = 2.05;
 
             if (!(data as any).lastTeleport) (data as any).lastTeleport = state.clock.elapsedTime;
             if (state.clock.elapsedTime - (data as any).lastTeleport > 5.5 && Math.random() < 0.28) {
               (data as any).lastTeleport = state.clock.elapsedTime;
-              teleportEndermanToDryLand(4, 8.5, false);
+              teleportEndermanToDryLand(4, 8.5, false, combatTargetPos);
             }
           }
         }
@@ -1525,10 +1595,10 @@ const Animal = React.memo<{
 
         if (seesWaterAhead) {
           if (isAggro && endermanFleeCdRef.current <= 0) {
-            // Do not walk into water to reach player — freeze at shore or teleport onto dry ground
+            // Do not walk into water to reach target — freeze at shore or teleport onto dry ground
             speed = 0;
             endermanFleeCdRef.current = 1.6;
-            teleportEndermanToDryLand(4, 9, false);
+            teleportEndermanToDryLand(4, 9, false, combatTargetPos || undefined);
           } else {
             // Turn sharply away from the water while wandering
             data.rot += Math.PI * 0.85;
@@ -1539,15 +1609,15 @@ const Animal = React.memo<{
       }
     }
 
-    // --- Zombified Piglin neutral/hostile logic (ignores Creative/Spectator players) ---
+    // --- Zombified Piglin neutral/hostile logic (targets non-immune player or AI companion) ---
     if (data.type === EntityType.ZOMBIFIED_PIGLIN) {
-      if (isPlayerImmune) {
+      if (!combatTargetPos) {
         (data as any).isAngry = false;
       } else {
         const isAngry = (data as any).isAngry;
-        if (isAngry && dist < 16) {
+        if (isAngry && combatTargetDist < 16) {
           isAggro = true;
-          targetRot = Math.atan2(pPos.x - data.pos.x, pPos.z - data.pos.z);
+          targetRot = Math.atan2(combatTargetPos.x - data.pos.x, combatTargetPos.z - data.pos.z);
           speed = 1.85;
         }
       }
@@ -1635,16 +1705,16 @@ const Animal = React.memo<{
       }
     }
 
-    // --- Hoglin logic (ignores Creative/Spectator players) ---
+    // --- Hoglin logic (targets non-immune player or AI companion) ---
     if (data.type === EntityType.HOGLIN) {
-      if (!isPlayerImmune && dist < 18) {
+      if (combatTargetPos && combatTargetDist < 18) {
         isAggro = true;
-        targetRot = Math.atan2(pPos.x - data.pos.x, pPos.z - data.pos.z);
+        targetRot = Math.atan2(combatTargetPos.x - data.pos.x, combatTargetPos.z - data.pos.z);
         speed = 2.15;
       }
     }
 
-    // --- Hostile Overworld Mobs (ignores Creative/Spectator players completely) ---
+    // --- Hostile Overworld Mobs (target non-immune player or AI companion) ---
     if (
       data.type === EntityType.ZOMBIE ||
       data.type === EntityType.CREEPER ||
@@ -1652,9 +1722,9 @@ const Animal = React.memo<{
       data.type === EntityType.SNOW_SKELETON ||
       data.type === EntityType.SWAMP_SKELETON
     ) {
-      if (!isPlayerImmune && dist < 16) {
+      if (combatTargetPos && combatTargetDist < 16) {
         isAggro = true;
-        targetRot = Math.atan2(pPos.x - data.pos.x, pPos.z - data.pos.z);
+        targetRot = Math.atan2(combatTargetPos.x - data.pos.x, combatTargetPos.z - data.pos.z);
 
         if (data.type === EntityType.ZOMBIE) {
           speed = 1.5;
@@ -1663,7 +1733,7 @@ const Animal = React.memo<{
             lastSoundPlayRef.current = state.clock.elapsedTime;
           }
         } else if (data.type === EntityType.CREEPER) {
-          if (dist <= 2.8) {
+          if (combatTargetDist <= 2.8) {
             speed = 0;
             if (!fuseActiveRef.current) {
               fuseActiveRef.current = true;
@@ -1676,7 +1746,7 @@ const Animal = React.memo<{
               return;
             }
           } else {
-            if (fuseActiveRef.current && dist > 4.0) {
+            if (fuseActiveRef.current && combatTargetDist > 4.0) {
               fuseActiveRef.current = false;
               fuseTimerRef.current = 0;
               setFusePulse(false);
@@ -1685,9 +1755,9 @@ const Animal = React.memo<{
           }
         } else {
           // Skeleton, Snow Skeleton, Swamp Skeleton
-          if (dist < 6.5) {
+          if (combatTargetDist < 6.5) {
             speed = -0.65;
-          } else if (dist <= 11.5) {
+          } else if (combatTargetDist <= 11.5) {
             speed = 0;
           } else {
             speed = 1.25;
@@ -1696,7 +1766,7 @@ const Animal = React.memo<{
           skCooldownRef.current -= minDelta;
           if (skCooldownRef.current <= 0) {
             skCooldownRef.current = 2.1 + Math.random() * 0.4;
-            shootBow();
+            shootBow(combatTargetPos, combatTargetingCompanion);
           }
         }
       } else {
@@ -2043,23 +2113,51 @@ const Animal = React.memo<{
       meshRef.current.scale.set(1, 1, 1);
     }
 
-    // Melee contact hits (ONLY when player is NOT in Creative/Spectator mode!)
-    if (!isPlayerImmune) {
-      const isZombieHit = data.type === EntityType.ZOMBIE && dist < 1.25;
-      const isHoglinHit = data.type === EntityType.HOGLIN && dist < 1.5;
-      const isEndermanHit = data.type === EntityType.ENDERMAN && (data as any).isAngry && dist < 1.4;
-      const isPiglinHit = data.type === EntityType.ZOMBIFIED_PIGLIN && (data as any).isAngry && dist < 1.3;
-      const isSkelMelee =
-        (data.type === EntityType.SKELETON || data.type === EntityType.SNOW_SKELETON || data.type === EntityType.SWAMP_SKELETON) &&
-        dist < 1.05;
+    // Melee contact hits (against non-immune player OR living AI companion)
+    const isSkelType =
+      data.type === EntityType.SKELETON || data.type === EntityType.SNOW_SKELETON || data.type === EntityType.SWAMP_SKELETON;
+    const meleeThresh =
+      data.type === EntityType.ZOMBIE
+        ? 1.25
+        : data.type === EntityType.HOGLIN
+          ? 1.5
+          : data.type === EntityType.ENDERMAN && (data as any).isAngry
+            ? 1.4
+            : data.type === EntityType.ZOMBIFIED_PIGLIN && (data as any).isAngry
+              ? 1.3
+              : isSkelType
+                ? 1.05
+                : 0;
 
-      if (isZombieHit || isHoglinHit || isEndermanHit || isPiglinHit || isSkelMelee) {
+    if (meleeThresh > 0) {
+      const playerHit = !isPlayerImmune && dist < meleeThresh && Math.abs((pPos.y - 1.5) - data.pos.y) < 2.2;
+      const compHit =
+        canTargetCompanion &&
+        compPos &&
+        compDist < meleeThresh + 0.15 &&
+        Math.abs((compPos.y - 1.5) - data.pos.y) < 2.2;
+
+      if (playerHit || compHit) {
         attackCooldownRef.current -= minDelta;
         if (attackCooldownRef.current <= 0) {
-          attackCooldownRef.current = isHoglinHit ? 1.15 : 1.0;
-          const meleeDmg = isHoglinHit || isEndermanHit ? 4 : isSkelMelee ? 2 : 3;
-          gameState.setHealth(Math.max(0, gameState.health - meleeDmg));
-          playHurtSound();
+          attackCooldownRef.current = data.type === EntityType.HOGLIN ? 1.15 : 1.0;
+          const meleeDmg = data.type === EntityType.HOGLIN || data.type === EntityType.ENDERMAN ? 4 : isSkelType ? 2 : 3;
+          if (compHit && (!playerHit || compDist <= dist) && compCombat) {
+            const mobLabel =
+              data.type === EntityType.HOGLIN
+                ? 'Hoglin'
+                : data.type === EntityType.ENDERMAN
+                  ? 'Enderman'
+                  : data.type === EntityType.ZOMBIFIED_PIGLIN
+                    ? 'Piglin Zombificado'
+                    : isSkelType
+                      ? 'Esqueleto'
+                      : 'Zombi';
+            compCombat.damage(meleeDmg, data.pos.x, data.pos.z, mobLabel);
+          } else if (playerHit) {
+            gameState.setHealth(Math.max(0, gameState.health - meleeDmg));
+            playHurtSound();
+          }
         }
       } else if (attackCooldownRef.current > 0) {
         attackCooldownRef.current -= minDelta;
@@ -3660,6 +3758,108 @@ const Animal = React.memo<{
 import { TextureCache } from '../textures';
 
 const SHARED_BOX_GEOMETRY = new THREE.BoxGeometry(1, 1, 1);
+const EMPTY_CHUNK_COLORS: Record<string, string> = {};
+const COLOR_SCRATCH = new THREE.Color();
+let _cachedWhiteBlockMaterial: THREE.MeshLambertMaterial | null = null;
+const getWhiteBlockMaterial = (): THREE.MeshLambertMaterial => {
+  if (_cachedWhiteBlockMaterial) return _cachedWhiteBlockMaterial;
+  const canvas = document.createElement('canvas');
+  canvas.width = 16;
+  canvas.height = 16;
+  const ctx = canvas.getContext('2d');
+  if (ctx) {
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, 16, 16);
+    // Subtle voxel grain in near-white values so instanceColor hue renders pure & crisp
+    for (let x = 0; x < 16; x++) {
+      for (let y = 0; y < 16; y++) {
+        const edge = x === 0 || y === 0 || x === 15 || y === 15;
+        const hash = Math.abs(Math.sin((x + 1) * 12.9898 + (y + 1) * 78.233) * 43758.5453) % 1;
+        const shade = edge ? 232 : (238 + Math.floor(hash * 18));
+        ctx.fillStyle = `rgb(${shade},${shade},${shade})`;
+        ctx.fillRect(x, y, 1, 1);
+      }
+    }
+  }
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.NearestFilter;
+  tex.generateMipmaps = false;
+  _cachedWhiteBlockMaterial = new THREE.MeshLambertMaterial({ map: tex });
+  return _cachedWhiteBlockMaterial;
+};
+
+const ColoredChunkLayer = React.memo<{
+  instances: number[];
+  colors: string[];
+  onInteraction: (p: THREE.Vector3, n: THREE.Vector3, clientX: number, clientY: number, button?: number) => void;
+  cx: number;
+  cz: number;
+}>(({ instances, colors, onInteraction, cx, cz }) => {
+  const meshRef = useRef<THREE.InstancedMesh>(null);
+  const count = instances.length / 3;
+  const maxCapRef = useRef(64);
+  const prevKeyRef = useRef('');
+  const layerKey = `${cx},${cz},colored`;
+  if (prevKeyRef.current !== layerKey) {
+    prevKeyRef.current = layerKey;
+    maxCapRef.current = 64;
+  }
+  const targetCap = Math.max(64, Math.ceil(Math.max(1, count) / 128) * 128);
+  if (targetCap > maxCapRef.current) {
+    maxCapRef.current = targetCap;
+  }
+  const capacity = maxCapRef.current;
+
+  const material = useMemo(() => getWhiteBlockMaterial(), []);
+  const meshArgs = useMemo(
+    () => [SHARED_BOX_GEOMETRY, material as THREE.Material, capacity] as const,
+    [material, capacity]
+  );
+
+  useLayoutEffect(() => {
+    const mesh = meshRef.current;
+    if (!mesh) return;
+    for (let i = 0; i < count; i++) {
+      const x = instances[i * 3];
+      const y = instances[i * 3 + 1];
+      const z = instances[i * 3 + 2];
+      CHUNK_DUMMY.position.set(x, y, z);
+      CHUNK_DUMMY.rotation.set(0, 0, 0);
+      CHUNK_DUMMY.scale.set(1, 1, 1);
+      CHUNK_DUMMY.updateMatrix();
+      mesh.setMatrixAt(i, CHUNK_DUMMY.matrix);
+      COLOR_SCRATCH.set(colors[i] || '#ffffff');
+      mesh.setColorAt(i, COLOR_SCRATCH);
+    }
+    mesh.count = count;
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) {
+      mesh.instanceColor.needsUpdate = true;
+    }
+    mesh.computeBoundingSphere();
+    if (mesh.boundingSphere) {
+      mesh.boundingSphere.radius += 1.0;
+    }
+  }, [instances, colors, count, cx, cz, capacity]);
+
+  return (
+    <instancedMesh
+      ref={meshRef}
+      args={meshArgs}
+      frustumCulled={true}
+      onPointerDown={(e) => {
+        e.stopPropagation();
+        const intersect = e.intersections[0];
+        if (intersect && intersect.face) {
+          onInteraction(intersect.point, intersect.face.normal, e.clientX, e.clientY, e.button);
+        }
+      }}
+    />
+  );
+});
+
 const DoorStateContext = React.createContext<Record<string, boolean>>(EMPTY_OPEN_DOORS);
 
 const ChunkLayer = React.memo<{ 
@@ -3818,6 +4018,7 @@ interface ChunkProps {
   neighborNZ?: Uint8Array;
   onInteraction: (pos: THREE.Vector3, n: THREE.Vector3, clientX: number, clientY: number, button?: number) => void;
   currentBlockRef: React.MutableRefObject<BlockType>;
+  chunkColorMap?: Record<string, string>;
 }
 
 const isChunkBlockTransparent = (b: number) =>
@@ -3848,10 +4049,26 @@ const isBlockExposedTo = (type: BlockType, nb: number): boolean => {
   return isChunkBlockTransparent(nb);
 };
 
-const Chunk = React.memo<ChunkProps>(({ cx, cz, blocks, neighborPX, neighborNX, neighborPZ, neighborNZ, onInteraction, currentBlockRef }) => {
-  const { layers, doorAxes } = useMemo(() => {
+const isColorableCubeBlock = (type: BlockType): boolean =>
+  type !== BlockType.WATER &&
+  type !== BlockType.LAVA &&
+  type !== BlockType.DOOR &&
+  type !== BlockType.TORCH &&
+  type !== BlockType.BED &&
+  type !== BlockType.MUSHROOM_RED &&
+  type !== BlockType.MUSHROOM_BROWN &&
+  type !== BlockType.FLOWER_RED &&
+  type !== BlockType.FLOWER_YELLOW &&
+  type !== BlockType.FIRE &&
+  type !== BlockType.PORTAL;
+
+const Chunk = React.memo<ChunkProps>(({ cx, cz, blocks, neighborPX, neighborNX, neighborPZ, neighborNZ, onInteraction, currentBlockRef, chunkColorMap }) => {
+  const { layers, doorAxes, coloredInstances, coloredValues } = useMemo(() => {
     const map = new Map<BlockType, number[]>();
     const dAxes: Record<string, boolean> = {};
+    const cPos: number[] = [];
+    const cVals: string[] = [];
+    const hasCustomColors = !!(chunkColorMap && Object.keys(chunkColorMap).length > 0);
     const y_mult = CHUNK_SIZE;
     const x_mult = CHUNK_SIZE * WORLD_HEIGHT;
 
@@ -3900,6 +4117,15 @@ const Chunk = React.memo<ChunkProps>(({ cx, cz, blocks, neighborPX, neighborNX, 
             }
           }
 
+          if (hasCustomColors && isColorableCubeBlock(type)) {
+            const customHex = chunkColorMap![`${wx},${y},${wz}`];
+            if (customHex) {
+              cPos.push(wx, y, wz);
+              cVals.push(customHex);
+              continue;
+            }
+          }
+
           let arr = map.get(type);
           if (!arr) {
             arr = [];
@@ -3909,8 +4135,8 @@ const Chunk = React.memo<ChunkProps>(({ cx, cz, blocks, neighborPX, neighborNX, 
         }
       }
     }
-    return { layers: Array.from(map.entries()), doorAxes: dAxes };
-  }, [blocks, cx, cz, neighborPX, neighborNX, neighborPZ, neighborNZ]);
+    return { layers: Array.from(map.entries()), doorAxes: dAxes, coloredInstances: cPos, coloredValues: cVals };
+  }, [blocks, cx, cz, neighborPX, neighborNX, neighborPZ, neighborNZ, chunkColorMap]);
 
   return (
     <group>
@@ -3939,6 +4165,15 @@ const Chunk = React.memo<ChunkProps>(({ cx, cz, blocks, neighborPX, neighborNX, 
             currentBlockRef={currentBlockRef}
           />
         )
+      )}
+      {coloredValues.length > 0 && (
+        <ColoredChunkLayer
+          instances={coloredInstances}
+          colors={coloredValues}
+          onInteraction={onInteraction}
+          cx={cx}
+          cz={cz}
+        />
       )}
     </group>
   );
@@ -3976,9 +4211,54 @@ const OtherPlayer = React.memo<OtherPlayerProps>(({
     z: typeof pos?.z === 'number' && !isNaN(pos.z) ? pos.z : 0,
   });
   const smoothYawRef = useRef(yaw);
+  const smoothPitchRef = useRef(pitch);
   const swingProgressRef = useRef(0);
   const lastAttackSeqRef = useRef(attackSeq);
   const walkPhaseRef = useRef(0);
+
+  const targetX = typeof pos?.x === 'number' && !isNaN(pos.x) ? pos.x : 0;
+  const targetY = typeof pos?.y === 'number' && !isNaN(pos.y) ? pos.y : 80;
+  const targetZ = typeof pos?.z === 'number' && !isNaN(pos.z) ? pos.z : 0;
+
+  const lastSnapshotPosRef = useRef({ x: targetX, y: targetY, z: targetZ });
+  const estVelRef = useRef({ x: 0, y: 0, z: 0 });
+  const lastPacketAtRef = useRef(typeof performance !== 'undefined' ? performance.now() : Date.now());
+
+  useEffect(() => {
+    const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const prev = lastSnapshotPosRef.current;
+    const dtSec = Math.max(0.035, Math.min(0.6, (now - lastPacketAtRef.current) / 1000));
+    const dx = targetX - prev.x;
+    const dy = targetY - prev.y;
+    const dz = targetZ - prev.z;
+    const distSq = dx * dx + dy * dy + dz * dz;
+
+    if (distSq > 64) {
+      // Snap on teleport / dimension spawn
+      smoothPosRef.current.x = targetX;
+      smoothPosRef.current.y = targetY - 1.5;
+      smoothPosRef.current.z = targetZ;
+      estVelRef.current.x = 0;
+      estVelRef.current.y = 0;
+      estVelRef.current.z = 0;
+    } else if (distSq > 0.0001) {
+      const vx = Math.max(-14, Math.min(14, dx / dtSec));
+      const vy = Math.max(-18, Math.min(18, dy / dtSec));
+      const vz = Math.max(-14, Math.min(14, dz / dtSec));
+      estVelRef.current.x = estVelRef.current.x * 0.3 + vx * 0.7;
+      estVelRef.current.y = estVelRef.current.y * 0.3 + vy * 0.7;
+      estVelRef.current.z = estVelRef.current.z * 0.3 + vz * 0.7;
+    } else {
+      estVelRef.current.x *= 0.25;
+      estVelRef.current.y *= 0.25;
+      estVelRef.current.z *= 0.25;
+    }
+
+    lastSnapshotPosRef.current.x = targetX;
+    lastSnapshotPosRef.current.y = targetY;
+    lastSnapshotPosRef.current.z = targetZ;
+    lastPacketAtRef.current = now;
+  }, [targetX, targetY, targetZ]);
 
   useEffect(() => {
     if (attackSeq > lastAttackSeqRef.current) {
@@ -3986,10 +4266,6 @@ const OtherPlayer = React.memo<OtherPlayerProps>(({
       swingProgressRef.current = 1.0;
     }
   }, [attackSeq]);
-
-  const targetX = typeof pos?.x === 'number' && !isNaN(pos.x) ? pos.x : 0;
-  const targetY = typeof pos?.y === 'number' && !isNaN(pos.y) ? pos.y : 80;
-  const targetZ = typeof pos?.z === 'number' && !isNaN(pos.z) ? pos.z : 0;
 
   const skinPreset = resolveCharacterSkin(skinId, customSkin);
 
@@ -4000,9 +4276,18 @@ const OtherPlayer = React.memo<OtherPlayerProps>(({
     const prevX = smoothPosRef.current.x;
     const prevZ = smoothPosRef.current.z;
 
-    smoothPosRef.current.x = THREE.MathUtils.damp(smoothPosRef.current.x, targetX, 10, minDelta);
-    smoothPosRef.current.y = THREE.MathUtils.damp(smoothPosRef.current.y, targetY - 1.5, 12, minDelta);
-    smoothPosRef.current.z = THREE.MathUtils.damp(smoothPosRef.current.z, targetZ, 10, minDelta);
+    const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+    const sincePacket = Math.max(0, (nowMs - lastPacketAtRef.current) / 1000);
+    const decay = sincePacket < 0.22 ? 1 : Math.max(0, 1 - (sincePacket - 0.22) / 0.16);
+    const lead = Math.min(sincePacket, 0.14) * decay;
+
+    const desiredX = targetX + estVelRef.current.x * lead;
+    const desiredY = targetY - 1.5 + estVelRef.current.y * lead * 0.45;
+    const desiredZ = targetZ + estVelRef.current.z * lead;
+
+    smoothPosRef.current.x = THREE.MathUtils.damp(smoothPosRef.current.x, desiredX, 16, minDelta);
+    smoothPosRef.current.y = THREE.MathUtils.damp(smoothPosRef.current.y, desiredY, 18, minDelta);
+    smoothPosRef.current.z = THREE.MathUtils.damp(smoothPosRef.current.z, desiredZ, 16, minDelta);
 
     groupRef.current.position.set(
       smoothPosRef.current.x,
@@ -4012,12 +4297,13 @@ const OtherPlayer = React.memo<OtherPlayerProps>(({
 
     // Shortest-angle yaw interpolation
     const diffYaw = Math.atan2(Math.sin(yaw - smoothYawRef.current), Math.cos(yaw - smoothYawRef.current));
-    smoothYawRef.current += diffYaw * (1 - Math.exp(-12 * minDelta));
+    smoothYawRef.current += diffYaw * (1 - Math.exp(-16 * minDelta));
     groupRef.current.rotation.set(0, smoothYawRef.current, 0);
 
-    // Detect real movement speed from position delta
-    const moveDist = Math.hypot(targetX - prevX, targetZ - prevZ);
-    const isMoving = moveDist > 0.03;
+    // Detect real movement speed from position delta or active velocity prediction
+    const moveDist = Math.hypot(desiredX - prevX, desiredZ - prevZ);
+    const velHoriz = Math.hypot(estVelRef.current.x, estVelRef.current.z) * decay;
+    const isMoving = moveDist > 0.015 || velHoriz > 0.55;
     const timeVal = state.clock.getElapsedTime();
 
     if (isMoving) {
@@ -4055,8 +4341,9 @@ const OtherPlayer = React.memo<OtherPlayerProps>(({
       }
     }
 
+    smoothPitchRef.current = THREE.MathUtils.damp(smoothPitchRef.current, pitch, 16, minDelta);
     if (headGroupRef.current) {
-      headGroupRef.current.rotation.x = THREE.MathUtils.damp(headGroupRef.current.rotation.x, pitch * 0.6, 12, minDelta);
+      headGroupRef.current.rotation.x = THREE.MathUtils.damp(headGroupRef.current.rotation.x, smoothPitchRef.current * 0.6, 16, minDelta);
     }
 
     // Remote player attack animation
@@ -4696,9 +4983,13 @@ const Player: React.FC<{
       playerPoseRef.current.pitch = pitch.current;
     }
 
-    const targetFov = isZooming ? 15 : fov;
     const pCamera = camera as any;
-    if (pCamera && pCamera.fov !== undefined && pCamera.fov !== targetFov) {
+    const camAspect = pCamera?.aspect && pCamera.aspect > 0 ? pCamera.aspect : 1;
+    const baseTargetFov = isZooming ? (camAspect < 0.95 ? 24 : 15) : fov;
+    const targetFov = camAspect < 0.95
+      ? Math.min(104, THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(baseTargetFov) * 0.5) * Math.min(1.85, 0.95 / camAspect))))
+      : baseTargetFov;
+    if (pCamera && pCamera.fov !== undefined && Math.abs(pCamera.fov - targetFov) > 0.05) {
       pCamera.fov = targetFov;
       pCamera.updateProjectionMatrix();
     }
@@ -4996,6 +5287,7 @@ const NightMobSpawner: React.FC<NightMobSpawnerProps> = ({
 
 const TARGET_EDGE_GEO = new THREE.EdgesGeometry(new THREE.BoxGeometry(1.012, 1.012, 1.012));
 const TARGET_GHOST_GEO = new THREE.BoxGeometry(0.985, 0.985, 0.985);
+const REALM_SPHERE_WIRE_GEO = new THREE.WireframeGeometry(new THREE.SphereGeometry(1, 16, 10));
 const RAY_DIR_SCRATCH = new THREE.Vector3();
 
 const getBrushOffsets = (
@@ -5084,6 +5376,7 @@ const TargetBlockHighlight: React.FC<{
   interactionModeRef: React.MutableRefObject<'break' | 'place'>;
   aimedVoxelRef: React.MutableRefObject<AimedVoxelTarget | null>;
   playerPosRef: React.MutableRefObject<Vector3D>;
+  realmEditorConfigRef: React.MutableRefObject<RealmEditorConfig | undefined>;
 }> = ({
   chunksRef,
   currentBlockRef,
@@ -5091,9 +5384,12 @@ const TargetBlockHighlight: React.FC<{
   interactionModeRef,
   aimedVoxelRef,
   playerPosRef,
+  realmEditorConfigRef,
 }) => {
   const wireframeRef = useRef<THREE.LineSegments>(null);
   const wireMatRef = useRef<THREE.LineBasicMaterial>(null);
+  const sphereWireRef = useRef<THREE.LineSegments>(null);
+  const sphereMatRef = useRef<THREE.LineBasicMaterial>(null);
   const ghostGroupRef = useRef<THREE.Group>(null);
   const ghostMeshesRef = useRef<(THREE.Mesh | null)[]>([]);
   const ghostMatRef = useRef<THREE.MeshBasicMaterial>(null);
@@ -5117,6 +5413,7 @@ const TargetBlockHighlight: React.FC<{
   useFrame(({ camera }) => {
     const wire = wireframeRef.current;
     const ghostGroup = ghostGroupRef.current;
+    const sphereWire = sphereWireRef.current;
     if (!wire || !ghostGroup) return;
 
     camera.getWorldDirection(RAY_DIR_SCRATCH);
@@ -5200,6 +5497,7 @@ const TargetBlockHighlight: React.FC<{
       aimedVoxelRef.current = null;
       wire.visible = false;
       ghostGroup.visible = false;
+      if (sphereWire) sphereWire.visible = false;
       return;
     }
 
@@ -5224,21 +5522,64 @@ const TargetBlockHighlight: React.FC<{
     target.lookZ = dz;
     aimedVoxelRef.current = target;
 
+    const realmCfg = realmEditorConfigRef.current;
+    const realmActive = !!(realmCfg?.enabled && realmCfg.tool !== 'none');
+
     wire.visible = true;
     wire.position.set(vx, vy, vz);
     const interactive = isInteractiveBlock(hitBlk);
     if (wireMatRef.current) {
-      wireMatRef.current.color.set(
-        interactive
-          ? '#fbbf24'
-          : interactionModeRef.current === 'break'
-            ? '#ef4444'
-            : '#e2e8f0'
-      );
+      if (realmActive && realmCfg) {
+        if (realmCfg.tool === 'paint') {
+          wireMatRef.current.color.set(realmCfg.eraseColorMode ? '#f8fafc' : (realmCfg.selectedColor || '#ff2a6d'));
+        } else if (realmCfg.tool === 'erase_sphere') {
+          wireMatRef.current.color.set('#f43f5e');
+        } else {
+          wireMatRef.current.color.set(
+            realmCfg.applyColorToShapes && !realmCfg.eraseColorMode ? (realmCfg.selectedColor || '#38bdf8') : '#38bdf8'
+          );
+        }
+      } else {
+        wireMatRef.current.color.set(
+          interactive
+            ? '#fbbf24'
+            : interactionModeRef.current === 'break'
+              ? '#ef4444'
+              : '#e2e8f0'
+        );
+      }
+    }
+
+    if (sphereWire) {
+      if (realmActive && realmCfg && (realmCfg.tool === 'sphere' || realmCfg.tool === 'erase_sphere' || realmCfg.tool === 'platform')) {
+        const previewR = Math.max(1, Math.min(25, Math.round(realmCfg.radius || 5)));
+        sphereWire.visible = true;
+        if (realmCfg.tool === 'erase_sphere') {
+          sphereWire.position.set(vx, vy, vz);
+        } else {
+          sphereWire.position.set(placeX, placeY, placeZ);
+        }
+        if (realmCfg.tool === 'platform') {
+          sphereWire.scale.set(previewR + 0.35, 0.55, previewR + 0.35);
+        } else {
+          sphereWire.scale.setScalar(previewR + 0.35);
+        }
+        if (sphereMatRef.current) {
+          if (realmCfg.tool === 'erase_sphere') {
+            sphereMatRef.current.color.set('#f43f5e');
+          } else if (realmCfg.applyColorToShapes && !realmCfg.eraseColorMode) {
+            sphereMatRef.current.color.set(realmCfg.selectedColor || '#38bdf8');
+          } else {
+            sphereMatRef.current.color.set('#38bdf8');
+          }
+        }
+      } else {
+        sphereWire.visible = false;
+      }
     }
 
     const held = currentBlockRef.current;
-    const showGhosts = !interactive && !isToolBlock(held) && held !== BlockType.BUCKET_EMPTY;
+    const showGhosts = !realmActive && !interactive && !isToolBlock(held) && held !== BlockType.BUCKET_EMPTY;
 
     if (!showGhosts || placeY < 0 || placeY >= WORLD_HEIGHT) {
       ghostGroup.visible = false;
@@ -5283,6 +5624,9 @@ const TargetBlockHighlight: React.FC<{
     <>
       <lineSegments ref={wireframeRef} geometry={TARGET_EDGE_GEO} visible={false} renderOrder={2}>
         <lineBasicMaterial ref={wireMatRef} color="#e2e8f0" transparent opacity={0.9} depthTest />
+      </lineSegments>
+      <lineSegments ref={sphereWireRef} geometry={REALM_SPHERE_WIRE_GEO} visible={false} renderOrder={2}>
+        <lineBasicMaterial ref={sphereMatRef} color="#38bdf8" transparent opacity={0.55} depthTest />
       </lineSegments>
       <group ref={ghostGroupRef} visible={false}>
         {[0, 1, 2, 3, 4, 5].map((i) => (
@@ -5340,7 +5684,13 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
     aiCompanionPosRef,
     aiCompanionBagRef,
     onAICompanionBuildComplete,
-    onAICompanionSpeak
+    onAICompanionSpeak,
+    initialBlockColors,
+    onBatchWorldEdit,
+    realmEditorConfig,
+    realmActionRequest,
+    onRealmUndoChange,
+    virtualRotationDeg = 0,
 }) => {
   activeWorldId = worldId || 'temp';
   activeWorldType = worldType || 'normal';
@@ -5380,6 +5730,12 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
   interactionModeRef.current = interactionMode;
   const buildBrushRef = useRef<'single' | 'line3' | 'wall3x2'>(buildBrush);
   buildBrushRef.current = buildBrush;
+  const realmEditorConfigRef = useRef<RealmEditorConfig | undefined>(realmEditorConfig);
+  realmEditorConfigRef.current = realmEditorConfig;
+  const onBatchWorldEditRef = useRef(onBatchWorldEdit);
+  onBatchWorldEditRef.current = onBatchWorldEdit;
+  const onRealmUndoChangeRef = useRef(onRealmUndoChange);
+  onRealmUndoChangeRef.current = onRealmUndoChange;
   const aimedVoxelRef = useRef<AimedVoxelTarget | null>(null);
 
   const onSelectBlockRef = useRef(onSelectBlock);
@@ -5435,10 +5791,19 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
   chunksRef.current = chunks;
   const fallbackCompanionPosRef = useRef<Vector3D>({ x: 0, y: 80, z: 0 });
   const fallbackCompanionBagRef = useRef<Record<number, number>>({});
-  const hitEntityById = useCallback((id: string) => {
+  const aiCompanionCombatRef = useRef<AICompanionCombatState>({
+    alive: false,
+    pos: { x: 0, y: 80, z: 0 },
+    hp: 20,
+    maxHp: 20,
+    lastAttackerPos: null,
+    lastDamagedAtMs: 0,
+    damage: () => {},
+  });
+  const hitEntityById = useCallback((id: string, opts?: HitEntityOptions) => {
     const hitFn = globalEntityHitHandlers.get(id);
     if (hitFn) {
-      hitFn();
+      hitFn(opts);
       return true;
     }
     return false;
@@ -5462,6 +5827,14 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
   const savedEntitiesRef = useRef<Record<string, EntityData[]>>({});
   const editsByChunkRef = useRef<Map<string, Map<number, number>>>(new Map());
   const prevIncomingEditsRef = useRef<Record<string, number>>({});
+  const blockColorsRef = useRef<Record<string, string>>(initialBlockColors || {});
+  const prevIncomingColorsRef = useRef<Record<string, string>>({});
+  const [chunkColorMaps, setChunkColorMaps] = useState<Record<string, Record<string, string>>>({});
+  const realmUndoStackRef = useRef<Array<{
+    blocks: Record<string, number>;
+    colors: Record<string, string | null>;
+    label: string;
+  }>>([]);
 
   useEffect(() => {
     chunksRef.current = {};
@@ -5470,6 +5843,11 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
     savedEntitiesRef.current = {};
     editsByChunkRef.current.clear();
     prevIncomingEditsRef.current = {};
+    blockColorsRef.current = initialBlockColors ? { ...initialBlockColors } : {};
+    prevIncomingColorsRef.current = {};
+    setChunkColorMaps({});
+    realmUndoStackRef.current = [];
+    if (onRealmUndoChangeRef.current) onRealmUndoChangeRef.current(false);
     openDoorsRef.current = {};
     setOpenDoors({});
     fluidLevelRef.current.clear();
@@ -5485,6 +5863,75 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
   }, [dimension, worldId]);
 
   const editsRef = useRef<Record<string, number>>(initialEdits || {});
+
+  useEffect(() => {
+    const incoming = initialBlockColors || {};
+    const prev = prevIncomingColorsRef.current;
+    const dirtyChunks = new Set<string>();
+    const nextColorStore: Record<string, string> = { ...blockColorsRef.current };
+
+    for (const k in prev) {
+      if (!Object.prototype.hasOwnProperty.call(prev, k)) continue;
+      if (!(k in incoming)) {
+        delete nextColorStore[k];
+        const c1 = k.indexOf(',');
+        const c2 = c1 !== -1 ? k.indexOf(',', c1 + 1) : -1;
+        if (c1 !== -1 && c2 !== -1) {
+          const wx = parseInt(k.slice(0, c1), 10);
+          const wz = parseInt(k.slice(c2 + 1), 10);
+          if (!isNaN(wx) && !isNaN(wz)) {
+            dirtyChunks.add(`${Math.floor(wx / CHUNK_SIZE)},${Math.floor(wz / CHUNK_SIZE)}`);
+          }
+        }
+      }
+    }
+
+    for (const k in incoming) {
+      if (!Object.prototype.hasOwnProperty.call(incoming, k)) continue;
+      const hex = incoming[k];
+      if (prev[k] === hex && nextColorStore[k] === hex) continue;
+      nextColorStore[k] = hex;
+      const c1 = k.indexOf(',');
+      const c2 = c1 !== -1 ? k.indexOf(',', c1 + 1) : -1;
+      if (c1 !== -1 && c2 !== -1) {
+        const wx = parseInt(k.slice(0, c1), 10);
+        const wz = parseInt(k.slice(c2 + 1), 10);
+        if (!isNaN(wx) && !isNaN(wz)) {
+          dirtyChunks.add(`${Math.floor(wx / CHUNK_SIZE)},${Math.floor(wz / CHUNK_SIZE)}`);
+        }
+      }
+    }
+
+    blockColorsRef.current = nextColorStore;
+    prevIncomingColorsRef.current = incoming;
+
+    if (dirtyChunks.size > 0) {
+      setChunkColorMaps((prevMaps) => {
+        const nextMaps: Record<string, Record<string, string>> = { ...prevMaps };
+        for (const ck of dirtyChunks) {
+          nextMaps[ck] = {};
+        }
+        for (const coordKey in nextColorStore) {
+          const c1 = coordKey.indexOf(',');
+          const c2 = c1 !== -1 ? coordKey.indexOf(',', c1 + 1) : -1;
+          if (c1 === -1 || c2 === -1) continue;
+          const wx = parseInt(coordKey.slice(0, c1), 10);
+          const wz = parseInt(coordKey.slice(c2 + 1), 10);
+          if (isNaN(wx) || isNaN(wz)) continue;
+          const ck = `${Math.floor(wx / CHUNK_SIZE)},${Math.floor(wz / CHUNK_SIZE)}`;
+          if (dirtyChunks.has(ck)) {
+            nextMaps[ck][coordKey] = nextColorStore[coordKey];
+          }
+        }
+        for (const ck of dirtyChunks) {
+          if (Object.keys(nextMaps[ck]).length === 0) {
+            delete nextMaps[ck];
+          }
+        }
+        return nextMaps;
+      });
+    }
+  }, [worldId, dimension, initialBlockColors]);
 
   const [inGameMessage, setInGameMessage] = useState<string | null>(null);
   const messageTimeoutRef = useRef<any>(null);
@@ -7256,6 +7703,23 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
     return res;
   }, [_generateEntities]);
 
+  const ensureCompanionChunk = useCallback((wx: number, wz: number) => {
+    const cx = Math.floor(Math.round(wx) / CHUNK_SIZE);
+    const cz = Math.floor(Math.round(wz) / CHUNK_SIZE);
+    const k = `${cx},${cz}`;
+    if (chunksRef.current[k]) return true;
+    const rawC = generateChunk(cx, cz);
+    const rawE = generateEntities(cx, cz);
+    chunksRef.current[k] = rawC;
+    entitiesRef.current[k] = rawE;
+    if (rawE.length > 0) {
+      queueMicrotask(() => {
+        setEntities((prev) => (prev[k] ? prev : { ...prev, [k]: rawE }));
+      });
+    }
+    return true;
+  }, [generateChunk, generateEntities]);
+
   useEffect(() => {
     const pcx = Math.floor(playerPos.x / CHUNK_SIZE);
     const pcz = Math.floor(playerPos.z / CHUNK_SIZE);
@@ -7300,13 +7764,23 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
       }
     }
 
-    // Prune far-away chunks to free up GPU and system memory and avoid rendering stutter
+    // Prune far-away chunks to free up GPU and system memory (keep chunks right under exploring AI companion)
     const PRUNE_DISTANCE = viewDist + 1;
+    const compActivePos = aiCompanionConfig?.enabled ? (aiCompanionPosRef?.current || aiCompanionCombatRef.current.pos) : null;
+    const ccx = compActivePos ? Math.floor(compActivePos.x / CHUNK_SIZE) : pcx;
+    const ccz = compActivePos ? Math.floor(compActivePos.z / CHUNK_SIZE) : pcz;
     for (const key in chunksRef.current) {
       const comma = key.indexOf(',');
       const cx = parseInt(key.slice(0, comma), 10);
       const cz = parseInt(key.slice(comma + 1), 10);
-      if (Math.abs(cx - pcx) > PRUNE_DISTANCE || Math.abs(cz - pcz) > PRUNE_DISTANCE) {
+      const farFromPlayer = Math.abs(cx - pcx) > PRUNE_DISTANCE || Math.abs(cz - pcz) > PRUNE_DISTANCE;
+      const nearCompanion =
+        compActivePos !== null &&
+        Math.abs(cx - ccx) <= 1 &&
+        Math.abs(cz - ccz) <= 1 &&
+        Math.abs(cx - pcx) <= 8 &&
+        Math.abs(cz - pcz) <= 8;
+      if (farFromPlayer && !nearCompanion) {
         delete chunksRef.current[key];
         delete entitiesRef.current[key];
       }
@@ -7605,6 +8079,21 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
     if (editsRef.current) {
       editsRef.current[`${wx},${wy},${wz}`] = BlockType.AIR;
     }
+    const brokenCoordKey = `${wx},${wy},${wz}`;
+    if (blockColorsRef.current[brokenCoordKey]) {
+      delete blockColorsRef.current[brokenCoordKey];
+      const bck = `${Math.floor(wx / CHUNK_SIZE)},${Math.floor(wz / CHUNK_SIZE)}`;
+      setChunkColorMaps((prev) => {
+        const existing = prev[bck];
+        if (!existing || !existing[brokenCoordKey]) return prev;
+        const copy = { ...existing };
+        delete copy[brokenCoordKey];
+        const next = { ...prev };
+        if (Object.keys(copy).length === 0) delete next[bck];
+        else next[bck] = copy;
+        return next;
+      });
+    }
     if (onBlockEditRef.current) {
       (onBlockEditRef.current as any)(wx, wy, wz, BlockType.AIR, brokenBlock);
     }
@@ -7710,6 +8199,467 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
     }
   }, [attackTrigger, performMeleeAttack]);
 
+  const applyRealmShapeOrPaint = useCallback((
+    mode: 'sphere' | 'erase_sphere' | 'platform' | 'paint',
+    centerX: number,
+    centerY: number,
+    centerZ: number
+  ) => {
+    const cfg = realmEditorConfigRef.current;
+    if (!cfg) return;
+
+    const currentChunks = chunksRef.current;
+    const mutatedChunks: Record<string, Uint8Array> = {};
+    const dirtyColorChunks = new Set<string>();
+    const blockChanges: Record<string, number> = {};
+    const colorChanges: Record<string, string | null> = {};
+    const undoBlocks: Record<string, number> = {};
+    const undoColors: Record<string, string | null> = {};
+
+    const ensureEditableChunk = (cx: number, cz: number): Uint8Array | null => {
+      const k = `${cx},${cz}`;
+      if (mutatedChunks[k]) return mutatedChunks[k];
+      let base = currentChunks[k] || savedChunksRef.current[k];
+      if (!base) {
+        base = generateChunk(cx, cz);
+        savedChunksRef.current[k] = base;
+      }
+      if (!base) return null;
+      mutatedChunks[k] = new Uint8Array(base);
+      return mutatedChunks[k];
+    };
+
+    const getChunkForRead = (cx: number, cz: number): Uint8Array | null => {
+      const k = `${cx},${cz}`;
+      if (mutatedChunks[k]) return mutatedChunks[k];
+      if (currentChunks[k]) return currentChunks[k];
+      if (savedChunksRef.current[k]) return savedChunksRef.current[k];
+      const gen = generateChunk(cx, cz);
+      savedChunksRef.current[k] = gen;
+      return gen;
+    };
+
+    const recordUndoSnapshot = (coordKey: string, prevBlock: number, prevColor: string | null) => {
+      if (!(coordKey in undoBlocks)) {
+        undoBlocks[coordKey] = prevBlock;
+      }
+      if (!(coordKey in undoColors)) {
+        undoColors[coordKey] = prevColor;
+      }
+    };
+
+    if (mode === 'paint') {
+      const pr = Math.max(1, Math.min(8, Math.round(cfg.paintRadius || 1)));
+      const radiusSpan = pr === 1 ? 0 : pr - 1;
+      let paintedCount = 0;
+
+      for (let dx = -radiusSpan; dx <= radiusSpan; dx++) {
+        for (let dy = -radiusSpan; dy <= radiusSpan; dy++) {
+          for (let dz = -radiusSpan; dz <= radiusSpan; dz++) {
+            if (radiusSpan > 0 && dx * dx + dy * dy + dz * dz > radiusSpan * radiusSpan + 0.5) continue;
+            const wx = centerX + dx;
+            const wy = centerY + dy;
+            const wz = centerZ + dz;
+            if (wy < 0 || wy >= WORLD_HEIGHT) continue;
+
+            const cx = Math.floor(wx / CHUNK_SIZE);
+            const cz = Math.floor(wz / CHUNK_SIZE);
+            const k = `${cx},${cz}`;
+            const ch = getChunkForRead(cx, cz);
+            if (!ch) continue;
+
+            const lx = ((wx % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
+            const lz = ((wz % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
+            const idx = (lx * CHUNK_SIZE * WORLD_HEIGHT) + (wy * CHUNK_SIZE) + lz;
+            const blk = ch[idx] as BlockType;
+            if (blk === BlockType.AIR || !isColorableCubeBlock(blk)) continue;
+
+            const coordKey = `${wx},${wy},${wz}`;
+            const oldColor = blockColorsRef.current[coordKey] ?? null;
+
+            if (cfg.eraseColorMode) {
+              if (!oldColor) continue;
+              recordUndoSnapshot(coordKey, blk, oldColor);
+              delete blockColorsRef.current[coordKey];
+              colorChanges[coordKey] = null;
+            } else {
+              const targetHex = cfg.selectedColor || '#ff2a6d';
+              if (oldColor === targetHex) continue;
+              recordUndoSnapshot(coordKey, blk, oldColor);
+              blockColorsRef.current[coordKey] = targetHex;
+              colorChanges[coordKey] = targetHex;
+            }
+            dirtyColorChunks.add(k);
+            paintedCount++;
+          }
+        }
+      }
+
+      if (paintedCount === 0) {
+        triggerInGameMessageRef.current(
+          cfg.eraseColorMode ? "🧹 Ese bloque ya tiene su color original." : "🎨 Apunta a un bloque sólido para pintarlo."
+        );
+        return;
+      }
+
+      setChunkColorMaps((prevMaps) => {
+        const nextMaps: Record<string, Record<string, string>> = { ...prevMaps };
+        for (const ck of dirtyColorChunks) {
+          const updatedChunkMap: Record<string, string> = {};
+          const [ccx, ccz] = ck.split(',').map(Number);
+          const minX = ccx * CHUNK_SIZE;
+          const maxX = minX + CHUNK_SIZE - 1;
+          const minZ = ccz * CHUNK_SIZE;
+          const maxZ = minZ + CHUNK_SIZE - 1;
+          for (const coordKey in blockColorsRef.current) {
+            const c1 = coordKey.indexOf(',');
+            const c2 = coordKey.indexOf(',', c1 + 1);
+            const wx = parseInt(coordKey.slice(0, c1), 10);
+            const wz = parseInt(coordKey.slice(c2 + 1), 10);
+            if (wx >= minX && wx <= maxX && wz >= minZ && wz <= maxZ) {
+              updatedChunkMap[coordKey] = blockColorsRef.current[coordKey];
+            }
+          }
+          if (Object.keys(updatedChunkMap).length === 0) {
+            delete nextMaps[ck];
+          } else {
+            nextMaps[ck] = updatedChunkMap;
+          }
+        }
+        return nextMaps;
+      });
+
+      const summaryLabel = cfg.eraseColorMode
+        ? `Color restaurado (${paintedCount} blq)`
+        : `Pintar ${paintedCount} blq`;
+      realmUndoStackRef.current.push({ blocks: undoBlocks, colors: undoColors, label: summaryLabel });
+      if (realmUndoStackRef.current.length > 10) realmUndoStackRef.current.shift();
+      if (onRealmUndoChangeRef.current) onRealmUndoChangeRef.current(true);
+
+      playPlaceSound(BlockType.WOOL);
+      triggerInGameMessageRef.current(
+        cfg.eraseColorMode
+          ? `🧹 Color original restaurado en ${paintedCount} bloque(s)`
+          : `🎨 ${paintedCount} bloque(s) pintado(s) con ${cfg.selectedColor}`
+      );
+      if (onBatchWorldEditRef.current) {
+        onBatchWorldEditRef.current({ blockChanges, colorChanges, summaryLabel });
+      }
+      return;
+    }
+
+    const r = Math.max(1, Math.min(25, Math.round(cfg.radius || 5)));
+    const fill = Math.max(0, Math.min(100, Math.round(cfg.fillPercent ?? 100)));
+    const innerCutoff = r === 1 ? 0.5 : (r - 1.05);
+    const maxDistCutoff = r + 0.35;
+
+    let placeType = currentBlockRef.current;
+    if (placeType === BlockType.BUCKET_WATER) placeType = BlockType.WATER;
+    else if (placeType === BlockType.BUCKET_LAVA) placeType = BlockType.LAVA;
+    else if (placeType === BlockType.FLINT_AND_STEEL) placeType = BlockType.FIRE;
+    else if (isToolBlock(placeType) || placeType === BlockType.BUCKET_EMPTY || placeType === BlockType.AIR || placeType === BlockType.DOOR || placeType === BlockType.BED) {
+      placeType = BlockType.CONCRETE;
+    }
+
+    const currPos = playerPosRef.current;
+    const pMinX = currPos.x - 0.3, pMaxX = currPos.x + 0.3;
+    const pMinY = currPos.y - 1.5, pMaxY = currPos.y + 0.25;
+    const pMinZ = currPos.z - 0.3, pMaxZ = currPos.z + 0.3;
+
+    const minYOffset = mode === 'platform' ? 0 : -r;
+    const maxYOffset = mode === 'platform' ? 0 : r;
+    let changedCount = 0;
+
+    for (let dx = -r; dx <= r; dx++) {
+      for (let dz = -r; dz <= r; dz++) {
+        for (let dy = minYOffset; dy <= maxYOffset; dy++) {
+          const dist = mode === 'platform'
+            ? Math.sqrt(dx * dx + dz * dz)
+            : Math.sqrt(dx * dx + dy * dy + dz * dz);
+          if (dist > maxDistCutoff) continue;
+
+          const isShell = dist > innerCutoff;
+          if (fill === 0 && !isShell) continue;
+          if (fill > 0 && fill < 100 && !isShell && Math.random() * 100 >= fill) continue;
+
+          const wx = centerX + dx;
+          const wy = centerY + dy;
+          const wz = centerZ + dz;
+          if (wy < 1 || wy >= WORLD_HEIGHT) continue;
+
+          if (mode !== 'erase_sphere') {
+            const overlapsPlayer =
+              wx + 0.5 > pMinX && wx - 0.5 < pMaxX &&
+              wy + 0.5 > pMinY && wy - 0.5 < pMaxY &&
+              wz + 0.5 > pMinZ && wz - 0.5 < pMaxZ;
+            if (overlapsPlayer) continue;
+          }
+
+          const cx = Math.floor(wx / CHUNK_SIZE);
+          const cz = Math.floor(wz / CHUNK_SIZE);
+          const k = `${cx},${cz}`;
+          const ch = getChunkForRead(cx, cz);
+          if (!ch) continue;
+
+          const lx = ((wx % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
+          const lz = ((wz % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
+          const idx = (lx * CHUNK_SIZE * WORLD_HEIGHT) + (wy * CHUNK_SIZE) + lz;
+          const existing = ch[idx] as BlockType;
+          if (existing === BlockType.BEDROCK) continue;
+
+          const coordKey = `${wx},${wy},${wz}`;
+          const existingColor = blockColorsRef.current[coordKey] ?? null;
+
+          if (mode === 'erase_sphere') {
+            if (existing === BlockType.AIR) continue;
+            const editCh = ensureEditableChunk(cx, cz);
+            if (!editCh) continue;
+            recordUndoSnapshot(coordKey, existing, existingColor);
+            editCh[idx] = BlockType.AIR;
+            blockChanges[coordKey] = BlockType.AIR;
+            if (editsRef.current) editsRef.current[coordKey] = BlockType.AIR;
+            if (existingColor) {
+              delete blockColorsRef.current[coordKey];
+              colorChanges[coordKey] = null;
+              dirtyColorChunks.add(k);
+            }
+            changedCount++;
+          } else {
+            if (!cfg.replaceExisting && existing !== BlockType.AIR && existing !== BlockType.WATER && existing !== BlockType.LAVA) {
+              continue;
+            }
+            const wantColor = (cfg.applyColorToShapes && !cfg.eraseColorMode && isColorableCubeBlock(placeType))
+              ? (cfg.selectedColor || '#ff2a6d')
+              : null;
+            if (existing === placeType && existingColor === wantColor) continue;
+
+            const editCh = ensureEditableChunk(cx, cz);
+            if (!editCh) continue;
+            recordUndoSnapshot(coordKey, existing, existingColor);
+            editCh[idx] = placeType;
+            blockChanges[coordKey] = placeType;
+            if (editsRef.current) editsRef.current[coordKey] = placeType;
+
+            if (wantColor) {
+              blockColorsRef.current[coordKey] = wantColor;
+              colorChanges[coordKey] = wantColor;
+              dirtyColorChunks.add(k);
+            } else if (existingColor) {
+              delete blockColorsRef.current[coordKey];
+              colorChanges[coordKey] = null;
+              dirtyColorChunks.add(k);
+            }
+            changedCount++;
+          }
+        }
+      }
+    }
+
+    if (changedCount === 0) {
+      triggerInGameMessageRef.current("ℹ️ Ningún bloque fue modificado en esa área.");
+      return;
+    }
+
+    for (const mk in mutatedChunks) {
+      chunksRef.current[mk] = mutatedChunks[mk];
+      savedChunksRef.current[mk] = mutatedChunks[mk];
+    }
+    setChunks((prev) => ({ ...prev, ...mutatedChunks }));
+
+    if (dirtyColorChunks.size > 0) {
+      setChunkColorMaps((prevMaps) => {
+        const nextMaps: Record<string, Record<string, string>> = { ...prevMaps };
+        for (const ck of dirtyColorChunks) {
+          const updatedChunkMap: Record<string, string> = {};
+          const [ccx, ccz] = ck.split(',').map(Number);
+          const minX = ccx * CHUNK_SIZE;
+          const maxX = minX + CHUNK_SIZE - 1;
+          const minZ = ccz * CHUNK_SIZE;
+          const maxZ = minZ + CHUNK_SIZE - 1;
+          for (const coordKey in blockColorsRef.current) {
+            const c1 = coordKey.indexOf(',');
+            const c2 = coordKey.indexOf(',', c1 + 1);
+            const wx = parseInt(coordKey.slice(0, c1), 10);
+            const wz = parseInt(coordKey.slice(c2 + 1), 10);
+            if (wx >= minX && wx <= maxX && wz >= minZ && wz <= maxZ) {
+              updatedChunkMap[coordKey] = blockColorsRef.current[coordKey];
+            }
+          }
+          if (Object.keys(updatedChunkMap).length === 0) {
+            delete nextMaps[ck];
+          } else {
+            nextMaps[ck] = updatedChunkMap;
+          }
+        }
+        return nextMaps;
+      });
+    }
+
+    const shapeName = mode === 'erase_sphere' ? 'Vaciar Esfera' : mode === 'platform' ? 'Plataforma' : 'Esfera';
+    const summaryLabel = `${shapeName} r=${r} (${fill}% · ${changedCount} blq)`;
+    realmUndoStackRef.current.push({ blocks: undoBlocks, colors: undoColors, label: summaryLabel });
+    if (realmUndoStackRef.current.length > 10) realmUndoStackRef.current.shift();
+    if (onRealmUndoChangeRef.current) onRealmUndoChangeRef.current(true);
+
+    if (mode === 'erase_sphere') {
+      playBreakSound(BlockType.STONE);
+    } else {
+      playPlaceSound(placeType);
+    }
+    triggerInGameMessageRef.current(
+      mode === 'erase_sphere'
+        ? `🕳️ Esfera vaciada (r=${r}, ${fill}%): ${changedCount} bloques`
+        : mode === 'platform'
+          ? `🟦 Plataforma creada (r=${r}, ${fill}%): ${changedCount} bloques`
+          : `🔵 Esfera colocada (r=${r}, ${fill}% relleno): ${changedCount} bloques`
+    );
+
+    if (onBatchWorldEditRef.current) {
+      onBatchWorldEditRef.current({ blockChanges, colorChanges, summaryLabel });
+    }
+  }, [generateChunk]);
+
+  const undoLastRealmEdit = useCallback(() => {
+    const entry = realmUndoStackRef.current.pop();
+    if (!entry) {
+      if (onRealmUndoChangeRef.current) onRealmUndoChangeRef.current(false);
+      triggerInGameMessageRef.current("↩️ No hay acciones recientes para deshacer.");
+      return;
+    }
+
+    const mutatedChunks: Record<string, Uint8Array> = {};
+    const dirtyColorChunks = new Set<string>();
+    const currentChunks = chunksRef.current;
+
+    for (const coordKey in entry.blocks) {
+      const c1 = coordKey.indexOf(',');
+      const c2 = coordKey.indexOf(',', c1 + 1);
+      const wx = parseInt(coordKey.slice(0, c1), 10);
+      const wy = parseInt(coordKey.slice(c1 + 1, c2), 10);
+      const wz = parseInt(coordKey.slice(c2 + 1), 10);
+      const cx = Math.floor(wx / CHUNK_SIZE);
+      const cz = Math.floor(wz / CHUNK_SIZE);
+      const k = `${cx},${cz}`;
+
+      let editCh = mutatedChunks[k];
+      if (!editCh) {
+        const base = currentChunks[k] || savedChunksRef.current[k] || generateChunk(cx, cz);
+        mutatedChunks[k] = new Uint8Array(base);
+        editCh = mutatedChunks[k];
+      }
+      const lx = ((wx % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
+      const lz = ((wz % CHUNK_SIZE) + CHUNK_SIZE) % CHUNK_SIZE;
+      const idx = (lx * CHUNK_SIZE * WORLD_HEIGHT) + (wy * CHUNK_SIZE) + lz;
+      const prevBlk = entry.blocks[coordKey];
+      editCh[idx] = prevBlk;
+      if (editsRef.current) editsRef.current[coordKey] = prevBlk;
+    }
+
+    for (const coordKey in entry.colors) {
+      const c1 = coordKey.indexOf(',');
+      const c2 = coordKey.indexOf(',', c1 + 1);
+      const wx = parseInt(coordKey.slice(0, c1), 10);
+      const wz = parseInt(coordKey.slice(c2 + 1), 10);
+      const ck = `${Math.floor(wx / CHUNK_SIZE)},${Math.floor(wz / CHUNK_SIZE)}`;
+      const prevColor = entry.colors[coordKey];
+      if (prevColor) {
+        blockColorsRef.current[coordKey] = prevColor;
+      } else {
+        delete blockColorsRef.current[coordKey];
+      }
+      dirtyColorChunks.add(ck);
+    }
+
+    if (Object.keys(mutatedChunks).length > 0) {
+      for (const mk in mutatedChunks) {
+        chunksRef.current[mk] = mutatedChunks[mk];
+        savedChunksRef.current[mk] = mutatedChunks[mk];
+      }
+      setChunks((prev) => ({ ...prev, ...mutatedChunks }));
+    }
+
+    if (dirtyColorChunks.size > 0) {
+      setChunkColorMaps((prevMaps) => {
+        const nextMaps: Record<string, Record<string, string>> = { ...prevMaps };
+        for (const ck of dirtyColorChunks) {
+          const updatedChunkMap: Record<string, string> = {};
+          const [ccx, ccz] = ck.split(',').map(Number);
+          const minX = ccx * CHUNK_SIZE;
+          const maxX = minX + CHUNK_SIZE - 1;
+          const minZ = ccz * CHUNK_SIZE;
+          const maxZ = minZ + CHUNK_SIZE - 1;
+          for (const coordKey in blockColorsRef.current) {
+            const c1 = coordKey.indexOf(',');
+            const c2 = coordKey.indexOf(',', c1 + 1);
+            const wx = parseInt(coordKey.slice(0, c1), 10);
+            const wz = parseInt(coordKey.slice(c2 + 1), 10);
+            if (wx >= minX && wx <= maxX && wz >= minZ && wz <= maxZ) {
+              updatedChunkMap[coordKey] = blockColorsRef.current[coordKey];
+            }
+          }
+          if (Object.keys(updatedChunkMap).length === 0) {
+            delete nextMaps[ck];
+          } else {
+            nextMaps[ck] = updatedChunkMap;
+          }
+        }
+        return nextMaps;
+      });
+    }
+
+    if (onRealmUndoChangeRef.current) {
+      onRealmUndoChangeRef.current(realmUndoStackRef.current.length > 0);
+    }
+    triggerInGameMessageRef.current(`↩️ Deshecho: ${entry.label}`);
+    if (onBatchWorldEditRef.current) {
+      onBatchWorldEditRef.current({
+        blockChanges: entry.blocks,
+        colorChanges: entry.colors,
+        summaryLabel: `Undo ${entry.label}`,
+      });
+    }
+  }, [generateChunk]);
+
+  const lastRealmActionSeqRef = useRef(0);
+  useEffect(() => {
+    if (!realmActionRequest || realmActionRequest.seq <= lastRealmActionSeqRef.current) return;
+    lastRealmActionSeqRef.current = realmActionRequest.seq;
+
+    if (realmActionRequest.action === 'undo') {
+      undoLastRealmEdit();
+      return;
+    }
+
+    const cfg = realmEditorConfigRef.current;
+    if (!cfg || !cfg.enabled) return;
+
+    if (realmActionRequest.action === 'paint_aimed') {
+      const target = aimedVoxelRef.current;
+      if (target) {
+        applyRealmShapeOrPaint('paint', target.hitX, target.hitY, target.hitZ);
+      } else {
+        triggerInGameMessageRef.current("🎨 Apunta con la cruz a un bloque para pintarlo.");
+      }
+      return;
+    }
+
+    if (realmActionRequest.action === 'place_front') {
+      const r = Math.max(1, Math.min(25, Math.round(cfg.radius || 5)));
+      const yawNow = playerPoseRef?.current?.yaw ?? 0;
+      const fwdX = -Math.sin(yawNow);
+      const fwdZ = -Math.cos(yawNow);
+      const currPos = playerPosRef.current;
+      const distAhead = r + 2.5;
+      const cx = Math.round(currPos.x + fwdX * distAhead);
+      const cz = Math.round(currPos.z + fwdZ * distAhead);
+      const activeMode = cfg.tool === 'erase_sphere' || cfg.tool === 'platform' ? cfg.tool : 'sphere';
+      const cy = activeMode === 'platform'
+        ? Math.max(1, Math.min(WORLD_HEIGHT - 2, Math.round(currPos.y - 1)))
+        : Math.max(2, Math.min(WORLD_HEIGHT - 2, Math.round(currPos.y + Math.min(6, r * 0.4))));
+      applyRealmShapeOrPaint(activeMode, cx, cy, cz);
+    }
+  }, [realmActionRequest, applyRealmShapeOrPaint, undoLastRealmEdit]);
+
   const executePlace = useCallback((point: THREE.Vector3, normal: THREE.Vector3) => {
     if (gameModeRef.current === 'adventure' || gameModeRef.current === 'aventura' || gameModeRef.current === 'spectator' || gameModeRef.current === 'espectador') {
       return;
@@ -7748,6 +8698,25 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
       if (shallowClick && shallowClick.block !== BlockType.AIR) {
         clickHit = shallowClick;
       }
+    }
+
+    // --- REALM WORLD EDITOR TOOL OVERRIDE (Sphere / Erase Sphere / Platform / Paint Color) ---
+    const realmCfg = realmEditorConfigRef.current;
+    if (realmCfg?.enabled && realmCfg.tool !== 'none') {
+      if (realmCfg.tool === 'paint' || realmCfg.tool === 'erase_sphere') {
+        if (clickHit && clickHit.block !== BlockType.AIR) {
+          applyRealmShapeOrPaint(realmCfg.tool, clickHit.wx, clickHit.wy, clickHit.wz);
+        }
+      } else {
+        const placeTarget = point.clone().add(normal.clone().multiplyScalar(0.1));
+        applyRealmShapeOrPaint(
+          realmCfg.tool === 'platform' ? 'platform' : 'sphere',
+          Math.round(placeTarget.x),
+          Math.round(placeTarget.y),
+          Math.round(placeTarget.z)
+        );
+      }
+      return;
     }
 
     if (clickHit) {
@@ -8132,7 +9101,7 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
     }
 
     playPlaceSound(blockToActuallyPlace);
-  }, []);
+  }, [applyRealmShapeOrPaint]);
 
   const lastPlaceTriggerRef = useRef(placeTrigger || 0);
   useEffect(() => {
@@ -8272,16 +9241,19 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
       }
     }
     const pPos = playerPosRef.current;
+    const cPos = aiCompanionConfig?.enabled ? aiCompanionCombatRef.current.pos : null;
     if (pPos && allEntities.length > 1) {
       allEntities.sort((a, b) => {
-        const da = (a.pos.x - pPos.x) * (a.pos.x - pPos.x) + (a.pos.z - pPos.z) * (a.pos.z - pPos.z);
-        const db = (b.pos.x - pPos.x) * (b.pos.x - pPos.x) + (b.pos.z - pPos.z) * (b.pos.z - pPos.z);
-        return da - db;
+        const dpa = (a.pos.x - pPos.x) * (a.pos.x - pPos.x) + (a.pos.z - pPos.z) * (a.pos.z - pPos.z);
+        const dca = cPos ? (a.pos.x - cPos.x) * (a.pos.x - cPos.x) + (a.pos.z - cPos.z) * (a.pos.z - cPos.z) : dpa;
+        const dpb = (b.pos.x - pPos.x) * (b.pos.x - pPos.x) + (b.pos.z - pPos.z) * (b.pos.z - pPos.z);
+        const dcb = cPos ? (b.pos.x - cPos.x) * (b.pos.x - cPos.x) + (b.pos.z - cPos.z) * (b.pos.z - cPos.z) : dpb;
+        return Math.min(dpa, dca) - Math.min(dpb, dcb);
       });
     }
     const maxEnts = perfConfig?.maxEntities ?? 15;
     return allEntities.slice(0, maxEnts);
-  }, [entities, perfConfig?.maxEntities, Math.floor(playerPos.x / CHUNK_SIZE), Math.floor(playerPos.z / CHUNK_SIZE)]);
+  }, [entities, perfConfig?.maxEntities, aiCompanionConfig?.enabled, Math.floor(playerPos.x / CHUNK_SIZE), Math.floor(playerPos.z / CHUNK_SIZE)]);
 
   return (
     <div
@@ -8293,6 +9265,7 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
       </div>
       <Canvas 
         id="voxel-canvas"
+        resize={{ offsetSize: true }}
         style={{ width: '100%', height: '100%', display: 'block' }}
         dpr={isSoftwareGL || ultraOptimization ? 0.75 : (perfConfig?.effectsQuality === 'high' ? [1, 1.25] : 1)}
         camera={{
@@ -8322,7 +9295,9 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
               clearTimeout(pointerGestureRef.current.timeoutId);
             }
             pointerGestureRef.current.resolved = true;
-            if (e.button === 0 && interactionModeRef.current === 'break') {
+            const realmCfgNow = realmEditorConfigRef.current;
+            const realmToolArmed = !!(realmCfgNow?.enabled && realmCfgNow.tool !== 'none');
+            if (!realmToolArmed && e.button === 0 && interactionModeRef.current === 'break') {
               executeBreak(pointerGestureRef.current.point, pointerGestureRef.current.normal);
             } else {
               executePlace(pointerGestureRef.current.point, pointerGestureRef.current.normal);
@@ -8330,7 +9305,7 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
           }
         }}
       >
-        <ScreenshotBridge />
+        <ScreenshotBridge virtualRotationDeg={virtualRotationDeg} />
         <TargetBlockHighlight
           chunksRef={chunksRef}
           currentBlockRef={currentBlockRef}
@@ -8338,6 +9313,7 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
           interactionModeRef={interactionModeRef}
           aimedVoxelRef={aimedVoxelRef}
           playerPosRef={playerPosRef}
+          realmEditorConfigRef={realmEditorConfigRef}
         />
         <MinecraftEnvironment 
           gameTimeRef={gameTimeRef} 
@@ -8380,6 +9356,7 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
                 neighborNZ={chunks[`${cx},${cz - 1}`]}
                 onInteraction={handleInteraction}
                 currentBlockRef={currentBlockRef}
+                chunkColorMap={chunkColorMaps[k] || EMPTY_CHUNK_COLORS}
               />
             );
           })}
@@ -8403,6 +9380,7 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
             onBlockEditRef={onBlockEditRef}
             entitiesRef={entitiesRef}
             weatherRef={weatherRef}
+            companionCombatRef={aiCompanionCombatRef}
           />
         ))}
 
@@ -8449,9 +9427,12 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
             onBlockEditRef={onBlockEditRef}
             companionPosRef={aiCompanionPosRef || fallbackCompanionPosRef}
             companionBagRef={aiCompanionBagRef || fallbackCompanionBagRef}
+            companionCombatRef={aiCompanionCombatRef}
+            ensureChunkAt={ensureCompanionChunk}
             tpTrigger={aiCompanionTpTrigger}
             onBuildComplete={onAICompanionBuildComplete}
             onCompanionSpeak={onAICompanionSpeak}
+            onCompanionToast={triggerInGameMessage}
           />
         )}
         <ParticleSystem particlesRef={particlesRef} enabled={perfConfig?.particlesEnabled ?? true} />
@@ -8538,7 +9519,7 @@ const JukeboxEmitter: React.FC<JukeboxEmitterProps> = ({ playingJukeboxesRef, pa
   return null;
 };
 
-const ScreenshotBridge: React.FC = () => {
+const ScreenshotBridge: React.FC<{ virtualRotationDeg?: 0 | 90 | -90 }> = ({ virtualRotationDeg = 0 }) => {
   const { gl, scene, camera, setSize } = useThree();
   useEffect(() => {
     (window as any).__captureVoxelScreenshot = () => {
@@ -8547,8 +9528,8 @@ const ScreenshotBridge: React.FC = () => {
     };
     const syncViewportSize = () => {
       const parent = gl.domElement.parentElement;
-      const w = parent?.clientWidth || window.innerWidth;
-      const h = parent?.clientHeight || window.innerHeight;
+      const w = parent?.clientWidth || Math.round(window.visualViewport?.width || window.innerWidth);
+      const h = parent?.clientHeight || Math.round(window.visualViewport?.height || window.innerHeight);
       if (w > 0 && h > 0) {
         setSize(w, h);
         gl.domElement.style.width = '100%';
@@ -8561,19 +9542,43 @@ const ScreenshotBridge: React.FC = () => {
         }
       }
     };
-    syncViewportSize();
-    window.addEventListener('resize', syncViewportSize);
-    window.addEventListener('orientationchange', syncViewportSize);
-    window.visualViewport?.addEventListener('resize', syncViewportSize);
+    let orientTimer1: ReturnType<typeof setTimeout> | null = null;
+    let orientTimer2: ReturnType<typeof setTimeout> | null = null;
+    const handleOrientationSync = () => {
+      syncViewportSize();
+      requestAnimationFrame(syncViewportSize);
+      if (orientTimer1) clearTimeout(orientTimer1);
+      if (orientTimer2) clearTimeout(orientTimer2);
+      orientTimer1 = setTimeout(syncViewportSize, 80);
+      orientTimer2 = setTimeout(syncViewportSize, 260);
+    };
+    handleOrientationSync();
+    const rafId = requestAnimationFrame(syncViewportSize);
+    const resizeTarget = gl.domElement.parentElement;
+    const ro = typeof ResizeObserver !== 'undefined' && resizeTarget ? new ResizeObserver(syncViewportSize) : null;
+    if (ro && resizeTarget) ro.observe(resizeTarget);
+    window.addEventListener('resize', handleOrientationSync);
+    window.addEventListener('orientationchange', handleOrientationSync);
+    window.visualViewport?.addEventListener('resize', handleOrientationSync);
+    try {
+      (window.screen as any)?.orientation?.addEventListener?.('change', handleOrientationSync);
+    } catch {}
     return () => {
-      window.removeEventListener('resize', syncViewportSize);
-      window.removeEventListener('orientationchange', syncViewportSize);
-      window.visualViewport?.removeEventListener('resize', syncViewportSize);
+      cancelAnimationFrame(rafId);
+      if (orientTimer1) clearTimeout(orientTimer1);
+      if (orientTimer2) clearTimeout(orientTimer2);
+      ro?.disconnect();
+      window.removeEventListener('resize', handleOrientationSync);
+      window.removeEventListener('orientationchange', handleOrientationSync);
+      window.visualViewport?.removeEventListener('resize', handleOrientationSync);
+      try {
+        (window.screen as any)?.orientation?.removeEventListener?.('change', handleOrientationSync);
+      } catch {}
       if ((window as any).__captureVoxelScreenshot) {
         delete (window as any).__captureVoxelScreenshot;
       }
     };
-  }, [gl, scene, camera, setSize]);
+  }, [gl, scene, camera, setSize, virtualRotationDeg]);
   return null;
 };
 
