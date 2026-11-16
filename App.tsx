@@ -2359,6 +2359,25 @@ const App: React.FC = () => {
     };
   }, [googleUser]);
 
+  // Real-time synchronization of the currently selected Realm to prevent desynchronization
+  useEffect(() => {
+    if (!selectedRealmId || !db) return;
+    const realmRef = doc(db, "realms", selectedRealmId);
+    const unsub = onSnapshot(realmRef, (snap) => {
+      if (snap.exists()) {
+        const updated = snap.data() as RealmData;
+        if (updated && updated.id) {
+          setMyRealms((prev) => prev.map((r) => r.id === updated.id ? updated : r));
+          setJoinedRealms((prev) => prev.map((r) => r.id === updated.id ? updated : r));
+          setAllAdminRealms((prev) => prev.map((r) => r.id === updated.id ? updated : r));
+        }
+      }
+    }, (err) => {
+      console.warn("Failed syncing selected realm in real time:", err);
+    });
+    return () => unsub();
+  }, [selectedRealmId]);
+
   // Live telemetry refs so the multiplayer sync interval reads fresh values without restarting
   const liveMultiplayerStateRef = useRef({
     characterSkin,
