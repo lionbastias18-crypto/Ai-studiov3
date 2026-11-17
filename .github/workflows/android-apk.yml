@@ -72,11 +72,15 @@ jobs:
             ls -la
             exit 1
           fi
+          if [ ! -f "variables.gradle" ]; then
+            echo "WARNING: variables.gradle is missing in android/. Restoring from @capacitor/cli template..."
+            tar -xzf ../node_modules/@capacitor/cli/assets/android-template.tar.gz variables.gradle
+          fi
           if ! unzip -l gradle/wrapper/gradle-wrapper.jar 2>/dev/null | grep -q "org/gradle/wrapper/GradleWrapperMain.class"; then
             echo "WARNING: gradle-wrapper.jar is missing or invalid (placeholder detected). Restoring from @capacitor/cli template..."
             tar -xzf ../node_modules/@capacitor/cli/assets/android-template.tar.gz gradle/wrapper/gradle-wrapper.jar gradle/wrapper/gradle-wrapper.properties gradlew gradlew.bat
           fi
-          ls -la gradlew gradle/wrapper/gradle-wrapper.jar gradle/wrapper/gradle-wrapper.properties
+          ls -la gradlew variables.gradle gradle/wrapper/gradle-wrapper.jar gradle/wrapper/gradle-wrapper.properties
           unzip -l gradle/wrapper/gradle-wrapper.jar | grep GradleWrapperMain
           chmod +x gradlew
 
