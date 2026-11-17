@@ -2,13 +2,17 @@
 import { BlockType } from "../types";
 
 let audioCtx: AudioContext | null = null;
+let isAppInBackground = typeof document !== 'undefined' ? document.hidden : false;
+
+const isHiddenOrBackground = () =>
+  isAppInBackground || (typeof document !== 'undefined' && document.hidden);
 
 const initAudio = () => {
   if (!audioCtx) {
     audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
   }
-  if (audioCtx.state === 'suspended') {
-    audioCtx.resume();
+  if (!isHiddenOrBackground() && audioCtx.state === 'suspended') {
+    audioCtx.resume().catch(() => {});
   }
   return audioCtx;
 };
@@ -712,7 +716,55 @@ export const updateAmbientEnvironment = (isUnderwater: boolean, isNearWater: boo
   } catch (e) {}
 };
 
+export const pauseAudioForBackground = () => {
+  isAppInBackground = true;
+  if (soundtrackAudio && !soundtrackAudio.paused) {
+    soundtrackAudio.pause();
+  }
+  if (customBgMusic && !customBgMusic.paused) {
+    customBgMusic.pause();
+  }
+  stopProceduralSequencer();
+  if (windGain && audioCtx) {
+    try {
+      windGain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.02);
+    } catch {}
+  }
+  if (waterAmbientGain && audioCtx) {
+    try {
+      waterAmbientGain.gain.setTargetAtTime(0, audioCtx.currentTime, 0.02);
+    } catch {}
+  }
+  if (audioCtx && audioCtx.state === 'running') {
+    audioCtx.suspend().catch(() => {});
+  }
+};
+
+export const resumeAudioFromBackground = () => {
+  if (typeof document !== 'undefined' && document.hidden) return;
+  isAppInBackground = false;
+  if (audioCtx && audioCtx.state === 'suspended') {
+    audioCtx.resume().catch(() => {});
+  }
+  if (windGain && audioCtx && isAmbientStarted) {
+    try {
+      windGain.gain.setTargetAtTime(0.015, audioCtx.currentTime, 0.25);
+    } catch {}
+  }
+  if (!bgMusicStarted) return;
+  if (currentMusicMode === 'soundtrack') {
+    ensureSoundtrackPlaying();
+  } else if (currentMusicMode === 'c418') {
+    startC418MusicLoop();
+  } else if (currentMusicMode === 'chiptune') {
+    startChiptuneSequencer();
+  } else if (currentMusicMode === 'custom' && isCustomMusicPlayingState && customBgMusic) {
+    customBgMusic.play().catch((e) => console.log("Resuming custom music failed:", e));
+  }
+};
+
 export const resumeAudio = () => {
+  if (isHiddenOrBackground()) return;
   initAudio();
   playBackgroundMusic();
   startAmbientSounds();
@@ -729,17 +781,17 @@ export type MusicMode = 'soundtrack' | 'c418' | 'chiptune' | 'custom';
 export type MusicContextScene = 'menu' | 'world';
 
 const MENU_SOUNDTRACK = {
-  url: '/assets/aistudio/Winter_Menu_Waltz_5b9b04b1.mp3',
+  url: './assets/aistudio/Winter_Menu_Waltz_5b9b04b1.mp3',
   title: 'Winter Menu Waltz (Menú)'
 };
 
 const WORLD_SOUNDTRACKS = [
   {
-    url: '/assets/aistudio/Adventure_Overworld_7730af55.mp3',
+    url: './assets/aistudio/Adventure_Overworld_7730af55.mp3',
     title: 'Adventure Overworld'
   },
   {
-    url: '/assets/aistudio/Christmas_Overworld_ed19576f.mp3',
+    url: './assets/aistudio/Christmas_Overworld_ed19576f.mp3',
     title: 'Christmas Overworld'
   }
 ];
@@ -811,6 +863,7 @@ const syncSoundtrackPlayback = (forceSwitch = false) => {
   }
 
   if (soundtrackAudio.paused || forceSwitch) {
+    if (isHiddenOrBackground()) return;
     const playPromise = soundtrackAudio.play();
     if (playPromise !== undefined) {
       playPromise
@@ -825,7 +878,7 @@ const syncSoundtrackPlayback = (forceSwitch = false) => {
 };
 
 const ensureSoundtrackPlaying = () => {
-  if (currentMusicMode !== 'soundtrack') return;
+  if (isHiddenOrBackground() || currentMusicMode !== 'soundtrack') return;
   if (!soundtrackAudio || soundtrackAudio.paused || soundtrackNeedsGestureUnlock) {
     syncSoundtrackPlayback(false);
   }
@@ -833,12 +886,35 @@ const ensureSoundtrackPlaying = () => {
 
 if (typeof window !== 'undefined') {
   const unlockMusicOnGesture = () => {
+    if (isHiddenOrBackground()) return;
     if (currentMusicMode === 'soundtrack' && (!soundtrackAudio || soundtrackAudio.paused || soundtrackNeedsGestureUnlock)) {
       ensureSoundtrackPlaying();
     }
   };
   window.addEventListener('pointerdown', unlockMusicOnGesture, { passive: true });
   window.addEventListener('keydown', unlockMusicOnGesture, { passive: true });
+
+  const handleVisibilityChange = () => {
+    if (typeof document !== 'undefined' && document.hidden) {
+      pauseAudioForBackground();
+    } else {
+      resumeAudioFromBackground();
+    }
+  };
+  document.addEventListener('visibilitychange', handleVisibilityChange);
+  window.addEventListener('pagehide', pauseAudioForBackground);
+  window.addEventListener('pageshow', () => {
+    if (typeof document === 'undefined' || !document.hidden) {
+      resumeAudioFromBackground();
+    }
+  });
+  window.addEventListener('blur', () => {
+    if (typeof document !== 'undefined' && document.hidden) {
+      pauseAudioForBackground();
+    }
+  });
+  window.addEventListener('app-background', pauseAudioForBackground);
+  window.addEventListener('app-foreground', resumeAudioFromBackground);
 }
 
 export const setMusicContext = (scene: MusicContextScene) => {
@@ -1214,6 +1290,7 @@ const stopProceduralSequencer = () => {
 
 const startC418MusicLoop = () => {
   stopProceduralSequencer();
+  if (isHiddenOrBackground()) return;
   const ctx = initAudio();
   if (!ctx || ctx.state === 'suspended' || currentMusicMode !== 'c418') return;
 
@@ -1248,7 +1325,7 @@ const startC418MusicLoop = () => {
 
   const nextTrackDelayMs = (track.duration + track.pauseDuration) * 1000;
   musicSchedulerTimer = setTimeout(() => {
-    if (currentMusicMode === 'c418') {
+    if (!isHiddenOrBackground() && currentMusicMode === 'c418') {
       currentTrackIndex = (currentTrackIndex + 1) % AMBIENT_TRACKS.length;
       startC418MusicLoop();
     }
@@ -1257,6 +1334,7 @@ const startC418MusicLoop = () => {
 
 const startChiptuneSequencer = () => {
   stopProceduralSequencer();
+  if (isHiddenOrBackground()) return;
   const ctx = initAudio();
   if (!ctx || ctx.state === 'suspended' || currentMusicMode !== 'chiptune') return;
 
@@ -1265,7 +1343,7 @@ const startChiptuneSequencer = () => {
   chiptuneStep = 0;
 
   const scheduleLoop = () => {
-    if (currentMusicMode !== 'chiptune') return;
+    if (isHiddenOrBackground() || currentMusicMode !== 'chiptune' || ctx.state !== 'running') return;
     while (chiptuneNextTime < ctx.currentTime + 0.35) {
       scheduleChiptuneStep(chiptuneStep, chiptuneNextTime, ctx);
       chiptuneNextTime += CHIPTUNE_STEP_DURATION;
@@ -1470,6 +1548,7 @@ export const isCustomMusicPlaying = () => isCustomMusicPlayingState;
 export const isCustomMusicLoaded = () => customBgMusic !== null;
 
 export const playBackgroundMusic = () => {
+  if (isHiddenOrBackground()) return;
   if (currentMusicMode === 'soundtrack') {
     bgMusicStarted = true;
     ensureSoundtrackPlaying();
@@ -1837,6 +1916,10 @@ export const playJukeboxMusic = (jukeboxKey: string, discType: BlockType) => {
     const scheduleAheadTime = 0.15;
 
     const intervalId = setInterval(() => {
+      if (isHiddenOrBackground() || ctx.state !== 'running') {
+        nextNoteTime = ctx.currentTime + 0.05;
+        return;
+      }
       while (nextNoteTime < ctx.currentTime + scheduleAheadTime) {
         const currentStep = step;
         const mNote = melody[currentStep % melody.length];

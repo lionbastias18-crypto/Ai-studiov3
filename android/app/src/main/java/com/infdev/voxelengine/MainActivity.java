@@ -5,6 +5,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.view.View;
 import android.view.WindowManager;
+import android.webkit.CookieManager;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import androidx.core.view.WindowCompat;
@@ -33,8 +34,15 @@ public class MainActivity extends BridgeActivity {
             WebView webView = getBridge().getWebView();
             webView.setBackgroundColor(Color.parseColor("#09090b"));
             webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+
+            CookieManager cookieManager = CookieManager.getInstance();
+            cookieManager.setAcceptCookie(true);
+            cookieManager.setAcceptThirdPartyCookies(webView, true);
+
             WebSettings settings = webView.getSettings();
             settings.setJavaScriptEnabled(true);
+            settings.setJavaScriptCanOpenWindowsAutomatically(true);
+            settings.setSupportMultipleWindows(false);
             settings.setDomStorageEnabled(true);
             settings.setDatabaseEnabled(true);
             settings.setMediaPlaybackRequiresUserGesture(false);
@@ -42,7 +50,46 @@ public class MainActivity extends BridgeActivity {
             settings.setLoadWithOverviewMode(true);
             settings.setAllowFileAccess(true);
             settings.setAllowContentAccess(true);
+
+            // Prevent Google OAuth 403 disallowed_useragent inside Android WebView
+            String currentUa = settings.getUserAgentString();
+            if (currentUa != null && !currentUa.isEmpty()) {
+                String sanitizedUa = currentUa
+                    .replace("; wv)", ")")
+                    .replace("; wv", "")
+                    .replace("Version/4.0 ", "");
+                settings.setUserAgentString(sanitizedUa);
+            }
         }
+    }
+
+    @Override
+    public void onPause() {
+        if (getBridge() != null && getBridge().getWebView() != null) {
+            WebView webView = getBridge().getWebView();
+            webView.evaluateJavascript(
+                "window.dispatchEvent(new Event('app-background'));",
+                null
+            );
+            webView.onPause();
+            webView.pauseTimers();
+        }
+        super.onPause();
+    }
+
+    @Override
+    public void onResume() {
+        super.onResume();
+        if (getBridge() != null && getBridge().getWebView() != null) {
+            WebView webView = getBridge().getWebView();
+            webView.onResume();
+            webView.resumeTimers();
+            webView.evaluateJavascript(
+                "window.dispatchEvent(new Event('app-foreground'));",
+                null
+            );
+        }
+        applyImmersiveMode();
     }
 
     @Override

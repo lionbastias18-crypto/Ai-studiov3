@@ -5,7 +5,17 @@ const config: CapacitorConfig = {
   appName: 'Infdev Mobile Voxel Engine',
   webDir: 'dist',
   server: {
-    androidScheme: 'https'
+    androidScheme: 'https',
+    allowNavigation: [
+      'scenic-beaker-7nzsc.firebaseapp.com',
+      '*.firebaseapp.com',
+      'accounts.google.com',
+      '*.google.com',
+      '*.googleusercontent.com',
+      '*.gstatic.com',
+      'apis.google.com',
+      '*.firebaseio.com'
+    ]
   }
 };
 

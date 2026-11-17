@@ -2,6 +2,11 @@ import { initializeApp } from "firebase/app";
 import {
   getAuth,
   signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
+  setPersistence,
+  indexedDBLocalPersistence,
+  browserLocalPersistence,
   GoogleAuthProvider,
   signOut,
   onAuthStateChanged,
@@ -31,6 +36,9 @@ import { RealmData } from "../types";
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
+setPersistence(auth, indexedDBLocalPersistence).catch(() => {
+  setPersistence(auth, browserLocalPersistence).catch(() => {});
+});
 
 // Configure resilient Firestore with custom multi-tab local caching
 let dbInstance;
@@ -209,12 +217,89 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   throw new Error(JSON.stringify(errInfo));
 }
 
+export function isNativeCapacitorAndroid(): boolean {
+  if (typeof window === "undefined") return false;
+  const cap = (window as any).Capacitor;
+  if (cap?.isNativePlatform?.()) return true;
+  return (
+    window.location.origin === "https://localhost" &&
+    typeof navigator !== "undefined" &&
+    /Android/i.test(navigator.userAgent || "")
+  );
+}
+
+export function formatGoogleAuthError(error: unknown, lang: string = "es"): string {
+  const err = error as any;
+  const code = String(err?.code || "");
+  const message = String(err?.message || "");
+  const host = typeof window !== "undefined" ? window.location.hostname : "localhost";
+
+  if (code === "auth/unauthorized-domain") {
+    return lang === "es"
+      ? `Dominio "${host}" no autorizado en Firebase Console -> Authentication -> Configuración -> Dominios autorizados.`
+      : `Domain "${host}" is not authorized in Firebase Console -> Authentication -> Settings -> Authorized domains.`;
+  }
+  if (code === "auth/popup-closed-by-user" || code === "auth/cancelled-popup-request") {
+    return lang === "es"
+      ? "Inicio de sesión con Google cancelado."
+      : "Google Sign-In was cancelled.";
+  }
+  if (code === "auth/popup-blocked") {
+    return lang === "es"
+      ? "El navegador bloqueó la ventana emergente de Google. Intenta de nuevo."
+      : "The browser blocked the Google popup. Please try again.";
+  }
+  if (code === "auth/network-request-failed") {
+    return lang === "es"
+      ? "Sin conexión a internet o fallo de red al conectar con Google."
+      : "Network error while connecting to Google. Check your internet connection.";
+  }
+  if (code === "auth/operation-not-allowed") {
+    return lang === "es"
+      ? "El proveedor Google no está habilitado en Firebase Authentication."
+      : "Google sign-in provider is not enabled in Firebase Authentication.";
+  }
+  if (code === "auth/account-exists-with-different-credential") {
+    return lang === "es"
+      ? "Ya existe una cuenta con ese correo usando otro método de inicio."
+      : "An account already exists with this email using a different sign-in method.";
+  }
+  const detail = code || (message ? message.slice(0, 90) : "");
+  return lang === "es"
+    ? `Error al iniciar sesión con Google${detail ? ` (${detail})` : ""}`
+    : `Google Sign-In error${detail ? ` (${detail})` : ""}`;
+}
+
+export async function checkGoogleRedirectResult(): Promise<User | null> {
+  try {
+    const result = await getRedirectResult(auth);
+    return result?.user ?? null;
+  } catch (error: any) {
+    console.error("Google redirect result error:", error);
+    throw error;
+  }
+}
+
 // Public API Auth
-export async function loginWithGoogle(): Promise<User> {
+export async function loginWithGoogle(): Promise<User | null> {
+  // Inside Android Capacitor WebView, popups break across intents/window.opener; use in-WebView redirect
+  if (isNativeCapacitorAndroid()) {
+    await signInWithRedirect(auth, googleProvider);
+    return null;
+  }
+
   try {
     const result = await signInWithPopup(auth, googleProvider);
     return result.user;
   } catch (error: any) {
+    const code = String(error?.code || "");
+    if (
+      code === "auth/popup-blocked" ||
+      code === "auth/operation-not-supported-in-this-environment"
+    ) {
+      await signInWithRedirect(auth, googleProvider);
+      return null;
+    }
     console.error("Authentication error using Google:", error);
     throw error;
   }

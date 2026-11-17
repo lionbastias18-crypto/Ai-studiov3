@@ -46,6 +46,8 @@ import {
   auth,
   db,
   loginWithGoogle,
+  checkGoogleRedirectResult,
+  formatGoogleAuthError,
   logoutGoogle,
   saveWorldToFirestore,
   loadWorldsFromFirestore,
@@ -826,7 +828,19 @@ const App: React.FC = () => {
   const [profiles, setProfiles] = useState<Profile[]>(() => loadProfiles());
   // Profiles loaded
   const [worlds, setWorlds] = useState<World[]>(() => loadWorlds());
-  const [currentUser, setCurrentUser] = useState<string | null>(() => getActiveSession());
+  const resolveInitialDisplayUser = () => {
+    const sess = getActiveSession();
+    if (!sess) return null;
+    try {
+      const guestId = localStorage.getItem("minecraft_guest_id");
+      const guestName = localStorage.getItem("minecraft_guest_name");
+      if (guestId && sess === guestId && guestName) {
+        return guestName;
+      }
+    } catch {}
+    return sess;
+  };
+  const [currentUser, setCurrentUser] = useState<string | null>(() => resolveInitialDisplayUser());
   const [activeSession, setActiveSessionState] = useState<string | null>(() => getActiveSession());
 
   const setActiveSession = useCallback((val: string | null) => {
@@ -2109,7 +2123,9 @@ const App: React.FC = () => {
   // Login Form Inputs
   const [usernameInput, setUsernameInput] = useState("");
   const [pinInput, setPinInput] = useState("");
+  const [showPinInput, setShowPinInput] = useState(false);
   const [loginError, setLoginError] = useState("");
+  const [isGoogleLoginLoading, setIsGoogleLoginLoading] = useState(false);
 
   // World Creator inputs
   const [worldNameInput, setWorldNameInput] = useState("");
@@ -2125,27 +2141,49 @@ const App: React.FC = () => {
         : (realmPlan === "basic" || ownedShopItems.includes("realm_basic") ? "basic" : "none"));
 
   const userWorlds = worlds.filter((w) => {
+    const creatorLower = (w.creator || "").toLowerCase();
     if (googleUser) {
       return (
-        w.creator.toLowerCase() === googleUser.uid.toLowerCase() ||
-        w.creator.toLowerCase() === (currentUser || "").toLowerCase()
+        creatorLower === googleUser.uid.toLowerCase() ||
+        creatorLower === (currentUser || "").toLowerCase()
       );
-    } else {
-      return w.creator.toLowerCase() === (currentUser || "Invitado").toLowerCase();
     }
+    const guestId = (typeof localStorage !== "undefined" ? localStorage.getItem("minecraft_guest_id") : null) || "";
+    const guestName = (typeof localStorage !== "undefined" ? localStorage.getItem("minecraft_guest_name") : null) || "";
+    const targets = new Set(
+      [currentUser || "Invitado", activeSession || "", guestId, guestName]
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean)
+    );
+    return targets.has(creatorLower);
   });
 
   const lookOffsetRef = useRef({ x: 0, y: 0 });
 
   useEffect(() => {
+    let mounted = true;
+    checkGoogleRedirectResult().catch((err) => {
+      if (!mounted) return;
+      setLoginError(formatGoogleAuthError(err, lang));
+    });
+
     const unsubscribe = auth.onAuthStateChanged(async (user) => {
+      if (!mounted) return;
       if (user) {
         setGoogleUser(user);
+        setLoginError("");
+        setIsGoogleLoginLoading(false);
         setCurrentUser(user.displayName || user.email || "Usuario de Google");
         setActiveSession(user.uid);
         try {
           const dbWorlds = await loadWorldsFromFirestore(user.uid);
-          setWorlds(dbWorlds);
+          const localWorlds = loadWorlds();
+          const mergedById = new Map<string, World>();
+          localWorlds.forEach((lw) => mergedById.set(lw.id, lw));
+          dbWorlds.forEach((dw) => mergedById.set(dw.id, dw));
+          const mergedList = Array.from(mergedById.values());
+          setWorlds(mergedList);
+          saveWorlds(mergedList);
         } catch (e) {
           console.error("Error loading worlds from firestore:", e);
         }
@@ -2154,7 +2192,10 @@ const App: React.FC = () => {
         setGoogleUser(null);
       }
     });
-    return unsubscribe;
+    return () => {
+      mounted = false;
+      unsubscribe();
+    };
   }, []);
 
   // Activity logging helper (skips cleanly if Firestore daily write quota is exhausted)
@@ -3195,18 +3236,23 @@ const App: React.FC = () => {
   }, [appState]);
 
   const handleGoogleLogin = async () => {
+    if (isGoogleLoginLoading) return;
     try {
       resumeAudio();
       setLoginError("");
+      setIsGoogleLoginLoading(true);
       await loginWithGoogle();
     } catch (e) {
       console.error(e);
-      setLoginError("Error al iniciar sesión con Google");
+      setLoginError(formatGoogleAuthError(e, lang));
+    } finally {
+      setIsGoogleLoginLoading(false);
     }
   };
 
   const handleChooseGuest = () => {
     resumeAudio();
+    setLoginError("");
     let guestId = localStorage.getItem("minecraft_guest_id");
     let guestName = localStorage.getItem("minecraft_guest_name");
     if (!guestId) {
@@ -3226,12 +3272,15 @@ const App: React.FC = () => {
     resumeAudio();
     setUsernameInput("");
     setPinInput("");
+    setShowPinInput(false);
     setLoginError("");
     setAppState("login");
   };
 
   const handleLogout = async () => {
     resumeAudio();
+    setLoginError("");
+    setIsGoogleLoginLoading(false);
     if (googleUser) {
       try {
         await logoutGoogle();
@@ -3251,6 +3300,7 @@ const App: React.FC = () => {
     e.preventDefault();
     resumeAudio();
     const cleanUser = usernameInput.trim();
+    const cleanPin = pinInput.trim();
     if (!cleanUser) {
       setLoginError(dict[lang].enter_username_warn);
       return;
@@ -3260,22 +3310,23 @@ const App: React.FC = () => {
       (p) => p.username.toLowerCase() === cleanUser.toLowerCase(),
     );
     if (existingProfile) {
-      if (existingProfile.pin && existingProfile.pin !== pinInput) {
+      if (existingProfile.pin && existingProfile.pin !== cleanPin) {
         setLoginError(dict[lang].wrong_pin);
         return;
       }
     } else {
       const newProfile: Profile = {
         username: cleanUser,
-        pin: pinInput,
+        pin: cleanPin,
       };
       const updatedProv = [...profiles, newProfile];
       setProfiles(updatedProv);
       saveProfiles(updatedProv);
     }
 
-    setCurrentUser(cleanUser);
-    setActiveSession(cleanUser);
+    const resolvedName = existingProfile ? existingProfile.username : cleanUser;
+    setCurrentUser(resolvedName);
+    setActiveSession(resolvedName);
     setLoginError("");
     setAppState("menu");
   };
@@ -4393,20 +4444,40 @@ const App: React.FC = () => {
               {t.login_prompt}
             </p>
 
+            {loginError && (
+              <div className="w-full bg-red-950/90 border border-red-400/50 text-red-200 px-3 py-2 rounded-xl text-[11px] font-mono font-bold flex items-start justify-between gap-2 shadow-lg">
+                <span className="leading-snug">
+                  <i className="fas fa-circle-exclamation mr-1.5 text-red-400" />
+                  {loginError}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setLoginError("")}
+                  className="text-red-300 hover:text-white shrink-0 bg-transparent border-0 p-0.5 cursor-pointer"
+                >
+                  <i className="fas fa-times" />
+                </button>
+              </div>
+            )}
+
             <div className="flex flex-col w-full gap-2">
               {/* Google Login button */}
               <button
+                type="button"
+                disabled={isGoogleLoginLoading}
                 onClick={handleGoogleLogin}
-                className="w-full py-2.5 sm:py-3 px-4 rounded-lg text-zinc-900 font-extrabold text-xs sm:text-sm uppercase tracking-wider minecraft-font transition-all duration-75 flex items-center justify-center gap-2 border-t-2 border-l-2 border-white border-b-4 border-r-4 border-zinc-400 bg-gradient-to-b from-white via-zinc-100 to-zinc-200 shadow-[0_4px_0_#71717a,0_8px_16px_rgba(0,0,0,0.55)] active:translate-y-[3px] active:shadow-[0_1px_0_#71717a] hover:brightness-105 cursor-pointer"
+                className="w-full py-2.5 sm:py-3 px-4 rounded-lg text-zinc-900 font-extrabold text-xs sm:text-sm uppercase tracking-wider minecraft-font transition-all duration-75 flex items-center justify-center gap-2 border-t-2 border-l-2 border-white border-b-4 border-r-4 border-zinc-400 bg-gradient-to-b from-white via-zinc-100 to-zinc-200 shadow-[0_4px_0_#71717a,0_8px_16px_rgba(0,0,0,0.55)] active:translate-y-[3px] active:shadow-[0_1px_0_#71717a] hover:brightness-105 cursor-pointer disabled:opacity-65 disabled:cursor-wait"
                 style={{
                   textShadow: "1px 1px 0px rgba(255,255,255,0.7)"
                 }}
               >
-                <i className="fab fa-google text-red-500 text-sm" /> {t.login_google}
+                <i className={isGoogleLoginLoading ? "fas fa-spinner fa-spin text-zinc-700 text-sm" : "fab fa-google text-red-500 text-sm"} />
+                <span>{isGoogleLoginLoading ? (lang === "es" ? "Conectando..." : "Connecting...") : t.login_google}</span>
               </button>
 
               {/* Sign in button */}
               <button
+                type="button"
                 onClick={handleChooseSignIn}
                 className="w-full py-2.5 sm:py-3 px-4 rounded-lg text-white font-extrabold text-xs sm:text-sm uppercase tracking-wider minecraft-font transition-all duration-75 flex items-center justify-center gap-2 border-t-2 border-l-2 border-emerald-300 border-b-4 border-r-4 border-emerald-950 bg-gradient-to-b from-emerald-500 via-emerald-600 to-emerald-800 shadow-[0_4px_0_#064e3b,0_8px_16px_rgba(0,0,0,0.55)] active:translate-y-[3px] active:shadow-[0_1px_0_#064e3b] hover:brightness-110 cursor-pointer"
                 style={{
@@ -4420,6 +4491,7 @@ const App: React.FC = () => {
 
               {/* Guest button */}
               <button
+                type="button"
                 onClick={handleChooseGuest}
                 className="w-full py-2.5 sm:py-3 px-4 rounded-lg text-white/90 font-extrabold text-xs sm:text-sm uppercase tracking-wider minecraft-font transition-all duration-75 flex items-center justify-center gap-2 border-t-2 border-l-2 border-zinc-400 border-b-4 border-r-4 border-zinc-950 bg-gradient-to-b from-zinc-600 via-zinc-700 to-zinc-800 shadow-[0_4px_0_#18181b,0_8px_16px_rgba(0,0,0,0.55)] active:translate-y-[3px] active:shadow-[0_1px_0_#18181b] hover:brightness-110 cursor-pointer"
                 style={{
@@ -4451,40 +4523,84 @@ const App: React.FC = () => {
           isCinemaMode={isCinemaMode} 
         />
 
-        <div className={`z-10 bg-black/80 backdrop-blur-xl p-5 sm:p-7 rounded-3xl border border-white/20 flex flex-col items-center shadow-2xl max-w-sm w-full my-auto transition-all duration-300 ${isCinemaMode ? "opacity-0 pointer-events-none scale-95" : "opacity-100 scale-100"}`}>
+        <div
+          onPointerDown={(e) => e.stopPropagation()}
+          className={`z-10 bg-black/85 backdrop-blur-xl p-5 sm:p-7 rounded-3xl border border-white/20 flex flex-col items-center shadow-2xl max-w-sm w-full my-auto transition-all duration-300 ${isCinemaMode ? "opacity-0 pointer-events-none scale-95" : "opacity-100 scale-100"}`}
+        >
           <img
             src="./assets/adventure-alpha-emblem.png"
             alt="Adventure Alpha Mobile"
             className="w-16 h-16 sm:w-20 sm:h-20 object-contain mb-2 drop-shadow-lg"
+            onError={(e) => { (e.currentTarget as HTMLImageElement).src = "./assets/aistudio/1794943627139_ac65a7dd.jpg"; }}
           />
           <h2 className="text-white text-2xl sm:text-3xl font-bold minecraft-font uppercase tracking-tighter mb-3 text-center drop-shadow-lg">
             {t.option_sign_in}
           </h2>
 
           <button
+            type="button"
+            disabled={isGoogleLoginLoading}
             onClick={handleGoogleLogin}
-            className="w-full bg-white hover:bg-zinc-100 text-zinc-900 font-bold py-3.5 rounded-xl text-xs uppercase tracking-wider transition-all active:scale-95 text-center flex items-center justify-center gap-2 mb-4 border border-zinc-200 shadow-md"
+            className="w-full bg-white hover:bg-zinc-100 text-zinc-900 font-bold py-3.5 rounded-xl text-xs uppercase tracking-wider transition-all active:scale-95 text-center flex items-center justify-center gap-2 mb-4 border border-zinc-200 shadow-md cursor-pointer disabled:opacity-65 disabled:cursor-wait"
           >
-            <i className="fab fa-google text-red-500 text-sm" /> {t.login_google}
+            <i className={isGoogleLoginLoading ? "fas fa-spinner fa-spin text-zinc-700 text-sm" : "fab fa-google text-red-500 text-sm"} />
+            <span>{isGoogleLoginLoading ? (lang === "es" ? "Conectando..." : "Connecting...") : t.login_google}</span>
           </button>
 
-          <div className="w-full flex items-center gap-2 mb-4">
+          <div className="w-full flex items-center gap-2 mb-3">
             <div className="h-px bg-white/10 flex-1" />
             <span className="text-[10px] text-zinc-500 uppercase font-mono font-bold">o / or</span>
             <div className="h-px bg-white/10 flex-1" />
           </div>
 
-          <form onSubmit={handleLoginOrRegister} className="flex flex-col w-full gap-4">
+          {profiles.length > 0 && (
+            <div className="w-full mb-3">
+              <div className="text-[9px] text-zinc-400 uppercase font-mono font-bold mb-1.5">
+                {lang === "es" ? "Perfiles guardados:" : "Saved profiles:"}
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {profiles.slice(0, 6).map((prof) => (
+                  <button
+                    key={prof.username}
+                    type="button"
+                    onClick={() => {
+                      setUsernameInput(prof.username);
+                      setLoginError("");
+                      if (!prof.pin) {
+                        setCurrentUser(prof.username);
+                        setActiveSession(prof.username);
+                        setAppState("menu");
+                      }
+                    }}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-mono font-bold border transition cursor-pointer ${
+                      usernameInput.trim().toLowerCase() === prof.username.toLowerCase()
+                        ? "bg-emerald-500/25 border-emerald-400 text-emerald-200"
+                        : "bg-zinc-900 border-white/15 text-zinc-300 hover:border-emerald-400/50"
+                    }`}
+                  >
+                    <i className={`fas ${prof.pin ? "fa-lock" : "fa-user"} text-[9px] mr-1 opacity-70`} />
+                    {prof.username}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          <form onSubmit={handleLoginOrRegister} className="flex flex-col w-full gap-3.5">
             <div className="flex flex-col gap-1.5">
               <label className="text-emerald-400 text-[10px] font-bold uppercase tracking-wider">
                 {t.username}
               </label>
               <input
                 type="text"
+                autoComplete="username"
                 placeholder={t.username}
                 value={usernameInput}
-                onChange={(e) => setUsernameInput(e.target.value)}
-                className="w-full bg-zinc-900 border border-white/10 rounded-xl py-3 px-4 text-white text-sm focus:outline-none focus:border-emerald-400 font-bold"
+                onChange={(e) => {
+                  setUsernameInput(e.target.value);
+                  if (loginError) setLoginError("");
+                }}
+                className="w-full bg-zinc-900 border border-white/10 rounded-xl py-3 px-4 text-white text-sm focus:outline-none focus:border-emerald-400 font-bold select-text"
               />
             </div>
 
@@ -4492,33 +4608,50 @@ const App: React.FC = () => {
               <label className="text-emerald-400 text-[10px] font-bold uppercase tracking-wider">
                 {t.pin} <span className="text-[8px] text-zinc-500 font-normal">({t.optional})</span>
               </label>
-              <input
-                type="password"
-                placeholder="1234"
-                value={pinInput}
-                onChange={(e) => setPinInput(e.target.value)}
-                className="w-full bg-zinc-900 border border-white/10 rounded-xl py-3 px-4 text-white text-sm focus:outline-none focus:border-emerald-400 tracking-widest font-bold"
-              />
+              <div className="relative flex items-center">
+                <input
+                  type={showPinInput ? "text" : "password"}
+                  autoComplete="current-password"
+                  placeholder="1234"
+                  value={pinInput}
+                  onChange={(e) => {
+                    setPinInput(e.target.value);
+                    if (loginError) setLoginError("");
+                  }}
+                  className="w-full bg-zinc-900 border border-white/10 rounded-xl py-3 pl-4 pr-11 text-white text-sm focus:outline-none focus:border-emerald-400 tracking-widest font-bold select-text"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPinInput((v) => !v)}
+                  className="absolute right-3 text-zinc-400 hover:text-white bg-transparent border-0 p-1 cursor-pointer"
+                  aria-label={showPinInput ? "Ocultar PIN" : "Mostrar PIN"}
+                >
+                  <i className={`fas ${showPinInput ? "fa-eye-slash" : "fa-eye"} text-xs`} />
+                </button>
+              </div>
             </div>
 
             {loginError && (
-              <p className="text-red-400 text-xs font-bold font-mono text-center mt-1">
-                <i className="fas fa-circle-exclamation mr-1" />
+              <div className="bg-red-950/90 border border-red-400/50 text-red-200 px-3 py-2 rounded-xl text-xs font-mono font-bold text-center">
+                <i className="fas fa-circle-exclamation mr-1 text-red-400" />
                 {loginError}
-              </p>
+              </div>
             )}
 
             <button
               type="submit"
-              className="bg-emerald-500 hover:bg-emerald-400 text-white font-bold py-3.5 rounded-xl text-center uppercase tracking-wider transition-all active:scale-95 mt-2 shadow-lg shadow-emerald-500/15 text-xs sm:text-sm"
+              className="bg-emerald-500 hover:bg-emerald-400 text-white font-bold py-3.5 rounded-xl text-center uppercase tracking-wider transition-all active:scale-95 mt-1 shadow-lg shadow-emerald-500/15 text-xs sm:text-sm cursor-pointer"
             >
               {t.register_btn}
             </button>
 
             <button
               type="button"
-              onClick={() => setAppState("login-prompt")}
-              className="bg-zinc-800 hover:bg-zinc-700 text-white/70 font-semibold py-2 rounded-xl text-center text-xs uppercase transition-all"
+              onClick={() => {
+                setLoginError("");
+                setAppState("login-prompt");
+              }}
+              className="bg-zinc-800 hover:bg-zinc-700 text-white/70 font-semibold py-2 rounded-xl text-center text-xs uppercase transition-all cursor-pointer"
             >
               {t.back}
             </button>
@@ -7608,20 +7741,29 @@ const App: React.FC = () => {
 
           {/* Google Sign-In Notice for Guests */}
           {!googleUser && (
-            <div className="bg-amber-500/10 border border-amber-400/35 rounded-xl px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 shrink-0">
-              <p className="text-[11px] text-amber-200 font-medium">
-                {lang === "es"
-                  ? "Conecta tu cuenta Google para guardar Realms en la nube, invitar amigos y permitir que el admin se una."
-                  : "Sign in with Google to sync Realms in the cloud and invite friends."}
-              </p>
-              <button
-                type="button"
-                onClick={handleGoogleLogin}
-                className="bg-white hover:bg-zinc-200 text-zinc-950 font-black text-[10px] uppercase px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition cursor-pointer shrink-0"
-              >
-                <i className="fab fa-google text-red-500" />
-                <span>{lang === "es" ? "Conectar Google" : "Sign in Google"}</span>
-              </button>
+            <div className="bg-amber-500/10 border border-amber-400/35 rounded-xl px-3.5 py-2.5 flex flex-col gap-2 shrink-0">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-[11px] text-amber-200 font-medium">
+                  {lang === "es"
+                    ? "Conecta tu cuenta Google para guardar Realms en la nube, invitar amigos y permitir que el admin se una."
+                    : "Sign in with Google to sync Realms in the cloud and invite friends."}
+                </p>
+                <button
+                  type="button"
+                  disabled={isGoogleLoginLoading}
+                  onClick={handleGoogleLogin}
+                  className="bg-white hover:bg-zinc-200 text-zinc-950 font-black text-[10px] uppercase px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition cursor-pointer shrink-0 disabled:opacity-65"
+                >
+                  <i className={isGoogleLoginLoading ? "fas fa-spinner fa-spin text-zinc-700" : "fab fa-google text-red-500"} />
+                  <span>{isGoogleLoginLoading ? (lang === "es" ? "Conectando..." : "Connecting...") : (lang === "es" ? "Conectar Google" : "Sign in Google")}</span>
+                </button>
+              </div>
+              {loginError && (
+                <p className="text-[11px] text-red-300 font-mono font-bold">
+                  <i className="fas fa-circle-exclamation mr-1" />
+                  {loginError}
+                </p>
+              )}
             </div>
           )}
 

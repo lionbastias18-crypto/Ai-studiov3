@@ -607,6 +607,10 @@ export const MenuPanorama3D: React.FC<MenuPanorama3DProps> = ({
     let targetTouchPitch = 0;
 
     const onPointerDown = (e: PointerEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target && target.closest("input, textarea, select, button, a, label, form, [role='dialog']")) {
+        return;
+      }
       // Allow drag on background to pan panorama
       isDragging = true;
       startX = e.clientX;

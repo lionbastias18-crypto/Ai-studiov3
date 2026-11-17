@@ -3,12 +3,16 @@ apply plugin: 'com.android.application'
 android {
     namespace = "com.infdev.voxelengine"
     compileSdk = rootProject.ext.compileSdkVersion
+
+    def envVersionCode = System.getenv("ANDROID_VERSION_CODE")
+    def appVersionCode = (envVersionCode != null && envVersionCode.isInteger()) ? envVersionCode.toInteger() : 100
+
     defaultConfig {
         applicationId "com.infdev.voxelengine"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode appVersionCode
+        versionName "1.0.${appVersionCode}"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -16,8 +20,25 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        sharedUpdate {
+            storeFile file('alpha-update-signing.p12')
+            storeType 'PKCS12'
+            storePassword 'alphaupdate2026'
+            keyAlias 'alphaupdate'
+            keyPassword 'alphaupdate2026'
+        }
+    }
     buildTypes {
+        debug {
+            if (file('alpha-update-signing.p12').exists()) {
+                signingConfig signingConfigs.sharedUpdate
+            }
+        }
         release {
+            if (file('alpha-update-signing.p12').exists()) {
+                signingConfig signingConfigs.sharedUpdate
+            }
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
