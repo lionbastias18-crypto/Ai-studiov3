@@ -1,0 +1,203 @@
+@import "tailwindcss";
+@import "@fortawesome/fontawesome-free/css/all.min.css";
+
+:root {
+  --sat: env(safe-area-inset-top, 0px);
+  --sar: env(safe-area-inset-right, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --sal: env(safe-area-inset-left, 0px);
+  --ui-scale: 1;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    position: fixed;
+    inset: 0;
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    height: 100dvh;
+    overflow: hidden;
+    background-color: #09090b;
+    color: #ffffff;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+    touch-action: none;
+    overscroll-behavior: none;
+  }
+
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    outline: none !important;
+    border: none !important;
+    box-shadow: none !important;
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+.minecraft-font {
+  font-family: "Courier New", Courier, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  letter-spacing: 0.02em;
+}
+
+.safe-area-inset {
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding-left: env(safe-area-inset-left, 0px);
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Auto-adapt base UI scale smoothly across mobile/tablet screens */
+@media (max-height: 460px) and (orientation: landscape) {
+  html {
+    font-size: 13px;
+  }
+}
+
+@media (max-height: 380px) and (orientation: landscape) {
+  html {
+    font-size: 11.5px;
+  }
+}
+
+@media (max-width: 390px) and (orientation: portrait) {
+  html {
+    font-size: 13.5px;
+  }
+}
+
+@media (max-width: 340px) and (orientation: portrait) {
+  html {
+    font-size: 12px;
+  }
+}
+
+@media (min-width: 900px) and (min-height: 700px) {
+  html {
+    font-size: 16.5px;
+  }
+}
+
+/* Minecraft Corner Splash Bounce */
+@keyframes splash-pulse-tilt {
+  0%, 100% {
+    transform: rotate(-14deg) scale(1);
+  }
+  50% {
+    transform: rotate(-14deg) scale(1.09);
+  }
+}
+.splash-bounce-tilt {
+  animation: splash-pulse-tilt 1.35s ease-in-out infinite;
+}
+
+/* Easter Egg #1: Spinning Cat */
+@keyframes cat-oiia-spin {
+  0% {
+    transform: perspective(600px) rotateY(0deg) translateY(0px) scale(1);
+  }
+  25% {
+    transform: perspective(600px) rotateY(90deg) translateY(-10px) scale(1.05);
+  }
+  50% {
+    transform: perspective(600px) rotateY(180deg) translateY(0px) scale(1);
+  }
+  75% {
+    transform: perspective(600px) rotateY(270deg) translateY(-10px) scale(1.05);
+  }
+  100% {
+    transform: perspective(600px) rotateY(360deg) translateY(0px) scale(1);
+  }
+}
+.cat-spin-normal {
+  animation: cat-oiia-spin 0.85s linear infinite;
+}
+.cat-spin-turbo {
+  animation: cat-oiia-spin 0.34s linear infinite;
+}
+
+@keyframes cat-ring-rotate {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+.cat-rainbow-ring {
+  animation: cat-ring-rotate 1.8s linear infinite;
+}
+
+/* Easter Egg #2: Crying Cat */
+@keyframes cat-sob-tremble {
+  0%, 100% {
+    transform: translateY(0px) scaleX(1) scaleY(1);
+  }
+  25% {
+    transform: translateY(2px) translateX(-1.5px) scaleX(1.02) scaleY(0.97);
+  }
+  50% {
+    transform: translateY(0px) translateX(1.5px) scaleX(0.99) scaleY(1.01);
+  }
+  75% {
+    transform: translateY(2.5px) translateX(-1px) scaleX(1.03) scaleY(0.96);
+  }
+}
+.cat-sob-shake {
+  animation: cat-sob-tremble 0.42s ease-in-out infinite;
+}
+
+@keyframes cat-tear-fall {
+  0% {
+    opacity: 0;
+    transform: translateY(0px) scale(0.8);
+  }
+  20% {
+    opacity: 1;
+    transform: translateY(8px) scale(1);
+  }
+  85% {
+    opacity: 0.95;
+    transform: translateY(48px) scale(0.95);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(60px) scale(0.5);
+  }
+}
+.cat-tear-drop-left {
+  animation: cat-tear-fall 0.85s ease-in infinite;
+}
+.cat-tear-drop-right {
+  animation: cat-tear-fall 0.85s ease-in 0.4s infinite;
+}
+
+@keyframes cat-puddle-ripple {
+  0%, 100% {
+    transform: translateX(-50%) scaleX(1);
+    opacity: 0.55;
+  }
+  50% {
+    transform: translateX(-50%) scaleX(1.12);
+    opacity: 0.85;
+  }
+}
+.cat-puddle-pulse {
+  animation: cat-puddle-ripple 1.2s ease-in-out infinite;
+}
+
+

@@ -788,33 +788,33 @@ export const CharacterPreviewCard: React.FC<CharacterPreviewCardProps> = ({
 
   return (
     <>
-      {/* Right-Side Compact 3D Character Showcase Card */}
+      {/* Right-Side 3D Character Showcase & Customizer Card */}
       <div
         onPointerDown={(e) => e.stopPropagation()}
-        className={`absolute right-2 sm:right-5 top-14 sm:top-16 z-30 flex flex-col items-end transition-all duration-300 ${
+        className={`absolute right-2 sm:right-5 top-13 sm:top-16 z-30 flex flex-col items-end transition-all duration-300 ${
           hidden ? 'opacity-0 pointer-events-none translate-x-10' : 'opacity-100 translate-x-0'
         }`}
       >
-        <div className="w-[144px] sm:w-[206px] lg:w-[238px] max-h-[calc(100vh-76px)] bg-zinc-950/85 backdrop-blur-xl border border-white/15 rounded-2xl shadow-2xl overflow-y-auto flex flex-col">
+        <div className="w-[154px] sm:w-[218px] lg:w-[254px] max-h-[calc(100dvh-76px)] bg-zinc-950/88 backdrop-blur-xl border border-white/15 rounded-2xl shadow-2xl overflow-y-auto flex flex-col">
           {/* Card Header */}
-          <div className="px-2.5 sm:px-3 py-1.5 sm:py-2 bg-white/[0.04] border-b border-white/10 flex items-center justify-between gap-1.5 shrink-0">
+          <div className="px-2.5 sm:px-3.5 py-1.5 sm:py-2.5 bg-white/[0.04] border-b border-white/10 flex items-center justify-between gap-1.5 shrink-0">
             <div className="min-w-0">
-              <p className="text-[8px] sm:text-[9px] font-mono uppercase tracking-widest text-emerald-400 font-bold truncate">
+              <p className="text-[8px] sm:text-[9.5px] font-mono uppercase tracking-widest text-emerald-400 font-bold truncate">
                 {lang === 'es' ? 'Tu Personaje' : 'Your Hero'}
               </p>
-              <p className="text-[11px] sm:text-xs font-black text-white truncate">
+              <p className="text-[11px] sm:text-sm font-black text-white truncate">
                 {lang === 'es' ? resolvedSkin.nameEs : resolvedSkin.nameEn}
               </p>
             </div>
             <span
-              className="w-2.5 h-2.5 rounded-full shrink-0 border border-white/40"
+              className="w-3 h-3 rounded-full shrink-0 border border-white/40"
               style={{ backgroundColor: resolvedSkin.badgeColor }}
             />
           </div>
 
           {/* Live 3D Rotating Character Stage */}
           <div
-            className="relative w-full h-[112px] sm:h-[180px] lg:h-[215px] bg-gradient-to-b from-slate-900/70 via-zinc-900/80 to-zinc-950/95 cursor-grab active:cursor-grabbing touch-none shrink-0"
+            className="relative w-full h-[138px] sm:h-[192px] lg:h-[238px] bg-gradient-to-b from-slate-900/70 via-zinc-900/80 to-zinc-950/95 cursor-grab active:cursor-grabbing touch-none shrink-0"
             onPointerDown={(e) => {
               e.stopPropagation();
               handleStageDragStart(e.clientX);
@@ -829,7 +829,7 @@ export const CharacterPreviewCard: React.FC<CharacterPreviewCardProps> = ({
               <div ref={cardStageHostRef} className="w-full h-full" />
             )}
 
-            <div className="pointer-events-none absolute bottom-1.5 left-2 right-2 flex items-center justify-between text-[8px] font-mono text-zinc-400">
+            <div className="pointer-events-none absolute bottom-1.5 left-2.5 right-2.5 flex items-center justify-between text-[8.5px] font-mono text-zinc-400">
               <span>{lang === 'es' ? 'Arrastra 360°' : 'Drag 360°'}</span>
               {characterSkin === 'custom' && (
                 <span className="text-purple-300 font-bold uppercase">CUSTOM</span>
@@ -838,13 +838,13 @@ export const CharacterPreviewCard: React.FC<CharacterPreviewCardProps> = ({
           </div>
 
           {/* Action Footer inside Right Card */}
-          <div className="p-2 bg-zinc-950/90 border-t border-white/10 flex flex-col gap-1.5 shrink-0">
+          <div className="p-2.5 bg-zinc-950/90 border-t border-white/10 flex flex-col gap-1.5 shrink-0">
             <button
               type="button"
               onClick={() => setIsCustomizerOpen(true)}
-              className="w-full py-1.5 sm:py-2 px-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:brightness-110 active:scale-95 text-white font-black text-[10px] sm:text-xs uppercase tracking-wider flex items-center justify-center gap-1.5 shadow-md transition cursor-pointer"
+              className="w-full py-2 sm:py-2.5 px-3 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:brightness-110 active:scale-95 text-white font-black text-[11px] sm:text-xs uppercase tracking-wider flex items-center justify-center gap-1.5 shadow-md transition cursor-pointer"
             >
-              <i className="fas fa-palette text-[10px]" />
+              <i className="fas fa-palette text-[11px]" />
               <span>{lang === 'es' ? 'Personalizar' : 'Customize'}</span>
             </button>
 
@@ -878,7 +878,7 @@ export const CharacterPreviewCard: React.FC<CharacterPreviewCardProps> = ({
         <div
           onPointerDown={(e) => e.stopPropagation()}
           onClick={() => setIsCustomizerOpen(false)}
-          className="fixed inset-0 bg-black/85 backdrop-blur-md z-[100020] flex items-center justify-center p-2 sm:p-5 pointer-events-auto"
+          className="fixed inset-0 bg-black/85 backdrop-blur-md z-[100020] flex items-center justify-center safe-area-inset p-2.5 sm:p-5 pointer-events-auto"
         >
           <div
             onClick={(e) => e.stopPropagation()}
@@ -925,7 +925,7 @@ export const CharacterPreviewCard: React.FC<CharacterPreviewCardProps> = ({
                 </div>
 
                 <div
-                  className="w-full h-[170px] sm:h-[210px] md:flex-1 md:min-h-[260px] cursor-grab active:cursor-grabbing touch-none"
+                  className="w-full h-[205px] sm:h-[245px] md:flex-1 md:min-h-[290px] cursor-grab active:cursor-grabbing touch-none"
                   onPointerDown={(e) => {
                     e.stopPropagation();
                     handleStageDragStart(e.clientX);

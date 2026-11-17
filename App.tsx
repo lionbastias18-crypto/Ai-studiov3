@@ -6,6 +6,7 @@ import { MenuPanorama3D } from "./components/MenuPanorama3D";
 import { BlockType, ToolType, Vector3D, GeminiSuggestion, NoiseConfig, PerformanceConfig, CharacterSkinId, CustomCharacterConfig, ActivePlayerInfo, AICompanionConfig, AICompanionMode, RealmData, RealmPlanTier, RealmWorldMeta, RealmEditorTool, RealmEditorConfig, RealmBatchEditPayload } from "./types";
 import { CharacterModel, CHARACTER_SKINS, DEFAULT_CUSTOM_SKIN } from "./components/CharacterModel";
 import { CharacterPreviewCard } from "./components/CharacterPreviewCard";
+import { CatEasterEggs, CatEasterEggType } from "./components/CatEasterEggs";
 import { BLOCK_NAMES, BLOCK_COLORS } from "./constants";
 import { getBuildingSuggestion, askAICompanion, AICompanionChatAction } from "./services/geminiService";
 import {
@@ -1664,31 +1665,70 @@ const App: React.FC = () => {
   const [isSmallScreen, setIsSmallScreen] = useState(false);
   const [touchControlsMode, setTouchControlsMode] = useState<"auto" | "yes" | "no">("auto");
 
+  const MENU_SPLASHES = useMemo(() => [
+    "¡60 FPS Ultra Optimizado!",
+    "¡Panorámica 3D en tiempo real!",
+    "¡Con Iron Golem y Endermans!",
+    "¡Bioma de Cerezo y Bosque Oscuro!",
+    "¡Mundos infinitos en tu móvil!",
+    "¡Aldeas con cofres y hornos!",
+    "¡100% Voxel 3D sin lag!"
+  ], []);
+  const [splashIndex, setSplashIndex] = useState(0);
+  const [activeCatEasterEgg, setActiveCatEasterEgg] = useState<CatEasterEggType>(null);
+  const titleTapRef = useRef<{ count: number; lastAt: number; nextEgg: "spinning" | "crying" }>({
+    count: 0,
+    lastAt: 0,
+    nextEgg: "spinning",
+  });
+  const splashTapRef = useRef<{ count: number; lastAt: number }>({ count: 0, lastAt: 0 });
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      setSplashIndex((prev) => (prev + 1) % MENU_SPLASHES.length);
+    }, 6000);
+    return () => clearInterval(id);
+  }, [MENU_SPLASHES.length]);
+
+  const handleTitleEasterEggTap = useCallback(() => {
+    resumeAudio();
+    const now = Date.now();
+    const state = titleTapRef.current;
+    if (now - state.lastAt > 2000) {
+      state.count = 0;
+    }
+    state.count += 1;
+    state.lastAt = now;
+    if (state.count >= 3) {
+      state.count = 0;
+      const triggered = state.nextEgg;
+      state.nextEgg = triggered === "spinning" ? "crying" : "spinning";
+      setActiveCatEasterEgg(triggered);
+    }
+  }, []);
+
+  const handleSplashEasterEggTap = useCallback(() => {
+    resumeAudio();
+    setSplashIndex((prev) => (prev + 1) % MENU_SPLASHES.length);
+    const now = Date.now();
+    const sState = splashTapRef.current;
+    if (now - sState.lastAt > 2000) {
+      sState.count = 0;
+    }
+    sState.count += 1;
+    sState.lastAt = now;
+    if (sState.count >= 3) {
+      sState.count = 0;
+      setActiveCatEasterEgg("crying");
+    }
+  }, [MENU_SPLASHES.length]);
+
   const showTouchControls = 
     touchControlsMode === "yes" 
       ? true 
       : touchControlsMode === "no" 
         ? false 
         : (isTouchDevice || isSmallScreen);
-
-  const activeDevice = (() => {
-    if (devicePreset !== "auto") return devicePreset;
-    const ratio = screenSize.aspectRatio;
-    
-    // Landscape or Portrait 5:3 (Redmi Pad SE 8.7: 1340 x 800)
-    if ((ratio >= 1.55 && ratio <= 1.75) || (ratio >= 0.55 && ratio <= 0.65)) {
-      return "redmi";
-    }
-    // Landscape or Portrait 3:2 / 4:3 (Funtouch Tablet)
-    if ((ratio >= 1.2 && ratio < 1.55) || (ratio >= 0.64 && ratio <= 0.83)) {
-      return "funtouch";
-    }
-    // Landscape or Portrait 20:9 (Galaxy A23)
-    if (ratio >= 1.95 || ratio <= 0.52) {
-      return "galaxy";
-    }
-    return "auto"; // Default / standard
-  })();
 
   const physIsLandscape = physicalViewport.width > physicalViewport.height;
   const virtualRotationDeg: 0 | 90 | -90 = (() => {
@@ -1706,8 +1746,8 @@ const App: React.FC = () => {
   })();
 
   const screenSize = (() => {
-    const effW = virtualRotationDeg !== 0 ? physicalViewport.height : physicalViewport.width;
-    const effH = virtualRotationDeg !== 0 ? physicalViewport.width : physicalViewport.height;
+    const effW = Math.max(1, virtualRotationDeg !== 0 ? physicalViewport.height : physicalViewport.width);
+    const effH = Math.max(1, virtualRotationDeg !== 0 ? physicalViewport.width : physicalViewport.height);
     return {
       width: effW,
       height: effH,
@@ -1715,10 +1755,35 @@ const App: React.FC = () => {
     };
   })();
 
+  const activeDevice = (() => {
+    if (devicePreset !== "auto") return devicePreset;
+    const ratio = screenSize.aspectRatio;
+
+    // Landscape or Portrait 5:3 (Redmi Pad SE 8.7: 1340 x 800)
+    if ((ratio >= 1.55 && ratio <= 1.75) || (ratio >= 0.55 && ratio <= 0.65)) {
+      return "redmi";
+    }
+    // Landscape or Portrait 3:2 / 4:3 (Funtouch Tablet)
+    if ((ratio >= 1.2 && ratio < 1.55) || (ratio >= 0.64 && ratio <= 0.83)) {
+      return "funtouch";
+    }
+    // Landscape or Portrait 20:9 (Galaxy A23)
+    if (ratio >= 1.95 || ratio <= 0.52) {
+      return "galaxy";
+    }
+    return "auto"; // Default / standard
+  })();
+
   const isPortrait = screenSize.height > screenSize.width && screenSize.width < 900;
   const isCompactHeight = screenSize.height < 640;
+  const isVeryCompactHeight = screenSize.height < 460;
   const isCompactWidth = screenSize.width < 820;
   const useCompactUI = isCompactHeight || isCompactWidth;
+  const autoMinDim = Math.min(screenSize.width, screenSize.height);
+  const autoJoystickPx = Math.round(Math.max(72, Math.min(144, autoMinDim * (isPortrait ? 0.21 : 0.22))));
+  const autoHotbarScaleClass = isPortrait
+    ? (screenSize.width < 370 ? "scale-[0.82] origin-bottom" : "scale-[0.90] origin-bottom")
+    : (isVeryCompactHeight ? "scale-[0.76] origin-bottom" : useCompactUI ? "scale-[0.84] origin-bottom" : "scale-100 origin-bottom");
 
   const uiScaleConfig = (() => {
     switch (activeDevice) {
@@ -1782,20 +1847,20 @@ const App: React.FC = () => {
       default:
         return {
           name: "Adaptable Auto",
-          joystickSize: isPortrait ? 84 : (useCompactUI ? (screenSize.height < 450 ? 90 : 102) : 140),
-          jumpButtonSize: isPortrait ? "w-10 h-10" : (useCompactUI ? (screenSize.height < 450 ? "w-10 h-10" : "w-11 h-11") : "w-15 h-15"),
-          hotbarScale: isPortrait ? "scale-[0.92] origin-bottom" : (useCompactUI ? "scale-[0.82] origin-bottom" : "scale-100 origin-bottom"),
+          joystickSize: autoJoystickPx,
+          jumpButtonSize: isPortrait || isVeryCompactHeight ? "w-10 h-10" : (useCompactUI ? "w-11 h-11" : "w-14 h-14"),
+          hotbarScale: autoHotbarScaleClass,
           controlPadding: isPortrait ? "px-2 pb-2 pt-0.5" : (useCompactUI ? "px-2.5 pb-1.5 pt-0.5" : "px-6 pb-4 pt-2"),
           marginClass: useCompactUI ? "mb-1 mx-2 px-1" : "mb-3 mx-4 px-2",
-          gapClass: useCompactUI ? "gap-2" : "gap-4",
+          gapClass: useCompactUI ? "gap-1.5" : "gap-4",
           fontSize: "text-[10px]",
           badge: "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30",
-          desc: "Estándar auto-adaptable y flexible",
-          containerPadding: useCompactUI ? "p-2" : "p-4 md:p-6",
-          statsPadding: useCompactUI ? "p-2" : "p-3.5",
+          desc: "Estándar auto-adaptable fluido a cualquier pantalla",
+          containerPadding: useCompactUI ? "p-1.5 sm:p-2" : "p-4 md:p-6",
+          statsPadding: isVeryCompactHeight ? "p-1.5" : useCompactUI ? "p-2" : "p-3.5",
           statsTitle: useCompactUI ? "text-xs sm:text-sm" : "text-lg",
           statsText: useCompactUI ? "text-[8px]" : "text-[9px]",
-          btnSize: useCompactUI ? "w-8 h-8 sm:w-9 sm:h-9" : "w-11 h-11",
+          btnSize: isVeryCompactHeight ? "w-8 h-8" : useCompactUI ? "w-8 h-8 sm:w-9 sm:h-9" : "w-11 h-11",
           btnIcon: useCompactUI ? "text-xs" : "text-base",
         };
     }
@@ -4280,61 +4345,96 @@ const App: React.FC = () => {
 
   const renderAppScreen = () => {
   if (appState === "login-prompt") {
+    const compactSideBySide = isVeryCompactHeight && !isPortrait;
     return (
-      <div className="w-full h-full bg-slate-900 flex flex-col items-center justify-end p-4 sm:p-6 pb-6 sm:pb-8 relative overflow-hidden select-none">
-        {/* 3D Rotating Voxel Panorama & 3D Logo */}
+      <div className="w-full h-full bg-slate-900 relative overflow-hidden select-none">
+        {/* 3D Rotating Voxel Panorama */}
         <MenuPanorama3D 
-          showLogo={true} 
+          showLogo={false} 
           onEnterCinemaMode={() => setIsCinemaMode(!isCinemaMode)} 
           isCinemaMode={isCinemaMode} 
         />
 
-        <div className={`z-10 max-w-[310px] sm:max-w-sm w-full mx-auto flex flex-col items-center gap-2.5 mb-2 transition-all duration-300 ${isCinemaMode ? "opacity-0 pointer-events-none translate-y-12" : "opacity-100 translate-y-0"}`}>
-          <p className="text-white font-extrabold text-center text-xs md:text-sm mb-1 minecraft-font drop-shadow-[2px_2px_0_#000] bg-black/55 backdrop-blur-sm px-4 py-1.5 rounded-full border border-white/10">
-            {t.login_prompt}
-          </p>
-
-          <div className="flex flex-col w-full gap-2">
-            {/* Google Login button */}
-            <button
-              onClick={handleGoogleLogin}
-              className="w-full py-2.5 sm:py-3 px-4 rounded-lg text-zinc-900 font-extrabold text-xs sm:text-sm uppercase tracking-wider minecraft-font transition-all duration-75 flex items-center justify-center gap-2 border-t-2 border-l-2 border-white border-b-4 border-r-4 border-zinc-400 bg-gradient-to-b from-white via-zinc-100 to-zinc-200 shadow-[0_4px_0_#71717a,0_8px_16px_rgba(0,0,0,0.55)] active:translate-y-[3px] active:shadow-[0_1px_0_#71717a] hover:brightness-105 cursor-pointer"
-              style={{
-                textShadow: "1px 1px 0px rgba(255,255,255,0.7)"
-              }}
-            >
-              <i className="fab fa-google text-red-500 text-sm" /> {t.login_google}
-            </button>
-
-            {/* Sign in button */}
-            <button
-              onClick={handleChooseSignIn}
-              className="w-full py-2.5 sm:py-3 px-4 rounded-lg text-white font-extrabold text-xs sm:text-sm uppercase tracking-wider minecraft-font transition-all duration-75 flex items-center justify-center gap-2 border-t-2 border-l-2 border-emerald-300 border-b-4 border-r-4 border-emerald-950 bg-gradient-to-b from-emerald-500 via-emerald-600 to-emerald-800 shadow-[0_4px_0_#064e3b,0_8px_16px_rgba(0,0,0,0.55)] active:translate-y-[3px] active:shadow-[0_1px_0_#064e3b] hover:brightness-110 cursor-pointer"
-              style={{
-                textShadow: "1px 1px 0px #000, -1px -1px 0px #000",
-                backgroundImage: "linear-gradient(rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(to bottom, #10b981, #059669, #065f46)",
-                backgroundSize: "4px 4px, 4px 4px, 100% 100%"
-              }}
-            >
-              <i className="fas fa-lock text-emerald-200 text-xs" /> {t.option_sign_in}
-            </button>
-
-            {/* Guest button */}
-            <button
-              onClick={handleChooseGuest}
-              className="w-full py-2.5 sm:py-3 px-4 rounded-lg text-white/90 font-extrabold text-xs sm:text-sm uppercase tracking-wider minecraft-font transition-all duration-75 flex items-center justify-center gap-2 border-t-2 border-l-2 border-zinc-400 border-b-4 border-r-4 border-zinc-950 bg-gradient-to-b from-zinc-600 via-zinc-700 to-zinc-800 shadow-[0_4px_0_#18181b,0_8px_16px_rgba(0,0,0,0.55)] active:translate-y-[3px] active:shadow-[0_1px_0_#18181b] hover:brightness-110 cursor-pointer"
-              style={{
-                textShadow: "1px 1px 0px #000, -1px -1px 0px #000",
-                backgroundImage: "linear-gradient(rgba(255,255,255,0.1) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.1) 1px, transparent 1px), linear-gradient(to bottom, #52525b, #3f3f46, #27272a)",
-                backgroundSize: "4px 4px, 4px 4px, 100% 100%"
-              }}
-            >
-              <i className="fas fa-user-secret text-zinc-300 text-xs" /> {t.option_guest}
-            </button>
+        <div className={`relative z-10 w-full h-full safe-area-inset overflow-y-auto flex ${compactSideBySide ? "flex-row items-center justify-center gap-6 px-4 py-3" : "flex-col items-center justify-between px-4 sm:px-6 py-4 sm:py-8"} transition-all duration-300 ${isCinemaMode ? "opacity-0 pointer-events-none scale-95" : "opacity-100 scale-100"}`}>
+          {/* Official Adventure Alpha Mobile Logo + Corner Star Splash + 3-Tap Cat Easter Eggs */}
+          <div className={`flex flex-col items-center justify-center shrink-0 ${compactSideBySide ? "" : "mt-2 sm:mt-4 flex-1"}`}>
+            <div className="relative inline-flex items-center justify-center">
+              <button
+                type="button"
+                onClick={handleTitleEasterEggTap}
+                className="relative cursor-pointer active:scale-95 transition-transform duration-150 focus:outline-none select-none bg-transparent border-0 p-0"
+                title="Adventure Alpha Mobile"
+              >
+                <img
+                  src="./assets/adventure-alpha-emblem.png"
+                  alt="Adventure Alpha Mobile"
+                  className={`${compactSideBySide ? "w-36 h-36" : "w-44 h-44 sm:w-56 sm:h-56 md:w-64 md:h-64"} max-h-[38dvh] aspect-square object-contain drop-shadow-[0_12px_28px_rgba(0,0,0,0.8)]`}
+                  onError={(e) => { (e.currentTarget as HTMLImageElement).src = "./assets/aistudio/1794943627139_ac65a7dd.jpg"; }}
+                />
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleSplashEasterEggTap();
+                }}
+                className="splash-bounce-tilt absolute -bottom-1 sm:bottom-1 -right-2 sm:-right-8 z-20 text-[#ffff55] font-extrabold text-[10px] sm:text-xs md:text-sm tracking-wide font-mono px-2 py-0.5 select-none cursor-pointer bg-transparent border-0 max-w-[190px] sm:max-w-[240px] leading-tight text-center"
+                style={{
+                  textShadow: "2px 2px 0px #3f3f00, 3px 3px 0px #000",
+                }}
+              >
+                ★ {MENU_SPLASHES[splashIndex]} ★
+              </button>
+            </div>
           </div>
-          
-          <div className="text-white/40 font-mono text-[9px] select-none uppercase tracking-widest text-center font-bold mt-1">
-            alpha Mobile 1.0.2
+
+          <div className={`max-w-[310px] sm:max-w-sm w-full flex flex-col items-center ${compactSideBySide ? "gap-2" : "gap-2.5 mb-1 sm:mb-2"}`}>
+            <p className="text-white font-extrabold text-center text-xs md:text-sm minecraft-font drop-shadow-[2px_2px_0_#000] bg-black/60 backdrop-blur-sm px-4 py-1.5 rounded-full border border-white/10">
+              {t.login_prompt}
+            </p>
+
+            <div className="flex flex-col w-full gap-2">
+              {/* Google Login button */}
+              <button
+                onClick={handleGoogleLogin}
+                className="w-full py-2.5 sm:py-3 px-4 rounded-lg text-zinc-900 font-extrabold text-xs sm:text-sm uppercase tracking-wider minecraft-font transition-all duration-75 flex items-center justify-center gap-2 border-t-2 border-l-2 border-white border-b-4 border-r-4 border-zinc-400 bg-gradient-to-b from-white via-zinc-100 to-zinc-200 shadow-[0_4px_0_#71717a,0_8px_16px_rgba(0,0,0,0.55)] active:translate-y-[3px] active:shadow-[0_1px_0_#71717a] hover:brightness-105 cursor-pointer"
+                style={{
+                  textShadow: "1px 1px 0px rgba(255,255,255,0.7)"
+                }}
+              >
+                <i className="fab fa-google text-red-500 text-sm" /> {t.login_google}
+              </button>
+
+              {/* Sign in button */}
+              <button
+                onClick={handleChooseSignIn}
+                className="w-full py-2.5 sm:py-3 px-4 rounded-lg text-white font-extrabold text-xs sm:text-sm uppercase tracking-wider minecraft-font transition-all duration-75 flex items-center justify-center gap-2 border-t-2 border-l-2 border-emerald-300 border-b-4 border-r-4 border-emerald-950 bg-gradient-to-b from-emerald-500 via-emerald-600 to-emerald-800 shadow-[0_4px_0_#064e3b,0_8px_16px_rgba(0,0,0,0.55)] active:translate-y-[3px] active:shadow-[0_1px_0_#064e3b] hover:brightness-110 cursor-pointer"
+                style={{
+                  textShadow: "1px 1px 0px #000, -1px -1px 0px #000",
+                  backgroundImage: "linear-gradient(rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(to bottom, #10b981, #059669, #065f46)",
+                  backgroundSize: "4px 4px, 4px 4px, 100% 100%"
+                }}
+              >
+                <i className="fas fa-lock text-emerald-200 text-xs" /> {t.option_sign_in}
+              </button>
+
+              {/* Guest button */}
+              <button
+                onClick={handleChooseGuest}
+                className="w-full py-2.5 sm:py-3 px-4 rounded-lg text-white/90 font-extrabold text-xs sm:text-sm uppercase tracking-wider minecraft-font transition-all duration-75 flex items-center justify-center gap-2 border-t-2 border-l-2 border-zinc-400 border-b-4 border-r-4 border-zinc-950 bg-gradient-to-b from-zinc-600 via-zinc-700 to-zinc-800 shadow-[0_4px_0_#18181b,0_8px_16px_rgba(0,0,0,0.55)] active:translate-y-[3px] active:shadow-[0_1px_0_#18181b] hover:brightness-110 cursor-pointer"
+                style={{
+                  textShadow: "1px 1px 0px #000, -1px -1px 0px #000",
+                  backgroundImage: "linear-gradient(rgba(255,255,255,0.1) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.1) 1px, transparent 1px), linear-gradient(to bottom, #52525b, #3f3f46, #27272a)",
+                  backgroundSize: "4px 4px, 4px 4px, 100% 100%"
+                }}
+              >
+                <i className="fas fa-user-secret text-zinc-300 text-xs" /> {t.option_guest}
+              </button>
+            </div>
+            
+            <div className="text-white/55 font-mono text-[9px] select-none uppercase tracking-widest text-center font-bold mt-0.5">
+              Adventure Alpha Mobile 1.0.2
+            </div>
           </div>
         </div>
       </div>
@@ -4343,7 +4443,7 @@ const App: React.FC = () => {
 
   if (appState === "login") {
     return (
-      <div className="w-full h-full bg-slate-900 flex flex-col items-center justify-center p-4 sm:p-6 relative overflow-hidden select-none">
+      <div className="w-full h-full bg-slate-900 flex flex-col items-center justify-start sm:justify-center safe-area-inset p-4 sm:p-6 relative overflow-y-auto select-none">
         {/* 3D Rotating Voxel Panorama */}
         <MenuPanorama3D 
           showLogo={false} 
@@ -4351,8 +4451,13 @@ const App: React.FC = () => {
           isCinemaMode={isCinemaMode} 
         />
 
-        <div className={`z-10 bg-black/80 backdrop-blur-xl p-6 sm:p-8 rounded-3xl border border-white/20 flex flex-col items-center shadow-2xl max-w-sm w-full my-auto transition-all duration-300 ${isCinemaMode ? "opacity-0 pointer-events-none scale-95" : "opacity-100 scale-100"}`}>
-          <h2 className="text-white text-3xl font-bold minecraft-font uppercase tracking-tighter mb-4 text-center drop-shadow-lg font-bold">
+        <div className={`z-10 bg-black/80 backdrop-blur-xl p-5 sm:p-7 rounded-3xl border border-white/20 flex flex-col items-center shadow-2xl max-w-sm w-full my-auto transition-all duration-300 ${isCinemaMode ? "opacity-0 pointer-events-none scale-95" : "opacity-100 scale-100"}`}>
+          <img
+            src="./assets/adventure-alpha-emblem.png"
+            alt="Adventure Alpha Mobile"
+            className="w-16 h-16 sm:w-20 sm:h-20 object-contain mb-2 drop-shadow-lg"
+          />
+          <h2 className="text-white text-2xl sm:text-3xl font-bold minecraft-font uppercase tracking-tighter mb-3 text-center drop-shadow-lg">
             {t.option_sign_in}
           </h2>
 
@@ -4587,9 +4692,9 @@ const App: React.FC = () => {
         onMouseUp={(e) => e.stopPropagation()}
         onMouseMove={(e) => e.stopPropagation()}
         onClick={(e) => e.stopPropagation()}
-        className="fixed inset-0 bg-black/85 backdrop-blur-md z-[100020] flex items-center justify-center p-4 overflow-y-auto pointer-events-auto text-left animate-in fade-in duration-200"
+        className="fixed inset-0 bg-black/85 backdrop-blur-md z-[100020] flex items-center justify-center safe-area-inset p-3 sm:p-4 overflow-y-auto pointer-events-auto text-left animate-in fade-in duration-200"
       >
-        <div className="bg-zinc-900 border-4 border-purple-600 p-6 sm:p-8 rounded-2xl w-full max-w-2xl shadow-2xl flex flex-col gap-4 relative text-white font-sans max-h-[90%]">
+        <div className="bg-zinc-900 border-4 border-purple-600 p-4 sm:p-8 rounded-2xl w-full max-w-2xl shadow-2xl flex flex-col gap-3 sm:gap-4 relative text-white font-sans max-h-[92dvh] overflow-y-auto my-auto">
           
           {/* Header */}
           <div className="flex justify-between items-center border-b border-zinc-700 pb-3">
@@ -6342,9 +6447,9 @@ const App: React.FC = () => {
         onMouseUp={(e) => e.stopPropagation()}
         onMouseMove={(e) => e.stopPropagation()}
         onClick={(e) => e.stopPropagation()}
-        className="fixed inset-0 bg-black/90 backdrop-blur-md z-[100010] flex items-center justify-center p-2.5 sm:p-5 overflow-y-auto pointer-events-auto text-left"
+        className="fixed inset-0 bg-black/90 backdrop-blur-md z-[100010] flex items-center justify-center safe-area-inset p-2.5 sm:p-5 overflow-y-auto pointer-events-auto text-left"
       >
-        <div className="bg-zinc-950 border-2 border-amber-500/50 p-4 sm:p-6 rounded-2xl w-full max-w-5xl shadow-2xl flex flex-col gap-4 relative text-white font-sans max-h-[92%] overflow-hidden">
+        <div className="bg-zinc-950 border-2 border-amber-500/50 p-3.5 sm:p-6 rounded-2xl w-full max-w-5xl shadow-2xl flex flex-col gap-3 sm:gap-4 relative text-white font-sans max-h-[92dvh] my-auto overflow-hidden">
           {/* Header */}
           <div className="flex flex-wrap justify-between items-center gap-3 border-b border-white/10 pb-3 shrink-0">
             <div className="flex items-center gap-3">
@@ -7446,9 +7551,9 @@ const App: React.FC = () => {
         onMouseUp={(e) => e.stopPropagation()}
         onMouseMove={(e) => e.stopPropagation()}
         onClick={(e) => e.stopPropagation()}
-        className="fixed inset-0 bg-black/85 backdrop-blur-md z-[100025] flex items-center justify-center p-2.5 sm:p-4 overflow-y-auto pointer-events-auto text-left"
+        className="fixed inset-0 bg-black/85 backdrop-blur-md z-[100025] flex items-center justify-center safe-area-inset p-2.5 sm:p-4 overflow-y-auto pointer-events-auto text-left"
       >
-        <div className="bg-zinc-950 border-4 border-cyan-500/70 p-4 sm:p-6 rounded-3xl w-full max-w-4xl shadow-2xl flex flex-col gap-3.5 text-white font-sans max-h-[92%]">
+        <div className="bg-zinc-950 border-4 border-cyan-500/70 p-3.5 sm:p-6 rounded-3xl w-full max-w-4xl shadow-2xl flex flex-col gap-3 text-white font-sans max-h-[92dvh] overflow-y-auto my-auto">
           {/* Header */}
           <div className="flex flex-wrap items-center justify-between gap-2.5 border-b border-white/10 pb-3 shrink-0">
             <div className="flex items-center gap-3">
@@ -8187,9 +8292,9 @@ const App: React.FC = () => {
         onMouseUp={(e) => e.stopPropagation()}
         onMouseMove={(e) => e.stopPropagation()}
         onClick={(e) => e.stopPropagation()}
-        className="fixed inset-0 bg-black/85 backdrop-blur-md z-[100010] flex items-center justify-center p-4 overflow-y-auto pointer-events-auto text-left"
+        className="fixed inset-0 bg-black/85 backdrop-blur-md z-[100010] flex items-center justify-center safe-area-inset p-3 sm:p-4 overflow-y-auto pointer-events-auto text-left"
       >
-        <div className="bg-zinc-900 border-4 border-yellow-600 p-6 sm:p-8 rounded-2xl w-full max-w-4xl shadow-2xl flex flex-col gap-4 relative animate-in fade-in zoom-in-95 duration-200 text-white font-sans max-h-[90%]">
+        <div className="bg-zinc-900 border-4 border-yellow-600 p-4 sm:p-8 rounded-2xl w-full max-w-4xl shadow-2xl flex flex-col gap-3 sm:gap-4 relative animate-in fade-in zoom-in-95 duration-200 text-white font-sans max-h-[92dvh] overflow-y-auto my-auto">
           
           {/* Header with Trophy */}
           <div className="flex justify-between items-center border-b border-zinc-700 pb-3">
@@ -8436,17 +8541,23 @@ const App: React.FC = () => {
     );
 
     return (
-      <div className="w-full h-full bg-slate-900 flex flex-col items-center justify-start sm:justify-center p-4 sm:p-8 relative overflow-y-auto select-none">
+      <div className="w-full h-full bg-slate-900 flex flex-col items-center justify-start sm:justify-center safe-area-inset p-3 sm:p-8 relative overflow-y-auto select-none">
         {/* 3D Rotating Voxel Panorama */}
         <MenuPanorama3D showLogo={false} />
 
-        <div className="z-10 bg-zinc-950/90 backdrop-blur-2xl p-6 sm:p-8 rounded-[32px] border border-white/10 flex flex-col w-full max-w-4xl shadow-3xl my-auto">
+        <div className="z-10 bg-zinc-950/90 backdrop-blur-2xl p-4 sm:p-8 rounded-[28px] sm:rounded-[32px] border border-white/10 flex flex-col w-full max-w-4xl shadow-3xl my-auto">
           {/* Header */}
-          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6 border-b border-white/5 pb-4">
-            <div>
-              <h2 className="text-white text-3xl font-extrabold minecraft-font tracking-tighter uppercase flex items-center gap-2">
-                <span className="text-emerald-400">⚡ MUNDOS</span> DE EXPLORACIÓN
-              </h2>
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 sm:gap-4 mb-5 border-b border-white/5 pb-4">
+            <div className="flex items-center gap-3">
+              <img
+                src="./assets/adventure-alpha-emblem.png"
+                alt="Adventure Alpha Mobile"
+                className="w-11 h-11 sm:w-14 sm:h-14 object-contain shrink-0 drop-shadow-md"
+              />
+              <div>
+                <h2 className="text-white text-xl sm:text-3xl font-extrabold minecraft-font tracking-tighter uppercase flex items-center gap-2">
+                  <span className="text-emerald-400">⚡ MUNDOS</span> DE EXPLORACIÓN
+                </h2>
               <div className="text-zinc-400 text-xs mt-0.5 font-medium flex items-center gap-2 flex-wrap">
                 <span>Gestiona y crea tus tierras infinitas personalizadas</span>
                 <span className={`text-[9px] font-bold px-2 py-0.5 rounded-md font-mono uppercase ${
@@ -8458,6 +8569,7 @@ const App: React.FC = () => {
                 }`}>
                   {worlds.length} / {isBypassingWorldLimit ? "ILIMITADOS" : "70"} MUNDOS
                 </span>
+              </div>
               </div>
             </div>
             <div className="flex items-center gap-2 flex-wrap">
@@ -8804,13 +8916,62 @@ const App: React.FC = () => {
     if (mvpActive || ownedShopItems.includes("skin_obsidian")) unlockedSkinsList.push("obsidian");
 
     return (
-      <div className="w-full h-full bg-slate-900 relative overflow-hidden select-none">
-        {/* 3D Rotating Voxel Panorama & 3D Logo */}
+      <div className="w-full h-full bg-slate-900 relative overflow-hidden select-none safe-area-inset">
+        {/* 3D Rotating Voxel Panorama Background */}
         <MenuPanorama3D 
-          showLogo={true} 
+          showLogo={false} 
           onEnterCinemaMode={() => setIsCinemaMode(!isCinemaMode)} 
           isCinemaMode={isCinemaMode} 
         />
+
+        {/* Official Adventure Alpha Mobile Logo + Corner Star Splash + 3-Tap Cat Easter Eggs */}
+        <div
+          className={`z-20 absolute flex flex-col items-center transition-all duration-300 ${
+            isVeryCompactHeight && !isPortrait
+              ? "left-1/2 -translate-x-1/2 top-10"
+              : isPortrait
+                ? "left-3 sm:left-1/2 sm:-translate-x-1/2 top-20 sm:top-16"
+                : "left-1/2 -translate-x-1/2 top-12 sm:top-14"
+          } ${isCinemaMode ? "opacity-0 pointer-events-none scale-90" : "opacity-100 scale-100"}`}
+        >
+          <div className="relative inline-flex items-center justify-center">
+            <button
+              type="button"
+              onClick={handleTitleEasterEggTap}
+              className="relative cursor-pointer active:scale-95 transition-transform duration-150 focus:outline-none select-none bg-transparent border-0 p-0"
+              title="Adventure Alpha Mobile"
+            >
+              <img
+                src="./assets/adventure-alpha-emblem.png"
+                alt="Adventure Alpha Mobile"
+                className={`${
+                  isVeryCompactHeight && !isPortrait
+                    ? "w-24 h-24"
+                    : isPortrait
+                      ? "w-36 h-36 sm:w-44 sm:h-44"
+                      : "w-36 h-36 sm:w-48 sm:h-48"
+                } max-h-[30dvh] aspect-square object-contain drop-shadow-[0_10px_24px_rgba(0,0,0,0.85)]`}
+                onError={(e) => { (e.currentTarget as HTMLImageElement).src = "./assets/aistudio/1794943627139_ac65a7dd.jpg"; }}
+              />
+            </button>
+
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleSplashEasterEggTap();
+              }}
+              className={`splash-bounce-tilt absolute -bottom-1 sm:bottom-0 ${
+                isPortrait ? "-right-2 sm:-right-8" : "-right-4 sm:-right-10"
+              } z-20 text-[#ffff55] font-extrabold text-[9.5px] sm:text-xs tracking-wide font-mono px-1.5 py-0.5 select-none cursor-pointer bg-transparent border-0 max-w-[145px] sm:max-w-[210px] leading-tight text-center`}
+              style={{
+                textShadow: "2px 2px 0px #3f3f00, 3px 3px 0px #000",
+              }}
+            >
+              ★ {MENU_SPLASHES[splashIndex]} ★
+            </button>
+          </div>
+        </div>
 
         {/* Top-Left Floating User Profile & Indef Wallet Bar */}
         <div className={`absolute top-3 sm:top-4 left-3 sm:left-4 pr-28 sm:pr-4 z-20 flex flex-wrap items-center gap-2 transition-all duration-300 ${isCinemaMode ? "opacity-0 pointer-events-none -translate-y-4" : "opacity-100 translate-y-0"}`}>
@@ -8941,16 +9102,16 @@ const App: React.FC = () => {
           hidden={isCinemaMode}
         />
 
-        {/* 3D Textured Minecraft Menu Buttons (Centered Bottom) */}
-        <div className={`absolute bottom-3 sm:bottom-5 left-1/2 -translate-x-1/2 w-full max-w-[300px] sm:max-w-sm px-3 flex flex-col gap-2 z-20 transition-all duration-300 ${isCinemaMode ? "opacity-0 pointer-events-none translate-y-12" : "opacity-100 translate-y-0"}`}>
+        {/* 3D Textured Minecraft Menu Buttons (Auto-scaled for any mobile/tablet screen) */}
+        <div className={`absolute ${isVeryCompactHeight ? "bottom-2" : "bottom-3 sm:bottom-5"} left-1/2 -translate-x-1/2 w-full ${isPortrait && screenSize.width < 480 ? "max-w-[min(90vw,285px)]" : "max-w-[300px] sm:max-w-sm"} px-2.5 sm:px-3 flex flex-col ${isVeryCompactHeight ? "gap-1.5" : "gap-2"} z-20 transition-all duration-300 ${isCinemaMode ? "opacity-0 pointer-events-none translate-y-12" : "opacity-100 translate-y-0"}`}>
           {/* 1. PLAY & REALMS ROW */}
-          <div className="grid grid-cols-12 gap-2 w-full">
+          <div className="grid grid-cols-12 gap-1.5 sm:gap-2 w-full">
             <button
               onClick={() => {
                 resumeAudio();
                 setAppState("worlds-list");
               }}
-              className="col-span-7 relative group py-3 sm:py-3.5 px-3 rounded-lg text-white font-black text-sm sm:text-base uppercase tracking-widest minecraft-font transition-all duration-75 flex items-center justify-center gap-2 border-t-2 border-l-2 border-emerald-300/90 border-b-4 border-r-4 border-emerald-950 bg-gradient-to-b from-emerald-500 via-emerald-600 to-emerald-800 shadow-[0_5px_0_#064e3b,0_10px_20px_rgba(0,0,0,0.65)] active:translate-y-[4px] active:shadow-[0_1px_0_#064e3b,0_4px_10px_rgba(0,0,0,0.5)] hover:brightness-110 select-none cursor-pointer"
+              className={`col-span-7 relative group ${isVeryCompactHeight ? "py-2" : "py-2.5 sm:py-3.5"} px-3 rounded-lg text-white font-black text-sm sm:text-base uppercase tracking-widest minecraft-font transition-all duration-75 flex items-center justify-center gap-2 border-t-2 border-l-2 border-emerald-300/90 border-b-4 border-r-4 border-emerald-950 bg-gradient-to-b from-emerald-500 via-emerald-600 to-emerald-800 shadow-[0_5px_0_#064e3b,0_10px_20px_rgba(0,0,0,0.65)] active:translate-y-[4px] active:shadow-[0_1px_0_#064e3b,0_4px_10px_rgba(0,0,0,0.5)] hover:brightness-110 select-none cursor-pointer`}
               style={{
                 textShadow: "2px 2px 0px #000, -1px -1px 0px #000, 1px -1px 0px #000, -1px 1px 0px #000",
                 backgroundImage: "linear-gradient(rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(to bottom, #10b981, #059669, #065f46)",
@@ -9098,7 +9259,7 @@ const App: React.FC = () => {
 
     return (
       <div
-        className={`fixed inset-0 w-full h-full flex flex-col items-center justify-start sm:justify-center p-2.5 sm:p-6 overflow-y-auto overscroll-contain select-none ${
+        className={`fixed inset-0 w-full h-full flex flex-col items-center justify-start sm:justify-center safe-area-inset p-2.5 sm:p-6 overflow-y-auto overscroll-contain select-none ${
           asOverlay ? "z-[100005] bg-slate-950/90 backdrop-blur-md" : "bg-slate-950"
         }`}
         onPointerDown={asOverlay ? (e) => e.stopPropagation() : undefined}
@@ -9114,7 +9275,7 @@ const App: React.FC = () => {
         {/* 3D Rotating Voxel Panorama only in menu mode */}
         {!asOverlay && <MenuPanorama3D showLogo={false} />}
 
-        <div className="z-10 bg-black/85 backdrop-blur-2xl p-4 sm:p-8 rounded-3xl border border-white/15 flex flex-col items-center shadow-2xl max-w-2xl w-full max-h-[94%] my-auto transition-all overflow-hidden">
+        <div className="z-10 bg-black/85 backdrop-blur-2xl p-3.5 sm:p-8 rounded-3xl border border-white/15 flex flex-col items-center shadow-2xl max-w-2xl w-full max-h-[94dvh] my-auto transition-all overflow-hidden">
           {/* Header */}
           <div className="flex flex-col items-center justify-center w-full mb-5">
             <h1 className="text-white text-2xl sm:text-3xl font-black minecraft-font uppercase tracking-tight text-center drop-shadow-lg flex items-center gap-2.5">
@@ -10155,8 +10316,8 @@ const App: React.FC = () => {
     };
 
     return (
-      <div className="fixed inset-0 z-[150] bg-black/85 backdrop-blur-md flex flex-col items-center justify-center p-4 sm:p-6 overflow-y-auto">
-        <div className="bg-zinc-900 border-2 border-orange-500/40 rounded-3xl p-6 max-w-2xl w-full shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+      <div className="fixed inset-0 z-[150] bg-black/85 backdrop-blur-md flex flex-col items-center justify-center safe-area-inset p-3 sm:p-6 overflow-y-auto">
+        <div className="bg-zinc-900 border-2 border-orange-500/40 rounded-3xl p-4 sm:p-6 max-w-2xl w-full max-h-[92dvh] overflow-y-auto my-auto shadow-2xl animate-in fade-in zoom-in-95 duration-200">
           <div className="flex justify-between items-center border-b border-white/10 pb-3 mb-4">
             <h3 className="text-white text-xl font-bold minecraft-font flex items-center gap-2 uppercase tracking-wide">
               <i className="fas fa-fire text-orange-500 animate-pulse" />
@@ -10304,8 +10465,8 @@ const App: React.FC = () => {
     };
 
     return (
-      <div className="fixed inset-0 z-[150] bg-black/85 backdrop-blur-md flex flex-col items-center justify-center p-4 sm:p-6 overflow-y-auto">
-        <div className="bg-zinc-900 border-2 border-yellow-600/40 rounded-3xl p-6 max-w-3xl w-full shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+      <div className="fixed inset-0 z-[150] bg-black/85 backdrop-blur-md flex flex-col items-center justify-center safe-area-inset p-3 sm:p-6 overflow-y-auto">
+        <div className="bg-zinc-900 border-2 border-yellow-600/40 rounded-3xl p-4 sm:p-6 max-w-3xl w-full max-h-[92dvh] overflow-y-auto my-auto shadow-2xl animate-in fade-in zoom-in-95 duration-200">
           <div className="flex justify-between items-center border-b border-white/10 pb-3 mb-5">
             <h3 className="text-white text-xl font-bold minecraft-font flex items-center gap-2 uppercase tracking-wide">
               <i className="fas fa-box text-yellow-500" />
@@ -10410,8 +10571,8 @@ const App: React.FC = () => {
     };
 
     return (
-      <div className="fixed inset-0 z-[150] bg-black/85 backdrop-blur-md flex flex-col items-center justify-center p-4 sm:p-6 overflow-y-auto">
-        <div className="bg-zinc-900 border-2 border-indigo-500/40 rounded-3xl p-6 max-w-xl w-full shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+      <div className="fixed inset-0 z-[150] bg-black/85 backdrop-blur-md flex flex-col items-center justify-center safe-area-inset p-3 sm:p-6 overflow-y-auto">
+        <div className="bg-zinc-900 border-2 border-indigo-500/40 rounded-3xl p-4 sm:p-6 max-w-xl w-full max-h-[92dvh] overflow-y-auto my-auto shadow-2xl animate-in fade-in zoom-in-95 duration-200">
           <div className="flex justify-between items-center border-b border-white/10 pb-3 mb-5">
             <h3 className="text-white text-xl font-bold minecraft-font flex items-center gap-2 uppercase tracking-wide">
               <i className="fas fa-map text-indigo-400 animate-bounce" />
@@ -10519,21 +10680,19 @@ const App: React.FC = () => {
     }
 
     return (
-      <div className="fixed inset-0 z-[150] bg-black/90 backdrop-blur-md flex flex-col items-center justify-center p-4 sm:p-6 overflow-y-auto">
-        <div className="bg-zinc-900 border-2 border-emerald-500/40 rounded-3xl p-6 max-w-md w-full shadow-2xl animate-in fade-in zoom-in-95 duration-200">
-          <div className="fixed top-6 right-6">
-            <button
-              onClick={() => setIsMapOpen(false)}
-              className="bg-zinc-800 hover:bg-zinc-700 text-zinc-400 w-10 h-10 rounded-full flex items-center justify-center border border-white/5"
-            >
-              <i className="fas fa-times text-sm" />
-            </button>
-          </div>
-          <div className="flex justify-between items-center border-b border-white/10 pb-3 mb-5">
+      <div className="fixed inset-0 z-[150] bg-black/90 backdrop-blur-md flex flex-col items-center justify-center safe-area-inset p-3 sm:p-6 overflow-y-auto">
+        <div className="bg-zinc-900 border-2 border-emerald-500/40 rounded-3xl p-4 sm:p-6 max-w-md w-full max-h-[92dvh] overflow-y-auto my-auto shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+          <div className="flex justify-between items-center border-b border-white/10 pb-3 mb-4">
             <h3 className="text-white text-lg font-bold minecraft-font flex items-center gap-2 uppercase tracking-wide">
               <i className="fas fa-map-location-dot text-emerald-400 animate-pulse" />
               <span>Mapa Localizador HUD</span>
             </h3>
+            <button
+              onClick={() => setIsMapOpen(false)}
+              className="bg-zinc-800 hover:bg-zinc-700 text-zinc-400 w-8 h-8 rounded-full flex items-center justify-center border border-white/5 shrink-0"
+            >
+              <i className="fas fa-times text-xs" />
+            </button>
           </div>
 
           <div className="bg-zinc-950 p-4 rounded-2xl border border-white/5 flex flex-col items-center gap-4">
@@ -10788,9 +10947,9 @@ const App: React.FC = () => {
         </div>
       </div>
 
-      <div className="fixed inset-0 z-20 pointer-events-none overflow-hidden select-none">
+      <div className="fixed inset-0 z-20 pointer-events-none overflow-hidden select-none safe-area-inset">
         {/* Top-Left: Stats + Chat */}
-        <div className={`absolute top-0 left-0 flex flex-col gap-1.5 items-start ${isPortrait ? "max-w-[calc(100vw-72px)]" : "max-w-[230px] sm:max-w-[280px]"} pointer-events-none ${uiScaleConfig.containerPadding}`}>
+        <div className={`absolute top-0 left-0 flex flex-col gap-1.5 items-start ${isPortrait ? "max-w-[calc(100%-72px)]" : "max-w-[230px] sm:max-w-[280px]"} pointer-events-none ${uiScaleConfig.containerPadding}`}>
           <div
             className={`bg-black/80 rounded-xl border border-white/15 pointer-events-auto transition-all duration-300 ${uiScaleConfig.statsPadding}`}
             onPointerDown={(e) => e.stopPropagation()}
@@ -11583,7 +11742,7 @@ const App: React.FC = () => {
             </div>
           )}
 
-          <div className={`flex flex-col gap-1.5 sm:gap-3 items-center pointer-events-none min-w-0 ${isPortrait && showTouchControls ? "order-3 basis-full w-full max-w-full" : "flex-1 max-w-[calc(100vw-180px)] sm:max-w-lg"}`}>
+          <div className={`flex flex-col gap-1.5 sm:gap-3 items-center pointer-events-none min-w-0 ${isPortrait && showTouchControls ? "order-3 basis-full w-full max-w-full" : "flex-1 max-w-[calc(100%-156px)] sm:max-w-lg"}`}>
             {/* HUD de Oxígeno, Vida y Comida */}
             <div
               className="flex flex-col gap-0.5 sm:gap-1 items-center drop-shadow-md w-full px-1 sm:px-2 mb-0.5 sm:mb-1 pointer-events-auto"
@@ -11903,7 +12062,7 @@ const App: React.FC = () => {
           onMouseUp={(e) => e.stopPropagation()}
           onMouseMove={(e) => e.stopPropagation()}
           onClick={(e) => e.stopPropagation()}
-          className="fixed inset-0 z-[100] bg-zinc-950/98 p-4 sm:p-6 flex flex-col items-center overflow-y-auto"
+          className="fixed inset-0 z-[100] bg-zinc-950/98 safe-area-inset p-3 sm:p-6 flex flex-col items-center overflow-y-auto"
         >
           {/* Modal Header */}
           <div className="flex justify-between w-full max-w-3xl mb-6 items-center border-b border-white/10 pb-4">
@@ -12325,8 +12484,8 @@ const App: React.FC = () => {
 
       {/* Gemini Suggestion Modal */}
       {suggestion && (
-        <div className="fixed inset-0 z-[110] bg-indigo-950/60 backdrop-blur-sm flex items-center justify-center p-6">
-          <div className="bg-zinc-900 border-2 border-indigo-500/50 rounded-3xl w-full max-w-md p-6 shadow-2xl animate-in fade-in zoom-in duration-300">
+        <div className="fixed inset-0 z-[110] bg-indigo-950/60 backdrop-blur-sm flex items-center justify-center safe-area-inset p-3 sm:p-6 overflow-y-auto">
+          <div className="bg-zinc-900 border-2 border-indigo-500/50 rounded-3xl w-full max-w-md p-4 sm:p-6 max-h-[92dvh] overflow-y-auto my-auto shadow-2xl animate-in fade-in zoom-in duration-300">
             <div className="flex justify-between items-center mb-6">
               <span className="bg-indigo-600/30 text-indigo-400 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider border border-indigo-500/20">
                 {t.suggestion_title}
@@ -12445,9 +12604,9 @@ const App: React.FC = () => {
           onMouseUp={(e) => e.stopPropagation()}
           onMouseMove={(e) => e.stopPropagation()}
           onClick={(e) => e.stopPropagation()}
-          className="fixed inset-0 z-[120] bg-zinc-950/95 backdrop-blur-md p-4 sm:p-6 flex flex-col items-center justify-center pointer-events-auto"
+          className="fixed inset-0 z-[120] bg-zinc-950/95 backdrop-blur-md safe-area-inset p-3 sm:p-6 flex flex-col items-center justify-center overflow-y-auto pointer-events-auto"
         >
-          <div className="w-full max-w-xl bg-zinc-900 border-2 border-sky-500/30 rounded-3xl p-5 flex flex-col h-[85vh] sm:h-[75vh] shadow-2xl animate-in fade-in zoom-in-95 duration-205">
+          <div className="w-full max-w-xl bg-zinc-900 border-2 border-sky-500/30 rounded-3xl p-4 sm:p-5 flex flex-col h-[85dvh] sm:h-[75dvh] max-h-[92dvh] my-auto shadow-2xl animate-in fade-in zoom-in-95 duration-205">
             {/* Modal Header */}
             <div className="flex justify-between items-center border-b border-white/10 pb-3 mb-4">
               <div className="flex items-center gap-2">
@@ -13035,6 +13194,12 @@ const App: React.FC = () => {
       }
     >
       {renderAppScreen()}
+      <CatEasterEggs
+        activeEgg={activeCatEasterEgg}
+        lang={lang}
+        onClose={() => setActiveCatEasterEgg(null)}
+        onSwitchEgg={(next) => setActiveCatEasterEgg(next)}
+      />
     </div>
   );
 };

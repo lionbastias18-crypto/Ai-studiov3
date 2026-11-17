@@ -264,6 +264,7 @@ export const MenuPanorama3D: React.FC<MenuPanorama3DProps> = ({
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [splashIndex, setSplashIndex] = useState(0);
+  const [webglFailed, setWebglFailed] = useState(false);
 
   const splashes = [
     "¡60 FPS Ultra Optimizado!",
@@ -288,13 +289,17 @@ export const MenuPanorama3D: React.FC<MenuPanorama3DProps> = ({
 
     // Detect software WebGL to adapt pixel ratio and effects
     const isSoftwareGl = (() => {
-      const gl = document.createElement("canvas").getContext("webgl2");
-      if (!gl) return true;
-      const ext = gl.getExtension("WEBGL_debug_renderer_info");
-      const param = ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER;
-      const gpu = String(gl.getParameter(param));
-      gl.getExtension("WEBGL_lose_context")?.loseContext();
-      return /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(gpu);
+      try {
+        const gl = document.createElement("canvas").getContext("webgl2") || document.createElement("canvas").getContext("webgl");
+        if (!gl) return true;
+        const ext = gl.getExtension("WEBGL_debug_renderer_info");
+        const param = ext ? ext.UNMASKED_RENDERER_WEBGL : (gl as WebGLRenderingContext).RENDERER;
+        const gpu = String((gl as WebGLRenderingContext).getParameter(param));
+        gl.getExtension("WEBGL_lose_context")?.loseContext();
+        return /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(gpu);
+      } catch {
+        return true;
+      }
     })();
 
     // 1. Scene & Camera Setup
@@ -302,23 +307,39 @@ export const MenuPanorama3D: React.FC<MenuPanorama3DProps> = ({
     scene.background = new THREE.Color("#82bcf2"); // Minecraft day sky color
     scene.fog = new THREE.FogExp2("#82bcf2", 0.024);
 
-    const width = container.clientWidth || window.innerWidth;
-    const height = container.clientHeight || window.innerHeight;
+    const width = Math.max(1, container.clientWidth || window.innerWidth || 360);
+    const height = Math.max(1, container.clientHeight || window.innerHeight || 640);
 
     const camera = new THREE.PerspectiveCamera(65, width / height, 0.1, 200);
     camera.position.set(0, 11, 0);
 
-    // 2. Renderer
-    const renderer = new THREE.WebGLRenderer({
-      antialias: !isSoftwareGl,
-      powerPreference: "high-performance",
-      alpha: false
-    });
+    // 2. Renderer (wrapped cleanly so low-memory Android WebViews never crash to a black screen)
+    let renderer: THREE.WebGLRenderer;
+    try {
+      renderer = new THREE.WebGLRenderer({
+        antialias: !isSoftwareGl,
+        powerPreference: "high-performance",
+        alpha: false
+      });
+    } catch (err) {
+      console.warn("MenuPanorama3D WebGL unavailable, switching to scenic image fallback:", err);
+      setWebglFailed(true);
+      return;
+    }
+    setWebglFailed(false);
     renderer.setSize(width, height);
     renderer.setPixelRatio(isSoftwareGl ? 1 : Math.min(window.devicePixelRatio || 1, 1.5));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.1;
+
+    renderer.domElement.addEventListener("webglcontextlost", (e) => {
+      e.preventDefault();
+      setWebglFailed(true);
+    });
+    renderer.domElement.addEventListener("webglcontextrestored", () => {
+      setWebglFailed(false);
+    });
 
     container.appendChild(renderer.domElement);
 
@@ -668,11 +689,11 @@ export const MenuPanorama3D: React.FC<MenuPanorama3DProps> = ({
 
     animate();
 
-    // 11. Responsive Resize
+    // 11. Responsive Resize (with ResizeObserver for Android WebView & virtual orientation changes)
     const handleResize = () => {
       if (!container) return;
-      const newWidth = container.clientWidth || window.innerWidth;
-      const newHeight = container.clientHeight || window.innerHeight;
+      const newWidth = Math.max(1, container.clientWidth || window.innerWidth || 360);
+      const newHeight = Math.max(1, container.clientHeight || window.innerHeight || 640);
 
       camera.aspect = newWidth / newHeight;
       camera.updateProjectionMatrix();
@@ -689,10 +710,16 @@ export const MenuPanorama3D: React.FC<MenuPanorama3DProps> = ({
     };
 
     window.addEventListener("resize", handleResize);
+    let resizeObserver: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== "undefined") {
+      resizeObserver = new ResizeObserver(() => handleResize());
+      resizeObserver.observe(container);
+    }
 
     // Cleanup resources cleanly when unmounting (Zero memory leaks)
     return () => {
       cancelAnimationFrame(animationFrameId);
+      resizeObserver?.disconnect();
       window.removeEventListener("resize", handleResize);
       window.removeEventListener("pointerdown", onPointerDown);
       window.removeEventListener("pointermove", onPointerMove);
@@ -731,7 +758,16 @@ export const MenuPanorama3D: React.FC<MenuPanorama3DProps> = ({
   }, [showLogo]);
 
   return (
-    <div className="absolute inset-0 w-full h-full overflow-hidden pointer-events-auto select-none">
+    <div className="absolute inset-0 w-full h-full overflow-hidden pointer-events-auto select-none bg-gradient-to-b from-sky-900 via-slate-900 to-zinc-950">
+      {/* Scenic fallback backdrop if Android WebView lacks WebGL */}
+      {webglFailed && (
+        <img
+          src="./assets/aistudio/1794943627139_ac65a7dd.jpg"
+          alt="Adventure Alpha Mobile"
+          className="absolute inset-0 w-full h-full object-cover opacity-55 blur-[2px] scale-105 pointer-events-none"
+        />
+      )}
+
       {/* 3D WebGL Canvas Container */}
       <div ref={containerRef} className="absolute inset-0 w-full h-full cursor-grab active:cursor-grabbing" />
 

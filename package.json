@@ -13,13 +13,16 @@
   },
   "dependencies": {
     "@capacitor/core": "^8.4.0",
+    "@fortawesome/fontawesome-free": "^7.3.1",
     "@google/genai": "^1.38.0",
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.5.0",
+    "@tailwindcss/vite": "^4.3.5",
     "firebase": "^12.14.0",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
     "simplex-noise": "^4.0.3",
+    "tailwindcss": "^4.3.5",
     "three": "^0.182.0"
   },
   "devDependencies": {
