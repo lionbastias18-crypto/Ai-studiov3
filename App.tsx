@@ -2177,6 +2177,14 @@ const App: React.FC = () => {
       setLoginError(formatGoogleAuthError(err, lang));
     });
 
+    const handleAndroidOAuthError = (ev: Event) => {
+      if (!mounted) return;
+      const code = (ev as CustomEvent<{ code?: string }>)?.detail?.code || "auth/disallowed-useragent";
+      setIsGoogleLoginLoading(false);
+      setLoginError(formatGoogleAuthError({ code }, lang));
+    };
+    window.addEventListener("android-oauth-error", handleAndroidOAuthError);
+
     const unsubscribe = auth.onAuthStateChanged(async (user) => {
       if (!mounted) return;
       if (user) {
@@ -2204,6 +2212,7 @@ const App: React.FC = () => {
     });
     return () => {
       mounted = false;
+      window.removeEventListener("android-oauth-error", handleAndroidOAuthError);
       unsubscribe();
     };
   }, []);
@@ -2264,18 +2273,36 @@ const App: React.FC = () => {
           }
         });
       }
-    } else if (!isFirestoreWritePaused()) {
-      // For any other user, ensure their metadata is set/updated on login
-      setDoc(roleRef, {
-        displayName: googleUser.displayName || googleUser.email || emailKey,
-        lastActive: Date.now()
-      }, { merge: true }).catch(err => {
-        if (isQuotaExceededError(err)) {
-          markFirestoreQuotaExceeded(err);
-        } else {
-          console.warn("Error updating user metadata:", err);
-        }
-      });
+    } else if (!isFirestoreWritePaused() && googleUser.emailVerified !== false) {
+      // Ensure user_roles document satisfies firestore.rules (requires email & valid role)
+      getDoc(roleRef)
+        .then((snap) => {
+          const existingRole = snap.exists() ? snap.data()?.role : undefined;
+          const validRole =
+            existingRole === "owner" ||
+            existingRole === "staff" ||
+            existingRole === "mod" ||
+            existingRole === "user"
+              ? existingRole
+              : "user";
+          return setDoc(
+            roleRef,
+            {
+              email: emailKey,
+              role: validRole,
+              displayName: googleUser.displayName || googleUser.email || emailKey,
+              lastActive: Date.now()
+            },
+            { merge: true }
+          );
+        })
+        .catch(err => {
+          if (isQuotaExceededError(err)) {
+            markFirestoreQuotaExceeded(err);
+          } else {
+            console.warn("Error updating user metadata:", err);
+          }
+        });
     }
 
     const unsubRole = onSnapshot(roleRef, (snapshot) => {

@@ -1,12 +1,15 @@
 import { initializeApp } from "firebase/app";
 import {
+  Auth,
   getAuth,
+  initializeAuth,
   signInWithPopup,
   signInWithRedirect,
   getRedirectResult,
-  setPersistence,
   indexedDBLocalPersistence,
   browserLocalPersistence,
+  inMemoryPersistence,
+  browserPopupRedirectResolver,
   GoogleAuthProvider,
   signOut,
   onAuthStateChanged,
@@ -35,10 +38,20 @@ import { RealmData } from "../types";
 
 // Initialize Firebase
 const app = initializeApp(firebaseConfig);
-export const auth = getAuth(app);
-setPersistence(auth, indexedDBLocalPersistence).catch(() => {
-  setPersistence(auth, browserLocalPersistence).catch(() => {});
-});
+let authInstance: Auth;
+try {
+  authInstance = initializeAuth(app, {
+    persistence: [
+      indexedDBLocalPersistence,
+      browserLocalPersistence,
+      inMemoryPersistence,
+    ],
+    popupRedirectResolver: browserPopupRedirectResolver,
+  });
+} catch {
+  authInstance = getAuth(app);
+}
+export const auth = authInstance;
 
 // Configure resilient Firestore with custom multi-tab local caching
 let dbInstance;
@@ -217,14 +230,24 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   throw new Error(JSON.stringify(errInfo));
 }
 
+let lastAndroidOAuthErrorCode: string | null = null;
+if (typeof window !== "undefined") {
+  window.addEventListener("android-oauth-error", (ev: Event) => {
+    const code = (ev as CustomEvent<{ code?: string }>)?.detail?.code;
+    if (code) {
+      lastAndroidOAuthErrorCode = code;
+    }
+  });
+}
+
 export function isNativeCapacitorAndroid(): boolean {
   if (typeof window === "undefined") return false;
   const cap = (window as any).Capacitor;
-  if (cap?.isNativePlatform?.()) return true;
+  if (cap?.isNativePlatform?.() || cap?.getPlatform?.() === "android") return true;
   return (
-    window.location.origin === "https://localhost" &&
     typeof navigator !== "undefined" &&
-    /Android/i.test(navigator.userAgent || "")
+    /Android/i.test(navigator.userAgent || "") &&
+    (window.location.origin === "https://localhost" || Boolean(cap))
   );
 }
 
@@ -239,6 +262,16 @@ export function formatGoogleAuthError(error: unknown, lang: string = "es"): stri
       ? `Dominio "${host}" no autorizado en Firebase Console -> Authentication -> Configuración -> Dominios autorizados.`
       : `Domain "${host}" is not authorized in Firebase Console -> Authentication -> Settings -> Authorized domains.`;
   }
+  if (code === "auth/disallowed-useragent" || message.includes("disallowed_useragent")) {
+    return lang === "es"
+      ? "Google bloqueó el acceso dentro del WebView integrado (403 disallowed_useragent). Usa 'Iniciar Sesión' local o juega como Invitado en el APK."
+      : "Google blocked sign-in inside the embedded WebView (403 disallowed_useragent). Use local Sign In or Guest mode in the APK.";
+  }
+  if (code === "auth/missing-initial-state" || code === "auth/no-auth-event") {
+    return lang === "es"
+      ? "El navegador bloqueó el almacenamiento de sesión durante la redirección de Google. Permite cookies de terceros o abre la app en Chrome/Safari."
+      : "Browser storage was blocked during Google redirect. Enable cookies or open the app in Chrome/Safari.";
+  }
   if (code === "auth/popup-closed-by-user" || code === "auth/cancelled-popup-request") {
     return lang === "es"
       ? "Inicio de sesión con Google cancelado."
@@ -246,8 +279,13 @@ export function formatGoogleAuthError(error: unknown, lang: string = "es"): stri
   }
   if (code === "auth/popup-blocked") {
     return lang === "es"
-      ? "El navegador bloqueó la ventana emergente de Google. Intenta de nuevo."
-      : "The browser blocked the Google popup. Please try again.";
+      ? "El navegador bloqueó la ventana emergente de Google. Permite las ventanas emergentes para este sitio e inténtalo de nuevo."
+      : "The browser blocked the Google popup. Allow popups for this site and try again.";
+  }
+  if (code === "auth/operation-not-supported-in-this-environment") {
+    return lang === "es"
+      ? "Este entorno o vista previa no soporta el inicio de sesión emergente aquí. Abre el juego en una pestaña normal de Chrome/Safari."
+      : "This browser environment blocks Google popup authentication here. Open the game in a normal Chrome/Safari tab.";
   }
   if (code === "auth/network-request-failed") {
     return lang === "es"
@@ -282,20 +320,23 @@ export async function checkGoogleRedirectResult(): Promise<User | null> {
 
 // Public API Auth
 export async function loginWithGoogle(): Promise<User | null> {
-  // Inside Android Capacitor WebView, popups break across intents/window.opener; use in-WebView redirect
-  if (isNativeCapacitorAndroid()) {
-    await signInWithRedirect(auth, googleProvider);
-    return null;
-  }
+  lastAndroidOAuthErrorCode = null;
+  const nativeAndroid = isNativeCapacitorAndroid();
 
   try {
     const result = await signInWithPopup(auth, googleProvider);
     return result.user;
   } catch (error: any) {
+    if (lastAndroidOAuthErrorCode) {
+      const code = lastAndroidOAuthErrorCode;
+      lastAndroidOAuthErrorCode = null;
+      throw Object.assign(new Error(code), { code });
+    }
     const code = String(error?.code || "");
     if (
-      code === "auth/popup-blocked" ||
-      code === "auth/operation-not-supported-in-this-environment"
+      nativeAndroid &&
+      (code === "auth/popup-blocked" ||
+        code === "auth/operation-not-supported-in-this-environment")
     ) {
       await signInWithRedirect(auth, googleProvider);
       return null;

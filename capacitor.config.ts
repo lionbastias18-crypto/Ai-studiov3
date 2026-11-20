@@ -6,15 +6,19 @@ const config: CapacitorConfig = {
   webDir: 'dist',
   server: {
     androidScheme: 'https',
+    hostname: 'scenic-beaker-7nzsc.firebaseapp.com',
     allowNavigation: [
       'scenic-beaker-7nzsc.firebaseapp.com',
       '*.firebaseapp.com',
       'accounts.google.com',
+      'accounts.youtube.com',
       '*.google.com',
       '*.googleusercontent.com',
       '*.gstatic.com',
       'apis.google.com',
-      '*.firebaseio.com'
+      '*.googleapis.com',
+      '*.firebaseio.com',
+      '*.firebase.com'
     ]
   }
 };
