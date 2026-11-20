@@ -27,18 +27,16 @@ android {
             storePassword 'alphaupdate2026'
             keyAlias 'alphaupdate'
             keyPassword 'alphaupdate2026'
+            enableV1Signing true
+            enableV2Signing true
         }
     }
     buildTypes {
         debug {
-            if (file('alpha-update-signing.p12').exists()) {
-                signingConfig signingConfigs.sharedUpdate
-            }
+            signingConfig signingConfigs.sharedUpdate
         }
         release {
-            if (file('alpha-update-signing.p12').exists()) {
-                signingConfig signingConfigs.sharedUpdate
-            }
+            signingConfig signingConfigs.sharedUpdate
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }

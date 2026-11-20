@@ -643,6 +643,10 @@ export const MenuPanorama3D: React.FC<MenuPanorama3DProps> = ({
 
     const animate = () => {
       animationFrameId = requestAnimationFrame(animate);
+      if (typeof document !== "undefined" && document.hidden) {
+        clock.getDelta();
+        return;
+      }
 
       const delta = Math.min(clock.getDelta(), 0.1);
       const time = clock.getElapsedTime();
@@ -798,7 +802,7 @@ export const MenuPanorama3D: React.FC<MenuPanorama3DProps> = ({
       {onEnterCinemaMode && (
         <button
           onClick={onEnterCinemaMode}
-          className="absolute top-4 right-4 z-30 bg-black/65 hover:bg-black/85 text-white/90 hover:text-white px-3 py-1.5 rounded-full border border-white/20 text-[10px] font-mono uppercase tracking-wider flex items-center gap-1.5 shadow-lg backdrop-blur-md transition-all active:scale-95"
+          className="absolute top-3 sm:top-4 right-3 sm:right-4 z-30 bg-black/80 hover:bg-black/95 text-white/95 hover:text-white px-2.5 sm:px-3 py-1.5 rounded-full border border-white/25 text-[9.5px] sm:text-[10px] font-mono uppercase tracking-wider flex items-center gap-1.5 shadow-lg transition-all active:scale-95"
           title={isCinemaMode ? "Mostrar Menú" : "Modo Panorámica (Ver mundo en pantalla completa)"}
         >
           <i className={`fas ${isCinemaMode ? "fa-eye-slash text-amber-400" : "fa-eye text-emerald-400"}`} />
@@ -808,7 +812,7 @@ export const MenuPanorama3D: React.FC<MenuPanorama3DProps> = ({
 
       {/* Gesture Hint for users when in Cinema Mode */}
       {isCinemaMode && (
-        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-30 pointer-events-none bg-black/60 backdrop-blur-md px-4 py-2 rounded-full border border-white/10 text-white/80 font-mono text-xs uppercase tracking-wider flex items-center gap-2 animate-pulse">
+        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-30 pointer-events-none bg-black/80 px-4 py-2 rounded-full border border-white/15 text-white/85 font-mono text-xs uppercase tracking-wider flex items-center gap-2 animate-pulse">
           <i className="fas fa-hand-pointer text-emerald-400" />
           <span>Desliza para mirar alrededor • Toca el botón para volver</span>
         </div>

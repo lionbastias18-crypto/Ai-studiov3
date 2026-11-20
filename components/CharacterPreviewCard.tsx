@@ -19,6 +19,9 @@ export interface CharacterPreviewCardProps {
   onUpdateCustomSkin: (next: CustomCharacterConfig) => void;
   onOpenShopForSkin: (skinId: CharacterSkinId) => void;
   hidden?: boolean;
+  layoutMode?: 'floating' | 'inline';
+  cardClassName?: string;
+  stageHeightClass?: string;
 }
 
 const SKIN_TONES = ['#fde2c8', '#fbc5a1', '#e5a87e', '#c68642', '#8d5524', '#4e2f1a'];
@@ -464,6 +467,9 @@ export const CharacterPreviewCard: React.FC<CharacterPreviewCardProps> = ({
   onUpdateCustomSkin,
   onOpenShopForSkin,
   hidden = false,
+  layoutMode = 'floating',
+  cardClassName,
+  stageHeightClass,
 }) => {
   const [isCustomizerOpen, setIsCustomizerOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'presets' | 'style' | 'gear'>('presets');
@@ -667,7 +673,7 @@ export const CharacterPreviewCard: React.FC<CharacterPreviewCardProps> = ({
         lastTs = now;
         elapsed += delta;
 
-        if (hiddenRef.current) return;
+        if (hiddenRef.current || (typeof document !== 'undefined' && document.hidden)) return;
 
         if (!isDraggingRef.current) {
           autoYawRef.current += delta * 0.48;
@@ -726,7 +732,7 @@ export const CharacterPreviewCard: React.FC<CharacterPreviewCardProps> = ({
     controller.updateSize(targetHost);
     const rafResize = requestAnimationFrame(() => controller.updateSize(targetHost));
     return () => cancelAnimationFrame(rafResize);
-  }, [isCustomizerOpen, webglUnavailable]);
+  }, [isCustomizerOpen, webglUnavailable, layoutMode]);
 
   // Subtle auto-rotation for interactive software 3D fallback if WebGL is disabled
   useEffect(() => {
@@ -788,16 +794,29 @@ export const CharacterPreviewCard: React.FC<CharacterPreviewCardProps> = ({
 
   return (
     <>
-      {/* Right-Side 3D Character Showcase & Customizer Card */}
+      {/* 3D Character Showcase & Customizer Card */}
       <div
         onPointerDown={(e) => e.stopPropagation()}
-        className={`absolute right-2 sm:right-5 top-13 sm:top-16 z-30 flex flex-col items-end transition-all duration-300 ${
-          hidden ? 'opacity-0 pointer-events-none translate-x-10' : 'opacity-100 translate-x-0'
-        }`}
+        className={
+          layoutMode === 'inline'
+            ? `relative z-20 flex flex-col items-center shrink-0 transition-all duration-300 ${
+                hidden ? 'opacity-0 pointer-events-none scale-95' : 'opacity-100 scale-100'
+              }`
+            : `absolute right-2 sm:right-5 top-14 sm:top-16 z-30 flex flex-col items-end transition-all duration-300 ${
+                hidden ? 'opacity-0 pointer-events-none translate-x-10' : 'opacity-100 translate-x-0'
+              }`
+        }
       >
-        <div className="w-[154px] sm:w-[218px] lg:w-[254px] max-h-[calc(100dvh-76px)] bg-zinc-950/88 backdrop-blur-xl border border-white/15 rounded-2xl shadow-2xl overflow-y-auto flex flex-col">
+        <div
+          className={`${
+            cardClassName ||
+            (layoutMode === 'inline'
+              ? 'w-[146px] sm:w-[196px]'
+              : 'w-[154px] sm:w-[218px] lg:w-[254px] max-h-[calc(100dvh-76px)]')
+          } bg-zinc-950/94 border border-white/15 rounded-2xl shadow-2xl overflow-y-auto flex flex-col`}
+        >
           {/* Card Header */}
-          <div className="px-2.5 sm:px-3.5 py-1.5 sm:py-2.5 bg-white/[0.04] border-b border-white/10 flex items-center justify-between gap-1.5 shrink-0">
+          <div className="px-2.5 sm:px-3.5 py-1.5 sm:py-2 bg-white/[0.04] border-b border-white/10 flex items-center justify-between gap-1.5 shrink-0">
             <div className="min-w-0">
               <p className="text-[8px] sm:text-[9.5px] font-mono uppercase tracking-widest text-emerald-400 font-bold truncate">
                 {lang === 'es' ? 'Tu Personaje' : 'Your Hero'}
@@ -814,7 +833,12 @@ export const CharacterPreviewCard: React.FC<CharacterPreviewCardProps> = ({
 
           {/* Live 3D Rotating Character Stage */}
           <div
-            className="relative w-full h-[138px] sm:h-[192px] lg:h-[238px] bg-gradient-to-b from-slate-900/70 via-zinc-900/80 to-zinc-950/95 cursor-grab active:cursor-grabbing touch-none shrink-0"
+            className={`relative w-full ${
+              stageHeightClass ||
+              (layoutMode === 'inline'
+                ? 'h-[112px] sm:h-[152px]'
+                : 'h-[138px] sm:h-[192px] lg:h-[238px]')
+            } bg-gradient-to-b from-slate-900/70 via-zinc-900/80 to-zinc-950/95 cursor-grab active:cursor-grabbing touch-none shrink-0`}
             onPointerDown={(e) => {
               e.stopPropagation();
               handleStageDragStart(e.clientX);
@@ -878,17 +902,17 @@ export const CharacterPreviewCard: React.FC<CharacterPreviewCardProps> = ({
         <div
           onPointerDown={(e) => e.stopPropagation()}
           onClick={() => setIsCustomizerOpen(false)}
-          className="fixed inset-0 bg-black/85 backdrop-blur-md z-[100020] flex items-center justify-center safe-area-inset p-2.5 sm:p-5 pointer-events-auto"
+          className="fixed inset-0 bg-black/88 z-[100020] flex flex-col items-center justify-start overflow-y-auto overscroll-contain safe-area-inset p-2 sm:p-4 pointer-events-auto"
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-4xl max-h-[94dvh] bg-zinc-950 border-2 border-emerald-500/45 rounded-2xl shadow-2xl overflow-hidden flex flex-col text-white"
+            className="w-full max-w-[min(56rem,calc(100vw-1rem))] max-h-[calc(100dvh-1rem)] my-auto bg-zinc-950 border-2 border-emerald-500/45 rounded-2xl shadow-2xl overflow-hidden flex flex-col text-white"
           >
             {/* Studio Header */}
-            <div className="px-4 sm:px-5 py-2.5 sm:py-3 border-b border-white/10 bg-white/[0.03] flex items-center justify-between gap-3 shrink-0">
+            <div className="px-3.5 sm:px-5 py-2 sm:py-3 border-b border-white/10 bg-white/[0.03] flex items-center justify-between gap-3 shrink-0">
               <div className="flex items-center gap-2.5 min-w-0">
-                <div className="w-9 h-9 rounded-xl bg-emerald-500/20 border border-emerald-400/40 flex items-center justify-center text-emerald-300 shrink-0">
-                  <i className="fas fa-user-astronaut text-base" />
+                <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-emerald-500/20 border border-emerald-400/40 flex items-center justify-center text-emerald-300 shrink-0">
+                  <i className="fas fa-user-astronaut text-sm sm:text-base" />
                 </div>
                 <div className="text-left min-w-0">
                   <h2 className="text-sm sm:text-xl font-black minecraft-font uppercase tracking-tight text-white truncate">
@@ -904,7 +928,7 @@ export const CharacterPreviewCard: React.FC<CharacterPreviewCardProps> = ({
               <button
                 type="button"
                 onClick={() => setIsCustomizerOpen(false)}
-                className="w-9 h-9 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-white/10 text-zinc-300 hover:text-white flex items-center justify-center cursor-pointer transition shrink-0"
+                className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-white/10 text-zinc-300 hover:text-white flex items-center justify-center cursor-pointer transition shrink-0"
                 aria-label={lang === 'es' ? 'Cerrar' : 'Close'}
               >
                 <i className="fas fa-times" />
@@ -914,7 +938,7 @@ export const CharacterPreviewCard: React.FC<CharacterPreviewCardProps> = ({
             {/* Responsive Split Studio Content */}
             <div className="flex-1 min-h-0 flex flex-col md:grid md:grid-cols-12 overflow-y-auto md:overflow-hidden">
               {/* Left/Top: Large Live 3D Turntable Stage */}
-              <div className="md:col-span-5 shrink-0 md:shrink bg-gradient-to-b from-slate-900/90 via-zinc-900 to-zinc-950 border-b md:border-b-0 md:border-r border-white/10 flex flex-col justify-between p-3">
+              <div className="md:col-span-5 shrink-0 md:shrink md:min-h-0 md:overflow-y-auto bg-gradient-to-b from-slate-900/90 via-zinc-900 to-zinc-950 border-b md:border-b-0 md:border-r border-white/10 flex flex-col justify-between p-2.5 sm:p-3">
                 <div className="flex items-center justify-between text-xs px-1 shrink-0">
                   <span className="font-black text-white uppercase truncate">
                     {lang === 'es' ? resolvedSkin.nameEs : resolvedSkin.nameEn}
@@ -925,7 +949,7 @@ export const CharacterPreviewCard: React.FC<CharacterPreviewCardProps> = ({
                 </div>
 
                 <div
-                  className="w-full h-[205px] sm:h-[245px] md:flex-1 md:min-h-[290px] cursor-grab active:cursor-grabbing touch-none"
+                  className="w-full h-[155px] sm:h-[205px] md:flex-1 md:min-h-[140px] cursor-grab active:cursor-grabbing touch-none"
                   onPointerDown={(e) => {
                     e.stopPropagation();
                     handleStageDragStart(e.clientX);
@@ -941,11 +965,11 @@ export const CharacterPreviewCard: React.FC<CharacterPreviewCardProps> = ({
                   )}
                 </div>
 
-                <div className="flex items-center justify-between gap-2 pt-2 border-t border-white/10">
+                <div className="flex items-center justify-between gap-2 pt-2 border-t border-white/10 shrink-0">
                   <button
                     type="button"
                     onClick={handleRandomizeCustom}
-                    className="flex-1 py-2 px-3 rounded-xl bg-purple-600/25 hover:bg-purple-600/40 border border-purple-400/40 text-purple-200 font-bold text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer transition"
+                    className="flex-1 py-1.5 sm:py-2 px-3 rounded-xl bg-purple-600/25 hover:bg-purple-600/40 border border-purple-400/40 text-purple-200 font-bold text-xs uppercase flex items-center justify-center gap-1.5 cursor-pointer transition"
                   >
                     <i className="fas fa-dice" />
                     <span>{lang === 'es' ? 'Aleatorio' : 'Randomize'}</span>
@@ -956,7 +980,7 @@ export const CharacterPreviewCard: React.FC<CharacterPreviewCardProps> = ({
                       setSavedNotice(true);
                       setIsCustomizerOpen(false);
                     }}
-                    className="flex-1 py-2 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs uppercase cursor-pointer transition"
+                    className="flex-1 py-1.5 sm:py-2 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black text-xs uppercase cursor-pointer transition"
                   >
                     {lang === 'es' ? 'Listo' : 'Done'}
                   </button>
@@ -964,7 +988,7 @@ export const CharacterPreviewCard: React.FC<CharacterPreviewCardProps> = ({
               </div>
 
               {/* Right/Bottom: Scrollable Tabs & Controls */}
-              <div className="md:col-span-7 flex flex-col md:min-h-0 p-3 sm:p-4 gap-3 md:overflow-hidden">
+              <div className="md:col-span-7 flex flex-col md:min-h-0 p-2.5 sm:p-4 gap-2.5 sm:gap-3 md:overflow-hidden">
                 {/* Tabs */}
                 <div className="grid grid-cols-3 gap-1.5 bg-zinc-900 p-1 rounded-xl border border-white/10 shrink-0">
                   {[

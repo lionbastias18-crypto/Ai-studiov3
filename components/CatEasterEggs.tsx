@@ -99,11 +99,11 @@ export const CatEasterEggs: React.FC<CatEasterEggsProps> = ({
     <div
       onPointerDown={(e) => e.stopPropagation()}
       onClick={onClose}
-      className="fixed inset-0 z-[100050] bg-black/80 backdrop-blur-md flex items-center justify-center safe-area-inset p-3 sm:p-6 overflow-y-auto pointer-events-auto"
+      className="fixed inset-0 z-[100050] bg-black/88 flex flex-col items-center justify-start overflow-y-auto overscroll-contain safe-area-inset p-2.5 sm:p-6 pointer-events-auto"
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className={`relative w-full max-w-md max-h-[92dvh] overflow-y-auto my-auto rounded-3xl border-2 p-5 sm:p-6 shadow-2xl flex flex-col items-center text-center gap-4 ${
+        className={`relative w-full max-w-[min(28rem,calc(100vw-1rem))] max-h-[calc(100dvh-1rem)] overflow-y-auto my-auto rounded-3xl border-2 p-4 sm:p-6 shadow-2xl flex flex-col items-center text-center gap-3 sm:gap-4 ${
           activeEgg === "spinning"
             ? "bg-gradient-to-b from-indigo-950 via-zinc-950 to-purple-950 border-amber-400/70"
             : "bg-gradient-to-b from-slate-900 via-zinc-950 to-sky-950 border-sky-400/60"

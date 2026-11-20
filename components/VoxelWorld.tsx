@@ -1120,13 +1120,15 @@ const Animal = React.memo<{
     }
     meshRef.current.visible = true;
 
-    // Distant mobs (>16 blocks from both player and companion) simulate every 3rd frame cleanly
+    // Distant mobs (>12 blocks) simulate every 3rd frame; very distant (>18 blocks) every 4th frame
     accumDeltaRef.current += rawDelta;
-    if (Math.min(distSq, compDistSq) > 256 && data.type !== EntityType.ARROW) {
-      aiFrameSkipRef.current = (aiFrameSkipRef.current + 1) % 3;
+    const minEntDistSq = Math.min(distSq, compDistSq);
+    if (minEntDistSq > 144 && data.type !== EntityType.ARROW) {
+      const skipMod = minEntDistSq > 324 ? 4 : 3;
+      aiFrameSkipRef.current = (aiFrameSkipRef.current + 1) % skipMod;
       if (aiFrameSkipRef.current !== 0) return;
     }
-    const minDelta = Math.min(accumDeltaRef.current, 0.12);
+    const minDelta = Math.min(accumDeltaRef.current, 0.14);
     accumDeltaRef.current = 0;
 
     const dist = Math.sqrt(distSq);
@@ -1835,8 +1837,12 @@ const Animal = React.memo<{
     let py = data.pos.y;
     let pz = data.pos.z;
 
-    // Step 1: De-penetrate if entity spawned/rotated into any solid block
-    {
+    // Step 1: De-penetrate only when entity is turning strongly, taking knockback, or moving vertically fast
+    const hasKnockback =
+      knockbackRef.current.x !== 0 ||
+      knockbackRef.current.z !== 0 ||
+      knockbackRef.current.y !== 0;
+    if (hasKnockback || Math.abs(yawRotDiff) > 0.03 || Math.abs(velocityY.current) > 1.5) {
       const curMinX = px + minOffX;
       const curMaxX = px + maxOffX;
       const curMinY = py;
@@ -2033,6 +2039,9 @@ const Animal = React.memo<{
     // Subtle grounded walk bob, procedural limb gait, & Creeper swell (feet stay grounded)
     const moveMag = Math.sqrt(dx * dx + dz * dz);
     const isMoving = isGrounded && moveMag > 0.0005;
+    if (!isMoving && distSq > 256 && animAmpRef.current < 0.01) {
+      return;
+    }
     const targetAmp = isMoving ? 1 : 0;
     animAmpRef.current += (targetAmp - animAmpRef.current) * Math.min(1, minDelta * 12);
     if (isMoving) {
@@ -5123,13 +5132,21 @@ const Player: React.FC<{
 
     const now = performance.now();
     if (now - lastStateUpdate.current > 100) {
-        const reportedPos = { x: px, y: py, z: pz };
-        recentReportedRef.current.push(reportedPos);
-        if (recentReportedRef.current.length > 8) {
-          recentReportedRef.current.shift();
+        const prevRep = recentReportedRef.current[recentReportedRef.current.length - 1];
+        const movedSinceReport =
+          !prevRep ||
+          Math.abs(px - prevRep.x) > 0.004 ||
+          Math.abs(py - prevRep.y) > 0.004 ||
+          Math.abs(pz - prevRep.z) > 0.004;
+        if (movedSinceReport || now - lastStateUpdate.current > 1200) {
+          const reportedPos = { x: px, y: py, z: pz };
+          recentReportedRef.current.push(reportedPos);
+          if (recentReportedRef.current.length > 8) {
+            recentReportedRef.current.shift();
+          }
+          onUpdatePosRef.current(reportedPos);
+          lastStateUpdate.current = now;
         }
-        onUpdatePosRef.current(reportedPos);
-        lastStateUpdate.current = now;
     }
 
     if (now - lastAmbientUpdate.current > 250) {
@@ -5410,11 +5427,66 @@ const TargetBlockHighlight: React.FC<{
     lookZ: 0,
   });
 
+  const lastRayStateRef = useRef({
+    px: NaN,
+    py: NaN,
+    pz: NaN,
+    qx: NaN,
+    qy: NaN,
+    qz: NaN,
+    qw: NaN,
+    blk: -1,
+    mode: '',
+    brush: '',
+    realmSig: '',
+    ts: 0,
+    wireColor: '',
+    sphereColor: '',
+    ghostColor: '',
+  });
+
   useFrame(({ camera }) => {
     const wire = wireframeRef.current;
     const ghostGroup = ghostGroupRef.current;
     const sphereWire = sphereWireRef.current;
     if (!wire || !ghostGroup) return;
+
+    const rayCache = lastRayStateRef.current;
+    const nowRayMs = performance.now();
+    const realmCfgQuick = realmEditorConfigRef.current;
+    const realmSig = realmCfgQuick
+      ? `${realmCfgQuick.enabled ? 1 : 0}_${realmCfgQuick.tool}_${realmCfgQuick.radius}_${realmCfgQuick.applyColorToShapes ? 1 : 0}_${realmCfgQuick.eraseColorMode ? 1 : 0}_${realmCfgQuick.selectedColor}`
+      : '';
+    const camMoved =
+      Math.abs(camera.position.x - rayCache.px) > 0.002 ||
+      Math.abs(camera.position.y - rayCache.py) > 0.002 ||
+      Math.abs(camera.position.z - rayCache.pz) > 0.002 ||
+      Math.abs(camera.quaternion.x - rayCache.qx) > 0.001 ||
+      Math.abs(camera.quaternion.y - rayCache.qy) > 0.001 ||
+      Math.abs(camera.quaternion.z - rayCache.qz) > 0.001 ||
+      Math.abs(camera.quaternion.w - rayCache.qw) > 0.001;
+    const toolChanged =
+      rayCache.blk !== currentBlockRef.current ||
+      rayCache.mode !== interactionModeRef.current ||
+      rayCache.brush !== buildBrushRef.current ||
+      rayCache.realmSig !== realmSig;
+
+    if (!camMoved && !toolChanged && nowRayMs - rayCache.ts < 220) {
+      return;
+    }
+
+    rayCache.px = camera.position.x;
+    rayCache.py = camera.position.y;
+    rayCache.pz = camera.position.z;
+    rayCache.qx = camera.quaternion.x;
+    rayCache.qy = camera.quaternion.y;
+    rayCache.qz = camera.quaternion.z;
+    rayCache.qw = camera.quaternion.w;
+    rayCache.blk = currentBlockRef.current;
+    rayCache.mode = interactionModeRef.current;
+    rayCache.brush = buildBrushRef.current;
+    rayCache.realmSig = realmSig;
+    rayCache.ts = nowRayMs;
 
     camera.getWorldDirection(RAY_DIR_SCRATCH);
     const ox = camera.position.x;
@@ -5529,24 +5601,25 @@ const TargetBlockHighlight: React.FC<{
     wire.position.set(vx, vy, vz);
     const interactive = isInteractiveBlock(hitBlk);
     if (wireMatRef.current) {
+      let nextWireColor = '#e2e8f0';
       if (realmActive && realmCfg) {
         if (realmCfg.tool === 'paint') {
-          wireMatRef.current.color.set(realmCfg.eraseColorMode ? '#f8fafc' : (realmCfg.selectedColor || '#ff2a6d'));
+          nextWireColor = realmCfg.eraseColorMode ? '#f8fafc' : (realmCfg.selectedColor || '#ff2a6d');
         } else if (realmCfg.tool === 'erase_sphere') {
-          wireMatRef.current.color.set('#f43f5e');
+          nextWireColor = '#f43f5e';
         } else {
-          wireMatRef.current.color.set(
-            realmCfg.applyColorToShapes && !realmCfg.eraseColorMode ? (realmCfg.selectedColor || '#38bdf8') : '#38bdf8'
-          );
+          nextWireColor = realmCfg.applyColorToShapes && !realmCfg.eraseColorMode ? (realmCfg.selectedColor || '#38bdf8') : '#38bdf8';
         }
       } else {
-        wireMatRef.current.color.set(
-          interactive
-            ? '#fbbf24'
-            : interactionModeRef.current === 'break'
-              ? '#ef4444'
-              : '#e2e8f0'
-        );
+        nextWireColor = interactive
+          ? '#fbbf24'
+          : interactionModeRef.current === 'break'
+            ? '#ef4444'
+            : '#e2e8f0';
+      }
+      if (rayCache.wireColor !== nextWireColor) {
+        rayCache.wireColor = nextWireColor;
+        wireMatRef.current.color.set(nextWireColor);
       }
     }
 
@@ -5565,12 +5638,15 @@ const TargetBlockHighlight: React.FC<{
           sphereWire.scale.setScalar(previewR + 0.35);
         }
         if (sphereMatRef.current) {
+          let nextSphereColor = '#38bdf8';
           if (realmCfg.tool === 'erase_sphere') {
-            sphereMatRef.current.color.set('#f43f5e');
+            nextSphereColor = '#f43f5e';
           } else if (realmCfg.applyColorToShapes && !realmCfg.eraseColorMode) {
-            sphereMatRef.current.color.set(realmCfg.selectedColor || '#38bdf8');
-          } else {
-            sphereMatRef.current.color.set('#38bdf8');
+            nextSphereColor = realmCfg.selectedColor || '#38bdf8';
+          }
+          if (rayCache.sphereColor !== nextSphereColor) {
+            rayCache.sphereColor = nextSphereColor;
+            sphereMatRef.current.color.set(nextSphereColor);
           }
         }
       } else {
@@ -5594,7 +5670,11 @@ const TargetBlockHighlight: React.FC<{
 
     ghostGroup.visible = true;
     if (ghostMatRef.current) {
-      ghostMatRef.current.color.set(BLOCK_COLORS[held] || '#34d399');
+      const nextGhostColor = BLOCK_COLORS[held] || '#34d399';
+      if (rayCache.ghostColor !== nextGhostColor) {
+        rayCache.ghostColor = nextGhostColor;
+        ghostMatRef.current.color.set(nextGhostColor);
+      }
     }
 
     for (let i = 0; i < 6; i++) {
@@ -9125,7 +9205,11 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
         }
         next[k] = filtered;
       }
-      return changed ? next : prev;
+      if (changed) {
+        entitiesRef.current = next;
+        return next;
+      }
+      return prev;
     });
   }, []);
 
@@ -9791,33 +9875,66 @@ const MinecraftEnvironment: React.FC<MinecraftEnvironmentProps> = ({
   const sunPosRef = useRef<[number, number, number]>([100, 20, 100]);
   const lastBiomeCheckRef = useRef<number>(0);
   const currentBiomeRef = useRef<string>('plains');
-  const [lightningFlash, setLightningFlash] = useState(false);
+  const lightningFlashUntilRef = useRef<number>(0);
+  const doubleStrikeAtRef = useRef<number>(0);
   const lastStrikeRef = useRef<number>(0);
+  const envAccumRef = useRef<number>(1);
+  const lastDirColorRef = useRef<string>('');
+  const lastFogHexRef = useRef<string>('');
+  const lastSunriseKeyRef = useRef<number>(-1);
+  const lastPointModeRef = useRef<'torch' | 'underground' | 'night' | 'off'>('off');
 
   useFrame((state, delta) => {
+    const dt = Math.min(delta, 0.1);
+
     // 1. Advance time
     if (isSleepingRef.current) {
-      gameTimeRef.current += delta * 4; // speed up time enormously!
+      gameTimeRef.current += dt * 4; // speed up time enormously!
       if (gameTimeRef.current >= Math.PI * 2) {
         gameTimeRef.current -= Math.PI * 2;
       }
-      // Wake up at early dawn (around 0.6 rads)
       if (gameTimeRef.current > 0.4 && gameTimeRef.current < Math.PI) {
         isSleepingRef.current = false;
         setIsSleeping(false);
       }
     } else {
-      // Longer realistic cycle: Daytime (~10 mins / 600s), Nighttime (~3.5 mins / 210s)
       const isDaytime = Math.sin(gameTimeRef.current) >= 0;
-      gameTimeRef.current += (delta * Math.PI) / (isDaytime ? 600 : 210);
+      gameTimeRef.current += (dt * Math.PI) / (isDaytime ? 600 : 210);
       if (gameTimeRef.current >= Math.PI * 2) {
         gameTimeRef.current -= Math.PI * 2;
       }
     }
 
+    const pPos = playerPosRef.current;
+    const holdingTorch = currentBlockRef.current === BlockType.TORCH;
+
+    // Fast-path handheld torch flicker only when actively holding a torch
+    if (pointLightRef.current && pPos && holdingTorch) {
+      const flicker = Math.sin(state.clock.elapsedTime * 9.5) * 0.9 + Math.cos(state.clock.elapsedTime * 15) * 0.4;
+      pointLightRef.current.visible = true;
+      pointLightRef.current.position.set(pPos.x, pPos.y + 0.95, pPos.z);
+      if (lastPointModeRef.current !== 'torch') {
+        lastPointModeRef.current = 'torch';
+        pointLightRef.current.color.set('#ffb347');
+        pointLightRef.current.distance = 19;
+        pointLightRef.current.decay = 0.9;
+      }
+      pointLightRef.current.intensity = 14 + flicker;
+    }
+
+    // Throttle slow atmospheric sky/sun/fog recomputation (~10Hz) unless sleeping or storm flash
+    const nowMs = performance.now();
+    const isFlashActive = nowMs < lightningFlashUntilRef.current;
+    envAccumRef.current += dt;
+    if (!isSleepingRef.current && !isFlashActive && envAccumRef.current < 0.1) {
+      if (pointLightRef.current && pPos && !holdingTorch && pointLightRef.current.visible) {
+        pointLightRef.current.position.set(pPos.x, pPos.y + 0.8, pPos.z);
+      }
+      return;
+    }
+    envAccumRef.current = 0;
+
     const t = gameTimeRef.current;
-    
-    // Y-axis orbit for the sun/moon to make beautiful sunrises and sunsets!
     const sunX = Math.cos(t) * 150;
     const sunY = Math.sin(t) * 150;
     const sunZ = 50;
@@ -9830,17 +9947,17 @@ const MinecraftEnvironment: React.FC<MinecraftEnvironmentProps> = ({
     let dirIntensity = 0.08;
     let dirColor = '#ffffff';
     let fogColor: string | THREE.Color = '#06050e';
+    let sunriseBucket = -1;
 
     if (sunY > 0) {
-      // Day
       const dayFactor = Math.sin(t);
       ambientIntensity = 0.15 + 0.70 * dayFactor;
       dirIntensity = 0.8 * dayFactor;
       dirColor = '#fff5e1';
 
       if (sunY < 40) {
-        // Sunrise / Sunset transition colors without per-frame string alloc
         const mixRatio = sunY / 40;
+        sunriseBucket = Math.round(mixRatio * 120);
         ENV_SUNRISE_COLOR.setRGB(
           (255 * (1 - mixRatio) + 135 * mixRatio) / 255,
           (110 * (1 - mixRatio) + 206 * mixRatio) / 255,
@@ -9851,62 +9968,53 @@ const MinecraftEnvironment: React.FC<MinecraftEnvironmentProps> = ({
         fogColor = '#87ceeb';
       }
     } else {
-      // Night (Minecraft style blue tint)
       const nightFactor = Math.abs(Math.sin(t));
       ambientIntensity = 0.12;
       dirIntensity = 0.25 * nightFactor;
-      dirColor = '#7e90c7'; // moonlight blue shade
+      dirColor = '#7e90c7';
       fogColor = '#0b101c';
     }
-    
+
     if (activeDimension === 'nether') {
       ambientIntensity = 0.55;
       dirIntensity = 0.05;
       dirColor = '#601111';
       fogColor = '#240606';
+      sunriseBucket = -1;
     }
-    
-    // Depth and Biome based fog modifier
-    const pPos = playerPosRef.current;
+
     if (pPos) {
       if (pPos.y < 38) {
-        // Deep underground caves
         fogColor = '#0b0e14';
+        sunriseBucket = -1;
       } else if (sunY > 0) {
-        // Evaluate biome colors (throttled once every 500ms to increase frame rate)
-        const nowMs = performance.now();
         if (nowMs - lastBiomeCheckRef.current > 500) {
           lastBiomeCheckRef.current = nowMs;
           const { biome } = getWorldHeight(pPos.x, pPos.z);
           currentBiomeRef.current = biome;
         }
-        
         const biome = currentBiomeRef.current;
-        let targetFogColor = '#87ceeb'; // Default sky
+        let targetFogColor = '#87ceeb';
         if (biome === 'desert') targetFogColor = '#ebd6a7';
         else if (biome === 'mesa') targetFogColor = '#d19462';
         else if (biome === 'mountains') targetFogColor = '#a8c2d1';
-        else if (biome === 'autumn') targetFogColor = '#cfb59b'; // Soft warm autumnal sky
-        
-        // Blend fogColor with target based on sunY for sunrise/sunset
+        else if (biome === 'autumn') targetFogColor = '#cfb59b';
+
         if (sunY >= 40) {
-            fogColor = targetFogColor;
+          fogColor = targetFogColor;
         }
       }
     }
 
-    // Evaluate weather factors for lighting and fog (reuse throttled biome)
     const activeWeather = weatherRef.current;
     let effectiveWeather = activeWeather;
     if (pPos) {
       const biome = currentBiomeRef.current;
-      const currentY = pPos.y;
-      
       if (biome === 'mountains') {
         if (activeWeather === 'rain' || activeWeather === 'thunderstorm' || activeWeather === 'snow_rain') {
           effectiveWeather = 'snow';
         }
-      } else if (currentY >= 80) {
+      } else if (pPos.y >= 80) {
         if (activeWeather === 'rain' || activeWeather === 'thunderstorm') {
           effectiveWeather = 'snow_rain';
         }
@@ -9919,52 +10027,45 @@ const MinecraftEnvironment: React.FC<MinecraftEnvironmentProps> = ({
     } else if (effectiveWeather === 'thunderstorm') {
       weatherIntensityFactor = 0.35;
     }
-    
+
     ambientIntensity *= weatherIntensityFactor;
     dirIntensity *= weatherIntensityFactor;
 
-    // Apply gloomy sky colors when sun is out
     if (effectiveWeather !== 'clear' && sunY > 0) {
-      let targetWeatherSky = '#4a5568'; // gloomy gray for rain
+      let targetWeatherSky = '#4a5568';
       if (effectiveWeather === 'snow' || effectiveWeather === 'snow_rain') {
-        targetWeatherSky = '#b0bec5'; // softer snow white-gray
+        targetWeatherSky = '#b0bec5';
       } else if (effectiveWeather === 'thunderstorm') {
-        targetWeatherSky = '#212121'; // dark storm clouds
+        targetWeatherSky = '#212121';
       }
-      
       fogColor = targetWeatherSky;
+      sunriseBucket = -1;
     }
 
-    // Thunderstorm lightning strikes
-    const nowMs = performance.now();
-    if (effectiveWeather === 'thunderstorm' && nowMs - lastStrikeRef.current > 4000) {
-      if (Math.random() < 0.003) {
+    // Imperative thunderstorm lightning strikes (ZERO React re-renders)
+    if (effectiveWeather === 'thunderstorm') {
+      if (doubleStrikeAtRef.current > 0 && nowMs >= doubleStrikeAtRef.current) {
+        doubleStrikeAtRef.current = 0;
+        lightningFlashUntilRef.current = nowMs + 55;
+      } else if (nowMs - lastStrikeRef.current > 4000 && Math.random() < 0.025) {
         lastStrikeRef.current = nowMs;
-        setLightningFlash(true);
-        setTimeout(() => setLightningFlash(false), 90 + Math.random() * 100);
-        
-        // Occasional double strike!
+        lightningFlashUntilRef.current = nowMs + 100 + Math.random() * 90;
         if (Math.random() > 0.4) {
-          setTimeout(() => {
-            setLightningFlash(true);
-            setTimeout(() => setLightningFlash(false), 45);
-          }, 200);
+          doubleStrikeAtRef.current = nowMs + 200;
         }
       }
     }
 
-    if (lightningFlash) {
-      fogColor = '#e1f5fe'; // brilliant neon blue-white lightning flash!
+    if (nowMs < lightningFlashUntilRef.current) {
+      fogColor = '#e1f5fe';
+      sunriseBucket = -1;
       ambientIntensity = 1.6;
       dirIntensity = 1.6;
     }
 
-    // Optimized Real Lights: Dim ambient and direction lights when deep underground
     let depthDimming = 1.0;
-    if (pPos) {
-      if (pPos.y < 56) {
-        depthDimming = Math.max(0.04, (pPos.y - 12) / 44);
-      }
+    if (pPos && pPos.y < 56) {
+      depthDimming = Math.max(0.04, (pPos.y - 12) / 44);
     }
 
     if (ambientLightRef.current) {
@@ -9972,7 +10073,10 @@ const MinecraftEnvironment: React.FC<MinecraftEnvironmentProps> = ({
     }
     if (dirLightRef.current) {
       dirLightRef.current.intensity = dirIntensity * depthDimming;
-      dirLightRef.current.color.set(dirColor);
+      if (lastDirColorRef.current !== dirColor) {
+        lastDirColorRef.current = dirColor;
+        dirLightRef.current.color.set(dirColor);
+      }
       if (sunY > 0) {
         dirLightRef.current.position.set(sunX, sunY, sunZ);
       } else {
@@ -9980,54 +10084,51 @@ const MinecraftEnvironment: React.FC<MinecraftEnvironmentProps> = ({
       }
     }
 
-    if (pointLightRef.current && pPos) {
+    if (pointLightRef.current && pPos && !holdingTorch) {
       const isUnderground = pPos.y < 52;
       const isNight = sunY < 0;
-      const holdingTorch = currentBlockRef.current === BlockType.TORCH;
-
-      if (holdingTorch) {
-        const flicker = Math.sin(state.clock.elapsedTime * 9.5) * 0.9 + Math.cos(state.clock.elapsedTime * 15) * 0.4;
-        pointLightRef.current.visible = true;
-        pointLightRef.current.position.set(pPos.x, pPos.y + 0.95, pPos.z);
-        pointLightRef.current.color.set('#ffb347');
-        pointLightRef.current.intensity = 14 + flicker;
-        pointLightRef.current.distance = 19;
-        pointLightRef.current.decay = 0.9;
-      } else if (isUnderground || isNight) {
+      if (isUnderground || isNight) {
         pointLightRef.current.visible = true;
         pointLightRef.current.position.set(pPos.x, pPos.y + 0.8, pPos.z);
-        pointLightRef.current.color.set('#ffb03a');
-        pointLightRef.current.decay = 1.2;
-        if (isUnderground) {
-          const undergroundFactor = Math.max(0.1, (52 - pPos.y) / 40);
-          pointLightRef.current.intensity = 3.2 * undergroundFactor;
-          pointLightRef.current.distance = 24;
-        } else {
-          pointLightRef.current.intensity = 2.0;
-          pointLightRef.current.distance = 18;
+        const modeTag = isUnderground ? 'underground' : 'night';
+        if (lastPointModeRef.current !== modeTag) {
+          lastPointModeRef.current = modeTag;
+          pointLightRef.current.color.set('#ffb03a');
+          pointLightRef.current.decay = 1.2;
+          pointLightRef.current.distance = isUnderground ? 24 : 18;
         }
-      } else {
+        pointLightRef.current.intensity = isUnderground
+          ? 3.2 * Math.max(0.1, (52 - pPos.y) / 40)
+          : 2.0;
+      } else if (lastPointModeRef.current !== 'off') {
+        lastPointModeRef.current = 'off';
         pointLightRef.current.visible = false;
       }
     }
 
-    if (state.scene.fog && 'color' in state.scene.fog) {
-      if (fogColor instanceof THREE.Color) {
-        (state.scene.fog as THREE.Fog).color.copy(fogColor);
-      } else {
+    if (fogColor instanceof THREE.Color) {
+      if (lastSunriseKeyRef.current !== sunriseBucket) {
+        lastSunriseKeyRef.current = sunriseBucket;
+        lastFogHexRef.current = '';
+        if (state.scene.fog && 'color' in state.scene.fog) {
+          (state.scene.fog as THREE.Fog).color.copy(fogColor);
+        }
+        if (!state.scene.background) {
+          state.scene.background = fogColor.clone();
+        } else if (state.scene.background instanceof THREE.Color) {
+          state.scene.background.copy(fogColor);
+        }
+      }
+    } else if (lastFogHexRef.current !== fogColor) {
+      lastFogHexRef.current = fogColor;
+      lastSunriseKeyRef.current = -1;
+      if (state.scene.fog && 'color' in state.scene.fog) {
         (state.scene.fog as THREE.Fog).color.set(fogColor);
       }
-    }
-
-    if (state.scene) {
       if (!state.scene.background) {
-        state.scene.background = fogColor instanceof THREE.Color ? fogColor.clone() : new THREE.Color(fogColor);
+        state.scene.background = new THREE.Color(fogColor);
       } else if (state.scene.background instanceof THREE.Color) {
-        if (fogColor instanceof THREE.Color) {
-          state.scene.background.copy(fogColor);
-        } else {
-          state.scene.background.set(fogColor);
-        }
+        state.scene.background.set(fogColor);
       }
     }
   });
@@ -10055,27 +10156,40 @@ const TorchLightPool: React.FC<{
   const light2Ref = useRef<THREE.PointLight>(null);
   const light3Ref = useRef<THREE.PointLight>(null);
   const selectedRef = useRef<({ x: number; y: number; z: number } | null)[]>([null, null, null, null]);
+  const topCoordsRef = useRef<({ x: number; y: number; z: number } | null)[]>([null, null, null, null]);
+  const topDistSqRef = useRef<number[]>([676, 676, 676, 676]);
+  const anySelectedRef = useRef(false);
   const lastCheckRef = useRef(0);
   const lastEmberRef = useRef(0);
 
+  const getPoolLight = (idx: number) =>
+    idx === 0 ? light0Ref.current : idx === 1 ? light1Ref.current : idx === 2 ? light2Ref.current : light3Ref.current;
+
   useFrame((state) => {
-    const lightRefs = [light0Ref.current, light1Ref.current, light2Ref.current, light3Ref.current];
-    const now = performance.now();
     const torches = torchPositionsRef.current;
     const pPos = playerPosRef.current;
 
     if (!pPos || torches.length === 0) {
-      for (let k = 0; k < 4; k++) {
-        selectedRef.current[k] = null;
-        if (lightRefs[k] && lightRefs[k]!.intensity !== 0) lightRefs[k]!.intensity = 0;
+      if (anySelectedRef.current) {
+        anySelectedRef.current = false;
+        for (let k = 0; k < 4; k++) {
+          selectedRef.current[k] = null;
+          const l = getPoolLight(k);
+          if (l && l.intensity !== 0) l.intensity = 0;
+        }
       }
       return;
     }
 
-    if (now - lastCheckRef.current >= 100) {
+    const now = performance.now();
+    if (now - lastCheckRef.current >= 140) {
       lastCheckRef.current = now;
-      const topCoords: ({ x: number; y: number; z: number } | null)[] = [null, null, null, null];
-      const topDistSq = [26 * 26, 26 * 26, 26 * 26, 26 * 26];
+      const topCoords = topCoordsRef.current;
+      const topDistSq = topDistSqRef.current;
+      for (let s = 0; s < 4; s++) {
+        topCoords[s] = null;
+        topDistSq[s] = 676;
+      }
 
       for (let i = 0; i < torches.length; i++) {
         const t = torches[i];
@@ -10098,36 +10212,41 @@ const TorchLightPool: React.FC<{
         }
       }
 
+      let foundAny = false;
       for (let k = 0; k < 4; k++) {
         selectedRef.current[k] = k < maxLights ? topCoords[k] : null;
-        const l = lightRefs[k];
+        const l = getPoolLight(k);
         if (l) {
           const target = selectedRef.current[k];
           if (target) {
+            foundAny = true;
             l.position.set(target.x, target.y + 0.35, target.z);
-          } else {
+          } else if (l.intensity !== 0) {
             l.intensity = 0;
           }
         }
       }
+      anySelectedRef.current = foundAny;
     }
 
-    // Smooth candle-flicker modulation every frame
+    if (!anySelectedRef.current) return;
+
+    // Smooth candle-flicker modulation when active torches exist near player
     const elapsed = state.clock.elapsedTime;
     for (let k = 0; k < maxLights; k++) {
-      const l = lightRefs[k];
+      const l = getPoolLight(k);
       if (l && selectedRef.current[k]) {
         const flicker = Math.sin(elapsed * 8.5 + k * 1.9) * 1.3 + Math.cos(elapsed * 14.3 + k * 0.7) * 0.7;
         l.intensity = 16.5 + flicker;
       }
     }
 
-    // Subtle rising flame embers on nearest lit torches
-    if (particlesEnabled && now - lastEmberRef.current >= 260 && particlesRef.current.length < 120) {
+    // Subtle rising flame embers on nearest lit torches (skip on maxLights <= 1 ultra-opt to save idle GPU instancing)
+    if (particlesEnabled && maxLights > 1 && now - lastEmberRef.current >= 480 && particlesRef.current.length < 90) {
       lastEmberRef.current = now;
       for (let k = 0; k < Math.min(2, maxLights); k++) {
         const target = selectedRef.current[k];
-        if (target && Math.random() < 0.65) {
+        if (target && Math.random() < 0.6) {
           particlesRef.current.push({
             id: now + k + Math.random(),
             x: target.x + (Math.random() - 0.5) * 0.14,
@@ -10163,17 +10282,21 @@ const ParticleSystem: React.FC<{
   enabled?: boolean;
 }> = ({ particlesRef, enabled = true }) => {
   const meshRef = useRef<THREE.InstancedMesh>(null);
+  const wasActiveRef = useRef(true);
 
   useFrame((state, delta) => {
     const list = particlesRef.current;
     if (!enabled || list.length === 0) {
       if (!enabled && list.length > 0) list.length = 0;
-      if (meshRef.current) {
+      if (wasActiveRef.current && meshRef.current) {
         meshRef.current.count = 0;
+        meshRef.current.visible = false;
+        wasActiveRef.current = false;
       }
       return;
     }
 
+    wasActiveRef.current = true;
     const minDelta = Math.min(delta, 0.1);
     
     // 1. Update particle physics in-place (incredibly fast, zero storage allocation)
@@ -10194,6 +10317,13 @@ const ParticleSystem: React.FC<{
 
     // 2. Render active particles inside InstancedMesh
     if (meshRef.current) {
+      if (activeCount === 0) {
+        meshRef.current.count = 0;
+        meshRef.current.visible = false;
+        wasActiveRef.current = false;
+        return;
+      }
+      meshRef.current.visible = true;
       const maxToRender = Math.min(activeCount, 150);
       for (let i = 0; i < maxToRender; i++) {
         const p = list[i];

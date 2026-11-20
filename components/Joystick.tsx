@@ -203,8 +203,8 @@ const Joystick: React.FC<JoystickProps> = ({ onMove, onEnd, size = 140, screenRo
       }}
       className={`rounded-full border-2 flex items-center justify-center relative touch-none select-none transition-colors duration-100 ${
         isActive
-          ? 'bg-black/60 border-emerald-400 shadow-[0_0_20px_rgba(16,185,129,0.3)]'
-          : 'bg-black/40 backdrop-blur-md border-white/20 shadow-lg'
+          ? 'bg-black/65 border-emerald-400 shadow-[0_0_20px_rgba(16,185,129,0.3)]'
+          : 'bg-black/45 border-white/25 shadow-lg'
       }`}
       style={{ width: `${size}px`, height: `${size}px`, touchAction: 'none', WebkitUserSelect: 'none' }}
     >

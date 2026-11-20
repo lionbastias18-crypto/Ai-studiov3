@@ -1005,11 +1005,14 @@ const App: React.FC = () => {
   const [currentTrackTitle, setCurrentTrackTitle] = useState<string>(() => getMusicTrackTitle());
 
   useEffect(() => {
+    if (appState === "playing") return;
     const timer = setInterval(() => {
-      setCurrentTrackTitle(getMusicTrackTitle());
+      if (!document.hidden) {
+        setCurrentTrackTitle(getMusicTrackTitle());
+      }
     }, 2500);
     return () => clearInterval(timer);
-  }, []);
+  }, [appState]);
 
   // Portal Teleportation cinematic & state
   const [isTeleporting, setIsTeleporting] = useState(false);
@@ -1282,6 +1285,10 @@ const App: React.FC = () => {
       setRealmEditorConfig((prev) => (prev.tool === "none" ? prev : { ...prev, tool: "none" }));
     }
   }, [activeRealmId]);
+  const realmEditorConfigForWorld = useMemo<RealmEditorConfig | undefined>(
+    () => (activeRealmId ? { ...realmEditorConfig, enabled: true } : undefined),
+    [activeRealmId, realmEditorConfig]
+  );
   const [newRealmName, setNewRealmName] = useState("");
   const [newRealmTier, setNewRealmTier] = useState<"basic" | "plus">("basic");
   const [joinRealmCodeInput, setJoinRealmCodeInput] = useState("");
@@ -1698,11 +1705,14 @@ const App: React.FC = () => {
   const splashTapRef = useRef<{ count: number; lastAt: number }>({ count: 0, lastAt: 0 });
 
   useEffect(() => {
+    if (appState !== "menu" && appState !== "login-prompt") return;
     const id = setInterval(() => {
-      setSplashIndex((prev) => (prev + 1) % MENU_SPLASHES.length);
+      if (!document.hidden) {
+        setSplashIndex((prev) => (prev + 1) % MENU_SPLASHES.length);
+      }
     }, 6000);
     return () => clearInterval(id);
-  }, [MENU_SPLASHES.length]);
+  }, [appState, MENU_SPLASHES.length]);
 
   const handleTitleEasterEggTap = useCallback(() => {
     resumeAudio();
@@ -4406,9 +4416,9 @@ const App: React.FC = () => {
           isCinemaMode={isCinemaMode} 
         />
 
-        <div className={`relative z-10 w-full h-full safe-area-inset overflow-y-auto flex ${compactSideBySide ? "flex-row items-center justify-center gap-6 px-4 py-3" : "flex-col items-center justify-between px-4 sm:px-6 py-4 sm:py-8"} transition-all duration-300 ${isCinemaMode ? "opacity-0 pointer-events-none scale-95" : "opacity-100 scale-100"}`}>
+        <div className={`relative z-10 w-full h-full safe-area-inset overflow-y-auto overscroll-contain flex ${compactSideBySide ? "flex-row items-center justify-center gap-4 px-3 py-2 pt-12" : "flex-col items-center justify-between px-4 sm:px-6 pt-14 pb-4 sm:py-8"} transition-all duration-300 ${isCinemaMode ? "opacity-0 pointer-events-none scale-95" : "opacity-100 scale-100"}`}>
           {/* Official Adventure Alpha Mobile Logo + Corner Star Splash + 3-Tap Cat Easter Eggs */}
-          <div className={`flex flex-col items-center justify-center shrink-0 ${compactSideBySide ? "" : "mt-2 sm:mt-4 flex-1"}`}>
+          <div className={`flex flex-col items-center justify-center shrink-0 ${compactSideBySide ? "my-auto" : "my-auto flex-1"}`}>
             <div className="relative inline-flex items-center justify-center">
               <button
                 type="button"
@@ -4419,7 +4429,7 @@ const App: React.FC = () => {
                 <img
                   src="./assets/adventure-alpha-emblem.png"
                   alt="Adventure Alpha Mobile"
-                  className={`${compactSideBySide ? "w-36 h-36" : "w-44 h-44 sm:w-56 sm:h-56 md:w-64 md:h-64"} max-h-[38dvh] aspect-square object-contain drop-shadow-[0_12px_28px_rgba(0,0,0,0.8)]`}
+                  className={`${compactSideBySide ? "w-32 h-32" : "w-40 h-40 sm:w-56 sm:h-56 md:w-64 md:h-64"} max-h-[36dvh] aspect-square object-contain drop-shadow-[0_12px_28px_rgba(0,0,0,0.8)]`}
                   onError={(e) => { (e.currentTarget as HTMLImageElement).src = "./assets/aistudio/1794943627139_ac65a7dd.jpg"; }}
                 />
               </button>
@@ -4429,7 +4439,7 @@ const App: React.FC = () => {
                   e.stopPropagation();
                   handleSplashEasterEggTap();
                 }}
-                className="splash-bounce-tilt absolute -bottom-1 sm:bottom-1 -right-2 sm:-right-8 z-20 text-[#ffff55] font-extrabold text-[10px] sm:text-xs md:text-sm tracking-wide font-mono px-2 py-0.5 select-none cursor-pointer bg-transparent border-0 max-w-[190px] sm:max-w-[240px] leading-tight text-center"
+                className="splash-bounce-tilt absolute -bottom-1 sm:bottom-1 -right-1 sm:-right-6 z-20 text-[#ffff55] font-extrabold text-[10px] sm:text-xs md:text-sm tracking-wide font-mono px-2 py-0.5 select-none cursor-pointer bg-transparent border-0 max-w-[175px] sm:max-w-[230px] leading-tight text-center"
                 style={{
                   textShadow: "2px 2px 0px #3f3f00, 3px 3px 0px #000",
                 }}
@@ -4439,8 +4449,8 @@ const App: React.FC = () => {
             </div>
           </div>
 
-          <div className={`max-w-[310px] sm:max-w-sm w-full flex flex-col items-center ${compactSideBySide ? "gap-2" : "gap-2.5 mb-1 sm:mb-2"}`}>
-            <p className="text-white font-extrabold text-center text-xs md:text-sm minecraft-font drop-shadow-[2px_2px_0_#000] bg-black/60 backdrop-blur-sm px-4 py-1.5 rounded-full border border-white/10">
+          <div className={`max-w-[min(310px,calc(100vw-2rem))] sm:max-w-sm w-full flex flex-col items-center my-auto ${compactSideBySide ? "gap-1.5" : "gap-2.5 mb-1 sm:mb-2"}`}>
+            <p className="text-white font-extrabold text-center text-xs md:text-sm minecraft-font drop-shadow-[2px_2px_0_#000] bg-black/75 px-4 py-1.5 rounded-full border border-white/10">
               {t.login_prompt}
             </p>
 
@@ -4525,7 +4535,7 @@ const App: React.FC = () => {
 
         <div
           onPointerDown={(e) => e.stopPropagation()}
-          className={`z-10 bg-black/85 backdrop-blur-xl p-5 sm:p-7 rounded-3xl border border-white/20 flex flex-col items-center shadow-2xl max-w-sm w-full my-auto transition-all duration-300 ${isCinemaMode ? "opacity-0 pointer-events-none scale-95" : "opacity-100 scale-100"}`}
+          className={`z-10 bg-zinc-950/94 p-5 sm:p-7 rounded-3xl border border-white/20 flex flex-col items-center shadow-2xl max-w-[min(24rem,calc(100vw-1rem))] w-full my-auto transition-all duration-300 ${isCinemaMode ? "opacity-0 pointer-events-none scale-95" : "opacity-100 scale-100"}`}
         >
           <img
             src="./assets/adventure-alpha-emblem.png"
@@ -4825,9 +4835,9 @@ const App: React.FC = () => {
         onMouseUp={(e) => e.stopPropagation()}
         onMouseMove={(e) => e.stopPropagation()}
         onClick={(e) => e.stopPropagation()}
-        className="fixed inset-0 bg-black/85 backdrop-blur-md z-[100020] flex items-center justify-center safe-area-inset p-3 sm:p-4 overflow-y-auto pointer-events-auto text-left animate-in fade-in duration-200"
+        className="fixed inset-0 bg-black/88 z-[100020] flex flex-col items-center justify-start safe-area-inset p-2 sm:p-4 overflow-y-auto overscroll-contain pointer-events-auto text-left animate-in fade-in duration-200"
       >
-        <div className="bg-zinc-900 border-4 border-purple-600 p-4 sm:p-8 rounded-2xl w-full max-w-2xl shadow-2xl flex flex-col gap-3 sm:gap-4 relative text-white font-sans max-h-[92dvh] overflow-y-auto my-auto">
+        <div className="bg-zinc-900 border-4 border-purple-600 p-4 sm:p-8 rounded-2xl w-full max-w-[min(42rem,calc(100vw-1rem))] shadow-2xl flex flex-col gap-3 sm:gap-4 relative text-white font-sans max-h-[calc(100dvh-1rem)] overflow-y-auto my-auto">
           
           {/* Header */}
           <div className="flex justify-between items-center border-b border-zinc-700 pb-3">
@@ -6580,9 +6590,9 @@ const App: React.FC = () => {
         onMouseUp={(e) => e.stopPropagation()}
         onMouseMove={(e) => e.stopPropagation()}
         onClick={(e) => e.stopPropagation()}
-        className="fixed inset-0 bg-black/90 backdrop-blur-md z-[100010] flex items-center justify-center safe-area-inset p-2.5 sm:p-5 overflow-y-auto pointer-events-auto text-left"
+        className="fixed inset-0 bg-black/90 z-[100010] flex flex-col items-center justify-start safe-area-inset p-2 sm:p-4 overflow-y-auto overscroll-contain pointer-events-auto text-left"
       >
-        <div className="bg-zinc-950 border-2 border-amber-500/50 p-3.5 sm:p-6 rounded-2xl w-full max-w-5xl shadow-2xl flex flex-col gap-3 sm:gap-4 relative text-white font-sans max-h-[92dvh] my-auto overflow-hidden">
+        <div className="bg-zinc-950 border-2 border-amber-500/50 p-3.5 sm:p-6 rounded-2xl w-full max-w-[min(64rem,calc(100vw-1rem))] shadow-2xl flex flex-col gap-3 sm:gap-4 relative text-white font-sans max-h-[calc(100dvh-1rem)] my-auto overflow-hidden">
           {/* Header */}
           <div className="flex flex-wrap justify-between items-center gap-3 border-b border-white/10 pb-3 shrink-0">
             <div className="flex items-center gap-3">
@@ -7684,9 +7694,9 @@ const App: React.FC = () => {
         onMouseUp={(e) => e.stopPropagation()}
         onMouseMove={(e) => e.stopPropagation()}
         onClick={(e) => e.stopPropagation()}
-        className="fixed inset-0 bg-black/85 backdrop-blur-md z-[100025] flex items-center justify-center safe-area-inset p-2.5 sm:p-4 overflow-y-auto pointer-events-auto text-left"
+        className="fixed inset-0 bg-black/88 z-[100025] flex flex-col items-center justify-start safe-area-inset p-2 sm:p-4 overflow-y-auto overscroll-contain pointer-events-auto text-left"
       >
-        <div className="bg-zinc-950 border-4 border-cyan-500/70 p-3.5 sm:p-6 rounded-3xl w-full max-w-4xl shadow-2xl flex flex-col gap-3 text-white font-sans max-h-[92dvh] overflow-y-auto my-auto">
+        <div className="bg-zinc-950 border-4 border-cyan-500/70 p-3.5 sm:p-6 rounded-3xl w-full max-w-[min(56rem,calc(100vw-1rem))] shadow-2xl flex flex-col gap-3 text-white font-sans max-h-[calc(100dvh-1rem)] overflow-y-auto my-auto">
           {/* Header */}
           <div className="flex flex-wrap items-center justify-between gap-2.5 border-b border-white/10 pb-3 shrink-0">
             <div className="flex items-center gap-3">
@@ -8434,9 +8444,9 @@ const App: React.FC = () => {
         onMouseUp={(e) => e.stopPropagation()}
         onMouseMove={(e) => e.stopPropagation()}
         onClick={(e) => e.stopPropagation()}
-        className="fixed inset-0 bg-black/85 backdrop-blur-md z-[100010] flex items-center justify-center safe-area-inset p-3 sm:p-4 overflow-y-auto pointer-events-auto text-left"
+        className="fixed inset-0 bg-black/88 z-[100010] flex flex-col items-center justify-start safe-area-inset p-2 sm:p-4 overflow-y-auto overscroll-contain pointer-events-auto text-left"
       >
-        <div className="bg-zinc-900 border-4 border-yellow-600 p-4 sm:p-8 rounded-2xl w-full max-w-4xl shadow-2xl flex flex-col gap-3 sm:gap-4 relative animate-in fade-in zoom-in-95 duration-200 text-white font-sans max-h-[92dvh] overflow-y-auto my-auto">
+        <div className="bg-zinc-900 border-4 border-yellow-600 p-4 sm:p-8 rounded-2xl w-full max-w-[min(56rem,calc(100vw-1rem))] shadow-2xl flex flex-col gap-3 sm:gap-4 relative animate-in fade-in zoom-in-95 duration-200 text-white font-sans max-h-[calc(100dvh-1rem)] overflow-y-auto my-auto">
           
           {/* Header with Trophy */}
           <div className="flex justify-between items-center border-b border-zinc-700 pb-3">
@@ -8683,11 +8693,11 @@ const App: React.FC = () => {
     );
 
     return (
-      <div className="w-full h-full bg-slate-900 flex flex-col items-center justify-start sm:justify-center safe-area-inset p-3 sm:p-8 relative overflow-y-auto select-none">
+      <div className="w-full h-full bg-slate-900 flex flex-col items-center justify-start sm:justify-center safe-area-inset p-2 sm:p-6 relative overflow-y-auto overscroll-contain select-none">
         {/* 3D Rotating Voxel Panorama */}
         <MenuPanorama3D showLogo={false} />
 
-        <div className="z-10 bg-zinc-950/90 backdrop-blur-2xl p-4 sm:p-8 rounded-[28px] sm:rounded-[32px] border border-white/10 flex flex-col w-full max-w-4xl shadow-3xl my-auto">
+        <div className="z-10 bg-zinc-950/94 p-4 sm:p-8 rounded-[24px] sm:rounded-[32px] border border-white/10 flex flex-col w-full max-w-[min(56rem,calc(100vw-1rem))] max-h-[calc(100dvh-1rem)] overflow-y-auto shadow-3xl my-auto">
           {/* Header */}
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 sm:gap-4 mb-5 border-b border-white/5 pb-4">
             <div className="flex items-center gap-3">
@@ -9057,6 +9067,221 @@ const App: React.FC = () => {
     if (vipActive || ownedShopItems.includes("skin_poseidon")) unlockedSkinsList.push("poseidon");
     if (mvpActive || ownedShopItems.includes("skin_obsidian")) unlockedSkinsList.push("obsidian");
 
+    const useCompactMenuLayout = isPortrait || screenSize.height < 600 || screenSize.width < 880;
+    const menuButtonsCompact = useCompactMenuLayout && (!isPortrait || screenSize.height < 680);
+
+    const renderEmblemBlock = (sizeClass: string, splashPosClass: string) => (
+      <div className="relative inline-flex items-center justify-center shrink-0">
+        <button
+          type="button"
+          onClick={handleTitleEasterEggTap}
+          className="relative cursor-pointer active:scale-95 transition-transform duration-150 focus:outline-none select-none bg-transparent border-0 p-0"
+          title="Adventure Alpha Mobile"
+        >
+          <img
+            src="./assets/adventure-alpha-emblem.png"
+            alt="Adventure Alpha Mobile"
+            className={`${sizeClass} aspect-square object-contain drop-shadow-[0_10px_24px_rgba(0,0,0,0.85)]`}
+            onError={(e) => { (e.currentTarget as HTMLImageElement).src = "./assets/aistudio/1794943627139_ac65a7dd.jpg"; }}
+          />
+        </button>
+
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            handleSplashEasterEggTap();
+          }}
+          className={`splash-bounce-tilt absolute -bottom-1 sm:bottom-0 ${splashPosClass} z-20 text-[#ffff55] font-extrabold text-[9px] sm:text-xs tracking-wide font-mono px-1.5 py-0.5 select-none cursor-pointer bg-transparent border-0 max-w-[135px] sm:max-w-[205px] leading-tight text-center`}
+          style={{
+            textShadow: "2px 2px 0px #3f3f00, 3px 3px 0px #000",
+          }}
+        >
+          ★ {MENU_SPLASHES[splashIndex]} ★
+        </button>
+      </div>
+    );
+
+    const renderMenuButtonsBlock = (compact: boolean) => (
+      <div className={`w-full flex flex-col ${compact ? "gap-1.5" : "gap-2"}`}>
+        {/* 1. PLAY & REALMS ROW */}
+        <div className="grid grid-cols-12 gap-1.5 sm:gap-2 w-full">
+          <button
+            onClick={() => {
+              resumeAudio();
+              setAppState("worlds-list");
+            }}
+            className={`col-span-7 relative group ${compact ? "py-2" : "py-2.5 sm:py-3.5"} px-3 rounded-lg text-white font-black text-xs sm:text-base uppercase tracking-widest minecraft-font transition-all duration-75 flex items-center justify-center gap-2 border-t-2 border-l-2 border-emerald-300/90 border-b-4 border-r-4 border-emerald-950 bg-gradient-to-b from-emerald-500 via-emerald-600 to-emerald-800 shadow-[0_5px_0_#064e3b,0_10px_20px_rgba(0,0,0,0.65)] active:translate-y-[4px] active:shadow-[0_1px_0_#064e3b,0_4px_10px_rgba(0,0,0,0.5)] hover:brightness-110 select-none cursor-pointer`}
+            style={{
+              textShadow: "2px 2px 0px #000, -1px -1px 0px #000, 1px -1px 0px #000, -1px 1px 0px #000",
+              backgroundImage: "linear-gradient(rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(to bottom, #10b981, #059669, #065f46)",
+              backgroundSize: "4px 4px, 4px 4px, 100% 100%"
+            }}
+          >
+            <i className="fas fa-play text-emerald-200 text-xs sm:text-sm group-hover:scale-110 transition-transform" />
+            <span>{t.play}</span>
+          </button>
+
+          <button
+            onClick={() => {
+              resumeAudio();
+              setRealmStatusMsg(null);
+              setIsRealmsOpen(true);
+            }}
+            className={`col-span-5 relative group ${compact ? "py-2" : "py-2.5 sm:py-3.5"} px-2.5 rounded-lg text-white font-black text-xs sm:text-sm uppercase tracking-wider minecraft-font transition-all duration-75 flex items-center justify-center gap-1.5 border-t-2 border-l-2 border-cyan-300/90 border-b-4 border-r-4 border-cyan-950 bg-gradient-to-b from-cyan-500 via-teal-600 to-cyan-900 shadow-[0_5px_0_#164e63,0_10px_20px_rgba(0,0,0,0.65)] active:translate-y-[4px] active:shadow-[0_1px_0_#164e63,0_4px_10px_rgba(0,0,0,0.5)] hover:brightness-110 select-none cursor-pointer`}
+            style={{
+              textShadow: "1px 1px 0px #000, -1px -1px 0px #000",
+              backgroundImage: "linear-gradient(rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(to bottom, #06b6d4, #0d9488, #164e63)",
+              backgroundSize: "4px 4px, 4px 4px, 100% 100%"
+            }}
+          >
+            <i className="fas fa-chess-rook text-cyan-100 text-xs group-hover:scale-110 transition-transform" />
+            <span>Realms</span>
+            {effectiveRealmPlan === "none" && (
+              <span className="bg-emerald-400 text-zinc-950 text-[7px] px-1 py-0.5 rounded font-mono font-black leading-none">
+                GRATIS
+              </span>
+            )}
+          </button>
+        </div>
+
+        {/* 2. DUAL ROW: LEADERBOARD & FRIENDS */}
+        <div className="grid grid-cols-2 gap-1.5 sm:gap-2 w-full">
+          <button
+            onClick={() => {
+              resumeAudio();
+              setIsLeaderboardOpen(true);
+            }}
+            className={`relative group ${compact ? "py-1.5 sm:py-2" : "py-2 sm:py-2.5"} px-2.5 rounded-lg text-white font-bold text-[9px] sm:text-[11px] uppercase tracking-wider minecraft-font transition-all duration-75 flex items-center justify-center gap-1.5 border-t-2 border-l-2 border-yellow-200/90 border-b-4 border-r-4 border-amber-950 bg-gradient-to-b from-amber-500 via-yellow-600 to-amber-800 shadow-[0_4px_0_#78350f,0_8px_16px_rgba(0,0,0,0.55)] active:translate-y-[3px] active:shadow-[0_1px_0_#78350f] hover:brightness-110 select-none cursor-pointer`}
+            style={{
+              textShadow: "1px 1px 0px #000, -1px -1px 0px #000",
+              backgroundImage: "linear-gradient(rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(to bottom, #f59e0b, #d97706, #92400e)",
+              backgroundSize: "4px 4px, 4px 4px, 100% 100%"
+            }}
+          >
+            <i className="fas fa-trophy text-yellow-200 text-xs group-hover:rotate-12 transition-transform" />
+            <span className="truncate">{lang === "es" ? "Clasificación" : "Leaderboard"}</span>
+          </button>
+
+          <button
+            onClick={() => {
+              resumeAudio();
+              setIsFriendsOpen(true);
+            }}
+            className={`relative group ${compact ? "py-1.5 sm:py-2" : "py-2 sm:py-2.5"} px-2.5 rounded-lg text-white font-bold text-[9px] sm:text-[11px] uppercase tracking-wider minecraft-font transition-all duration-75 flex items-center justify-center gap-1.5 border-t-2 border-l-2 border-purple-300/90 border-b-4 border-r-4 border-purple-950 bg-gradient-to-b from-purple-600 via-purple-700 to-indigo-900 shadow-[0_4px_0_#3b0764,0_8px_16px_rgba(0,0,0,0.55)] active:translate-y-[3px] active:shadow-[0_1px_0_#3b0764] hover:brightness-110 select-none cursor-pointer`}
+            style={{
+              textShadow: "1px 1px 0px #000, -1px -1px 0px #000",
+              backgroundImage: "linear-gradient(rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(to bottom, #9333ea, #7e22ce, #3b0764)",
+              backgroundSize: "4px 4px, 4px 4px, 100% 100%"
+            }}
+          >
+            <i className="fas fa-users text-purple-200 text-xs group-hover:scale-110 transition-transform" />
+            <span className="truncate">{lang === "es" ? "Amigos" : "Friends"}</span>
+          </button>
+        </div>
+
+        {/* 3. VIP SHOP BUTTON */}
+        <button
+          onClick={() => {
+            resumeAudio();
+            setShopCategory("all");
+            setIsShopOpen(true);
+          }}
+          className={`w-full relative group ${compact ? "py-2" : "py-2.5 sm:py-3"} px-3 rounded-lg text-zinc-950 font-black text-[10.5px] sm:text-xs uppercase tracking-widest minecraft-font transition-all duration-75 flex items-center justify-center gap-2 border-t-2 border-l-2 border-yellow-100 border-b-4 border-r-4 border-yellow-950 bg-gradient-to-r from-yellow-400 via-amber-300 to-yellow-500 shadow-[0_4px_0_#713f12,0_8px_16px_rgba(0,0,0,0.55)] active:translate-y-[3px] active:shadow-[0_1px_0_#713f12] hover:brightness-110 select-none cursor-pointer`}
+          style={{
+            textShadow: "1px 1px 0px rgba(255,255,255,0.5)",
+            backgroundImage: "linear-gradient(rgba(255,255,255,0.18) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.18) 1px, transparent 1px), linear-gradient(to right, #eab308, #f59e0b, #eab308)",
+            backgroundSize: "4px 4px, 4px 4px, 100% 100%"
+          }}
+        >
+          <i className="fas fa-shopping-cart text-zinc-950 text-xs" />
+          <span className="truncate">{lang === "es" ? "TIENDA VIP & INDEFS" : "VIP SHOP & INDEFS"}</span>
+          {mvpActive ? (
+            <span className="bg-zinc-950 text-sky-300 text-[8px] px-2 py-0.5 rounded-full border border-sky-400/40 font-extrabold ml-1 font-mono">
+              MVP+
+            </span>
+          ) : vipActive ? (
+            <span className="bg-zinc-950 text-yellow-300 text-[8px] px-2 py-0.5 rounded-full border border-yellow-400/40 font-extrabold ml-1 font-mono">
+              VIP
+            </span>
+          ) : null}
+        </button>
+
+        {/* 4. DUAL ROW: SETTINGS & LOGOUT */}
+        <div className="grid grid-cols-2 gap-1.5 sm:gap-2 w-full">
+          <button
+            onClick={() => {
+              resumeAudio();
+              setAppState("settings");
+            }}
+            className={`relative group ${compact ? "py-1.5 sm:py-2" : "py-2 sm:py-2.5"} px-2.5 rounded-lg text-white font-bold text-[9px] sm:text-[11px] uppercase tracking-wider minecraft-font transition-all duration-75 flex items-center justify-center gap-1.5 border-t-2 border-l-2 border-zinc-400 border-b-4 border-r-4 border-zinc-950 bg-gradient-to-b from-zinc-600 via-zinc-700 to-zinc-800 shadow-[0_4px_0_#18181b,0_8px_16px_rgba(0,0,0,0.55)] active:translate-y-[3px] active:shadow-[0_1px_0_#18181b] hover:brightness-110 select-none cursor-pointer`}
+            style={{
+              textShadow: "1px 1px 0px #000, -1px -1px 0px #000",
+              backgroundImage: "linear-gradient(rgba(255,255,255,0.1) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.1) 1px, transparent 1px), linear-gradient(to bottom, #52525b, #3f3f46, #27272a)",
+              backgroundSize: "4px 4px, 4px 4px, 100% 100%"
+            }}
+          >
+            <i className="fas fa-cog text-emerald-400 text-xs group-hover:rotate-90 transition-transform duration-300" />
+            <span className="truncate">{t.settings}</span>
+          </button>
+
+          <button
+            onClick={handleLogout}
+            className={`relative group ${compact ? "py-1.5 sm:py-2" : "py-2 sm:py-2.5"} px-2.5 rounded-lg text-white/90 font-bold text-[9px] sm:text-[11px] uppercase tracking-wider minecraft-font transition-all duration-75 flex items-center justify-center gap-1.5 border-t-2 border-l-2 border-stone-500 border-b-4 border-r-4 border-black bg-gradient-to-b from-stone-700 via-stone-800 to-stone-900 hover:from-red-950/80 hover:via-red-900/60 hover:to-stone-950 shadow-[0_4px_0_#1c1917,0_8px_16px_rgba(0,0,0,0.55)] active:translate-y-[3px] active:shadow-[0_1px_0_#1c1917] select-none cursor-pointer`}
+            style={{
+              textShadow: "1px 1px 0px #000, -1px -1px 0px #000",
+              backgroundImage: "linear-gradient(rgba(255,255,255,0.08) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.08) 1px, transparent 1px), linear-gradient(to bottom, #44403c, #292524, #1c1917)",
+              backgroundSize: "4px 4px, 4px 4px, 100% 100%"
+            }}
+          >
+            <i className="fas fa-door-open text-red-400 text-xs group-hover:-translate-x-0.5 transition-transform" />
+            <span className="truncate">{t.logout}</span>
+          </button>
+        </div>
+
+        <div className="w-full flex items-center justify-between px-1 pt-0.5 pointer-events-none select-none text-white/45 font-mono text-[8px] uppercase tracking-widest font-bold">
+          <span>⛏️ ALPHA MOBILE 1.0.2</span>
+          <span>60 FPS 3D VOXEL</span>
+        </div>
+      </div>
+    );
+
+    const renderCharacterPreview = (
+      mode: "floating" | "inline",
+      cardClass?: string,
+      stageClass?: string
+    ) => (
+      <CharacterPreviewCard
+        lang={lang}
+        characterSkin={characterSkin}
+        customSkin={customSkin}
+        ownedSkins={unlockedSkinsList}
+        indefCoins={indefCoins}
+        vipActive={vipActive}
+        onSelectSkin={(sid) => {
+          resumeAudio();
+          handleSelectSkin(sid);
+        }}
+        onUpdateCustomSkin={handleUpdateCustomSkin}
+        onOpenShopForSkin={(skinId) => {
+          resumeAudio();
+          setShopCategory("skins");
+          if (skinId === "dragon") setSelectedProduct("skin_dragon");
+          else if (skinId === "angel") setSelectedProduct("skin_angel");
+          else if (skinId === "titan") setSelectedProduct("skin_titan");
+          else if (skinId === "poseidon") setSelectedProduct("skin_poseidon");
+          else if (skinId === "obsidian") setSelectedProduct("skin_obsidian");
+          setPaymentMethod("indefs");
+          setPaymentStep("form");
+          setIsShopOpen(true);
+        }}
+        hidden={isCinemaMode}
+        layoutMode={mode}
+        cardClassName={cardClass}
+        stageHeightClass={stageClass}
+      />
+    );
+
     return (
       <div className="w-full h-full bg-slate-900 relative overflow-hidden select-none safe-area-inset">
         {/* 3D Rotating Voxel Panorama Background */}
@@ -9066,326 +9291,165 @@ const App: React.FC = () => {
           isCinemaMode={isCinemaMode} 
         />
 
-        {/* Official Adventure Alpha Mobile Logo + Corner Star Splash + 3-Tap Cat Easter Eggs */}
+        {/* Responsive Non-Overlapping Menu Layer (Empty background drags 3D panorama) */}
         <div
-          className={`z-20 absolute flex flex-col items-center transition-all duration-300 ${
-            isVeryCompactHeight && !isPortrait
-              ? "left-1/2 -translate-x-1/2 top-10"
-              : isPortrait
-                ? "left-3 sm:left-1/2 sm:-translate-x-1/2 top-20 sm:top-16"
-                : "left-1/2 -translate-x-1/2 top-12 sm:top-14"
-          } ${isCinemaMode ? "opacity-0 pointer-events-none scale-90" : "opacity-100 scale-100"}`}
+          className={`relative z-20 w-full h-full flex flex-col justify-between p-2.5 sm:p-4 overflow-y-auto overflow-x-hidden overscroll-contain pointer-events-none transition-all duration-300 ${
+            isCinemaMode ? "opacity-0 scale-95" : "opacity-100 scale-100"
+          }`}
         >
-          <div className="relative inline-flex items-center justify-center">
-            <button
-              type="button"
-              onClick={handleTitleEasterEggTap}
-              className="relative cursor-pointer active:scale-95 transition-transform duration-150 focus:outline-none select-none bg-transparent border-0 p-0"
-              title="Adventure Alpha Mobile"
-            >
-              <img
-                src="./assets/adventure-alpha-emblem.png"
-                alt="Adventure Alpha Mobile"
-                className={`${
-                  isVeryCompactHeight && !isPortrait
-                    ? "w-24 h-24"
-                    : isPortrait
-                      ? "w-36 h-36 sm:w-44 sm:h-44"
-                      : "w-36 h-36 sm:w-48 sm:h-48"
-                } max-h-[30dvh] aspect-square object-contain drop-shadow-[0_10px_24px_rgba(0,0,0,0.85)]`}
-                onError={(e) => { (e.currentTarget as HTMLImageElement).src = "./assets/aistudio/1794943627139_ac65a7dd.jpg"; }}
-              />
-            </button>
-
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                handleSplashEasterEggTap();
-              }}
-              className={`splash-bounce-tilt absolute -bottom-1 sm:bottom-0 ${
-                isPortrait ? "-right-2 sm:-right-8" : "-right-4 sm:-right-10"
-              } z-20 text-[#ffff55] font-extrabold text-[9.5px] sm:text-xs tracking-wide font-mono px-1.5 py-0.5 select-none cursor-pointer bg-transparent border-0 max-w-[145px] sm:max-w-[210px] leading-tight text-center`}
-              style={{
-                textShadow: "2px 2px 0px #3f3f00, 3px 3px 0px #000",
-              }}
-            >
-              ★ {MENU_SPLASHES[splashIndex]} ★
-            </button>
-          </div>
-        </div>
-
-        {/* Top-Left Floating User Profile & Indef Wallet Bar */}
-        <div className={`absolute top-3 sm:top-4 left-3 sm:left-4 pr-28 sm:pr-4 z-20 flex flex-wrap items-center gap-2 transition-all duration-300 ${isCinemaMode ? "opacity-0 pointer-events-none -translate-y-4" : "opacity-100 translate-y-0"}`}>
-          <div className="flex items-center gap-2.5 bg-black/60 hover:bg-black/80 backdrop-blur-md border border-white/20 py-1.5 px-3.5 rounded-full shadow-xl transition-all">
-            <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 shadow-[0_0_8px_#34d399]" />
-            <div className="flex items-center gap-1.5">
-              <span className="text-white/70 font-mono text-[9px] uppercase tracking-wider font-bold">
-                {t.profile_welcome}:
-              </span>
-              <span className="text-emerald-400 font-mono text-xs uppercase tracking-wider font-black drop-shadow">
-                {currentUser || "Invitado"}
-              </span>
-            </div>
-            {googleUser && (
-              <div className="flex items-center ml-1">
-                {(() => {
-                  let badgeStyle = "bg-zinc-800 text-zinc-400 border border-white/10";
-                  let label = lang === "es" ? "USUARIO" : "USER";
-
-                  if (userRole === "owner") {
-                    badgeStyle = "bg-gradient-to-r from-yellow-500 to-amber-500 text-white border border-yellow-300 shadow-[0_0_10px_rgba(234,179,8,0.5)]";
-                    label = lang === "es" ? "DUEÑO" : "OWNER";
-                  } else if (userRole === "staff") {
-                    badgeStyle = "bg-red-600 text-white border border-red-400 shadow-[0_0_10px_rgba(239,68,68,0.5)]";
-                    label = "STAFF";
-                  } else if (userRole === "mod") {
-                    badgeStyle = "bg-purple-600 text-white border border-purple-400 shadow-[0_0_10px_rgba(168,85,247,0.5)]";
-                    label = "MOD";
-                  }
-
-                  return (
-                    <span className={`text-[8px] px-2 py-0.5 rounded-full font-mono font-black uppercase tracking-widest ${badgeStyle}`}>
-                      {label}
-                    </span>
-                  );
-                })()}
+          {/* Top Bar: Profile + Indefs + Rotate (reserving right margin for Panorama button) */}
+          <div className={`w-full pr-36 sm:pr-44 flex flex-wrap items-center gap-1.5 sm:gap-2 shrink-0 ${isCinemaMode ? "pointer-events-none" : "pointer-events-auto"}`}>
+            <div className="flex items-center gap-2 bg-black/75 hover:bg-black/90 border border-white/20 py-1 px-3 rounded-full shadow-xl transition-all max-w-full">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_#34d399] shrink-0" />
+              <div className="flex items-center gap-1 min-w-0">
+                <span className="text-white/70 font-mono text-[9px] uppercase tracking-wider font-bold hidden sm:inline">
+                  {t.profile_welcome}:
+                </span>
+                <span className="text-emerald-400 font-mono text-[11px] sm:text-xs uppercase tracking-wider font-black drop-shadow truncate max-w-[110px] sm:max-w-[160px]">
+                  {currentUser || "Invitado"}
+                </span>
               </div>
-            )}
-          </div>
+              {googleUser && (
+                <div className="flex items-center ml-0.5 shrink-0">
+                  {(() => {
+                    let badgeStyle = "bg-zinc-800 text-zinc-400 border border-white/10";
+                    let label = lang === "es" ? "USUARIO" : "USER";
 
-          {/* Indef (Minecoins) Top-Left Quick Pill */}
-          <button
-            type="button"
-            onClick={() => {
-              resumeAudio();
-              setShopCategory("indefs");
-              setIsShopOpen(true);
-            }}
-            className="flex items-center gap-1.5 bg-zinc-950/80 hover:bg-zinc-900 backdrop-blur-md border border-emerald-400/40 py-1.5 px-3 rounded-full shadow-lg transition cursor-pointer"
-            title={lang === "es" ? "Comprar o gestionar Indefs" : "Buy or manage Indefs"}
-          >
-            <span className="w-4 h-4 rounded bg-gradient-to-br from-emerald-400 to-amber-400 text-zinc-950 font-black text-[10px] flex items-center justify-center">
-              ◈
-            </span>
-            <span className="text-xs font-mono font-black text-emerald-300 tabular-nums">
-              {indefCoins.toLocaleString()}
-            </span>
-            <span className="text-[9px] font-mono uppercase font-bold text-zinc-400">Indefs</span>
-          </button>
-        </div>
+                    if (userRole === "owner") {
+                      badgeStyle = "bg-gradient-to-r from-yellow-500 to-amber-500 text-white border border-yellow-300 shadow-[0_0_10px_rgba(234,179,8,0.5)]";
+                      label = lang === "es" ? "DUEÑO" : "OWNER";
+                    } else if (userRole === "staff") {
+                      badgeStyle = "bg-red-600 text-white border border-red-400 shadow-[0_0_10px_rgba(239,68,68,0.5)]";
+                      label = "STAFF";
+                    } else if (userRole === "mod") {
+                      badgeStyle = "bg-purple-600 text-white border border-purple-400 shadow-[0_0_10px_rgba(168,85,247,0.5)]";
+                      label = "MOD";
+                    }
 
-        {/* Mobile Quick Rotate Button on Main Menu */}
-        {(isTouchDevice || isSmallScreen) && !isCinemaMode && (
-          <button
-            type="button"
-            onClick={() => {
-              resumeAudio();
-              toggleManualScreenRotation();
-            }}
-            className="absolute top-3 sm:top-4 right-3 sm:right-4 z-30 flex items-center gap-1.5 bg-black/70 hover:bg-black/90 border border-emerald-400/40 text-emerald-300 px-3 py-1.5 rounded-full text-[10px] font-mono font-bold shadow-lg active:scale-95 transition"
-            title={lang === "es" ? "Girar Pantalla (Vertical / Horizontal)" : "Rotate Screen"}
-          >
-            <i className="fas fa-rotate text-xs" />
-            <span>{isPortrait ? (lang === "es" ? "Horizontal" : "Landscape") : (lang === "es" ? "Vertical" : "Portrait")}</span>
-          </button>
-        )}
+                    return (
+                      <span className={`text-[8px] px-1.5 py-0.5 rounded-full font-mono font-black uppercase tracking-widest ${badgeStyle}`}>
+                        {label}
+                      </span>
+                    );
+                  })()}
+                </div>
+              )}
+            </div>
 
-        {/* Music Track Mini Badge */}
-        <div className={`absolute top-3 sm:top-4 right-36 z-20 hidden lg:flex items-center gap-2 bg-black/55 hover:bg-black/75 backdrop-blur-md border border-white/15 px-3 py-1.5 rounded-full shadow-lg transition-all duration-300 ${isCinemaMode ? "opacity-0 pointer-events-none -translate-y-4" : "opacity-100 translate-y-0"}`}>
-          <span className="flex items-center gap-0.5 h-3 text-emerald-400">
-            <span className="w-0.5 h-2.5 bg-emerald-400 animate-pulse rounded-full" />
-            <span className="w-0.5 h-3.5 bg-emerald-400 animate-pulse rounded-full delay-75" />
-            <span className="w-0.5 h-1.5 bg-emerald-400 animate-pulse rounded-full delay-150" />
-          </span>
-          <span className="text-white/80 font-mono text-[9px] font-bold max-w-[190px] truncate" title={currentTrackTitle}>
-            {currentTrackTitle}
-          </span>
-          {(musicMode === "c418" || (musicMode === "soundtrack" && currentWorld !== null)) && (
+            {/* Indef (Minecoins) Quick Pill */}
             <button
+              type="button"
               onClick={() => {
                 resumeAudio();
-                skipToNextTrack();
-                setTimeout(() => setCurrentTrackTitle(getMusicTrackTitle()), 150);
+                setShopCategory("indefs");
+                setIsShopOpen(true);
               }}
-              className="text-white/60 hover:text-white text-[10px] ml-1 transition"
-              title={lang === "es" ? "Siguiente pista" : "Next track"}
+              className="flex items-center gap-1.5 bg-zinc-950/90 hover:bg-zinc-900 border border-emerald-400/40 py-1 px-2.5 rounded-full shadow-lg transition cursor-pointer shrink-0"
+              title={lang === "es" ? "Comprar o gestionar Indefs" : "Buy or manage Indefs"}
             >
-              <i className="fas fa-forward-step" />
+              <span className="w-3.5 h-3.5 rounded bg-gradient-to-br from-emerald-400 to-amber-400 text-zinc-950 font-black text-[9px] flex items-center justify-center">
+                ◈
+              </span>
+              <span className="text-[11px] font-mono font-black text-emerald-300 tabular-nums">
+                {indefCoins.toLocaleString()}
+              </span>
+              <span className="text-[8.5px] font-mono uppercase font-bold text-zinc-400">Indefs</span>
             </button>
+
+            {/* Mobile Quick Rotate Button (in top bar, never overlapping Panorama toggle) */}
+            {(isTouchDevice || isSmallScreen) && (
+              <button
+                type="button"
+                onClick={() => {
+                  resumeAudio();
+                  toggleManualScreenRotation();
+                }}
+                className="flex items-center gap-1 bg-black/80 hover:bg-black/95 border border-emerald-400/40 text-emerald-300 px-2.5 py-1 rounded-full text-[9.5px] font-mono font-bold shadow-lg active:scale-95 transition shrink-0"
+                title={lang === "es" ? "Girar Pantalla (Vertical / Horizontal)" : "Rotate Screen"}
+              >
+                <i className="fas fa-rotate text-[10px]" />
+                <span>{isPortrait ? (lang === "es" ? "Horizontal" : "Landscape") : (lang === "es" ? "Vertical" : "Portrait")}</span>
+              </button>
+            )}
+
+            {/* Music Track Mini Badge (desktop) */}
+            <div className="hidden lg:flex items-center gap-2 bg-black/75 hover:bg-black/90 border border-white/15 px-3 py-1 rounded-full shadow-lg transition-all">
+              <span className="flex items-center gap-0.5 h-3 text-emerald-400">
+                <span className="w-0.5 h-2.5 bg-emerald-400 animate-pulse rounded-full" />
+                <span className="w-0.5 h-3.5 bg-emerald-400 animate-pulse rounded-full delay-75" />
+                <span className="w-0.5 h-1.5 bg-emerald-400 animate-pulse rounded-full delay-150" />
+              </span>
+              <span className="text-white/80 font-mono text-[9px] font-bold max-w-[190px] truncate" title={currentTrackTitle}>
+                {currentTrackTitle}
+              </span>
+              {(musicMode === "c418" || (musicMode === "soundtrack" && currentWorld !== null)) && (
+                <button
+                  onClick={() => {
+                    resumeAudio();
+                    skipToNextTrack();
+                    setTimeout(() => setCurrentTrackTitle(getMusicTrackTitle()), 150);
+                  }}
+                  className="text-white/60 hover:text-white text-[10px] ml-1 transition"
+                  title={lang === "es" ? "Siguiente pista" : "Next track"}
+                >
+                  <i className="fas fa-forward-step" />
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Center & Bottom Content Adapted to Viewport Orientation & Size */}
+          {useCompactMenuLayout ? (
+            isPortrait ? (
+              <>
+                <div className={`w-full flex flex-wrap items-center justify-center gap-3 sm:gap-5 my-auto py-1 ${isCinemaMode ? "pointer-events-none" : "pointer-events-auto"}`}>
+                  {renderEmblemBlock(
+                    screenSize.height < 640 ? "w-28 h-28 sm:w-36 sm:h-36" : "w-32 h-32 sm:w-44 sm:h-44",
+                    "-right-1 sm:-right-4"
+                  )}
+                  {renderCharacterPreview(
+                    "inline",
+                    "w-[144px] sm:w-[190px]",
+                    screenSize.height < 640 ? "h-[104px] sm:h-[138px]" : "h-[118px] sm:h-[152px]"
+                  )}
+                </div>
+
+                <div className={`w-full max-w-[min(340px,100%)] mx-auto shrink-0 pt-1 ${isCinemaMode ? "pointer-events-none" : "pointer-events-auto"}`}>
+                  {renderMenuButtonsBlock(menuButtonsCompact)}
+                </div>
+              </>
+            ) : (
+              /* Compact Landscape: Left/Center = Emblem + Menu Buttons, Right = Character Preview Card */
+              <div className={`w-full flex-1 min-h-0 flex items-center justify-center gap-3 sm:gap-6 my-auto py-1 ${isCinemaMode ? "pointer-events-none" : "pointer-events-auto"}`}>
+                <div className="flex flex-col items-center gap-1.5 sm:gap-2.5 flex-1 max-w-[min(340px,calc(100vw-180px))] min-w-0">
+                  {renderEmblemBlock(
+                    isVeryCompactHeight ? "w-20 h-20" : "w-24 h-24 sm:w-32 sm:h-32",
+                    "-right-2 sm:-right-5"
+                  )}
+                  {renderMenuButtonsBlock(true)}
+                </div>
+                {renderCharacterPreview(
+                  "inline",
+                  "w-[144px] sm:w-[186px] max-h-[calc(100dvh-56px)]",
+                  isVeryCompactHeight ? "h-[90px]" : "h-[122px] sm:h-[146px]"
+                )}
+              </div>
+            )
+          ) : (
+            /* Spacious Desktop / Large Tablet */
+            <>
+              <div className={`flex flex-col items-center justify-center my-auto pt-2 ${isCinemaMode ? "pointer-events-none" : "pointer-events-auto"}`}>
+                {renderEmblemBlock("w-40 h-40 sm:w-48 sm:h-48", "-right-4 sm:-right-10")}
+              </div>
+              <div className={`w-full max-w-sm mx-auto shrink-0 pb-1 ${isCinemaMode ? "pointer-events-none" : "pointer-events-auto"}`}>
+                {renderMenuButtonsBlock(false)}
+              </div>
+            </>
           )}
         </div>
 
-        {/* RIGHT-SIDE LIVE 3D CUSTOM CHARACTER SHOWCASE & CUSTOMIZER */}
-        <CharacterPreviewCard
-          lang={lang}
-          characterSkin={characterSkin}
-          customSkin={customSkin}
-          ownedSkins={unlockedSkinsList}
-          indefCoins={indefCoins}
-          vipActive={vipActive}
-          onSelectSkin={(sid) => {
-            resumeAudio();
-            handleSelectSkin(sid);
-          }}
-          onUpdateCustomSkin={handleUpdateCustomSkin}
-          onOpenShopForSkin={(skinId) => {
-            resumeAudio();
-            setShopCategory("skins");
-            if (skinId === "dragon") setSelectedProduct("skin_dragon");
-            else if (skinId === "angel") setSelectedProduct("skin_angel");
-            else if (skinId === "titan") setSelectedProduct("skin_titan");
-            else if (skinId === "poseidon") setSelectedProduct("skin_poseidon");
-            else if (skinId === "obsidian") setSelectedProduct("skin_obsidian");
-            setPaymentMethod("indefs");
-            setPaymentStep("form");
-            setIsShopOpen(true);
-          }}
-          hidden={isCinemaMode}
-        />
-
-        {/* 3D Textured Minecraft Menu Buttons (Auto-scaled for any mobile/tablet screen) */}
-        <div className={`absolute ${isVeryCompactHeight ? "bottom-2" : "bottom-3 sm:bottom-5"} left-1/2 -translate-x-1/2 w-full ${isPortrait && screenSize.width < 480 ? "max-w-[min(90vw,285px)]" : "max-w-[300px] sm:max-w-sm"} px-2.5 sm:px-3 flex flex-col ${isVeryCompactHeight ? "gap-1.5" : "gap-2"} z-20 transition-all duration-300 ${isCinemaMode ? "opacity-0 pointer-events-none translate-y-12" : "opacity-100 translate-y-0"}`}>
-          {/* 1. PLAY & REALMS ROW */}
-          <div className="grid grid-cols-12 gap-1.5 sm:gap-2 w-full">
-            <button
-              onClick={() => {
-                resumeAudio();
-                setAppState("worlds-list");
-              }}
-              className={`col-span-7 relative group ${isVeryCompactHeight ? "py-2" : "py-2.5 sm:py-3.5"} px-3 rounded-lg text-white font-black text-sm sm:text-base uppercase tracking-widest minecraft-font transition-all duration-75 flex items-center justify-center gap-2 border-t-2 border-l-2 border-emerald-300/90 border-b-4 border-r-4 border-emerald-950 bg-gradient-to-b from-emerald-500 via-emerald-600 to-emerald-800 shadow-[0_5px_0_#064e3b,0_10px_20px_rgba(0,0,0,0.65)] active:translate-y-[4px] active:shadow-[0_1px_0_#064e3b,0_4px_10px_rgba(0,0,0,0.5)] hover:brightness-110 select-none cursor-pointer`}
-              style={{
-                textShadow: "2px 2px 0px #000, -1px -1px 0px #000, 1px -1px 0px #000, -1px 1px 0px #000",
-                backgroundImage: "linear-gradient(rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(to bottom, #10b981, #059669, #065f46)",
-                backgroundSize: "4px 4px, 4px 4px, 100% 100%"
-              }}
-            >
-              <i className="fas fa-play text-emerald-200 text-xs sm:text-sm group-hover:scale-110 transition-transform" />
-              <span>{t.play}</span>
-            </button>
-
-            <button
-              onClick={() => {
-                resumeAudio();
-                setRealmStatusMsg(null);
-                setIsRealmsOpen(true);
-              }}
-              className="col-span-5 relative group py-3 sm:py-3.5 px-2.5 rounded-lg text-white font-black text-xs sm:text-sm uppercase tracking-wider minecraft-font transition-all duration-75 flex items-center justify-center gap-1.5 border-t-2 border-l-2 border-cyan-300/90 border-b-4 border-r-4 border-cyan-950 bg-gradient-to-b from-cyan-500 via-teal-600 to-cyan-900 shadow-[0_5px_0_#164e63,0_10px_20px_rgba(0,0,0,0.65)] active:translate-y-[4px] active:shadow-[0_1px_0_#164e63,0_4px_10px_rgba(0,0,0,0.5)] hover:brightness-110 select-none cursor-pointer"
-              style={{
-                textShadow: "1px 1px 0px #000, -1px -1px 0px #000",
-                backgroundImage: "linear-gradient(rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(to bottom, #06b6d4, #0d9488, #164e63)",
-                backgroundSize: "4px 4px, 4px 4px, 100% 100%"
-              }}
-            >
-              <i className="fas fa-chess-rook text-cyan-100 text-xs group-hover:scale-110 transition-transform" />
-              <span>Realms</span>
-              {effectiveRealmPlan === "none" && (
-                <span className="bg-emerald-400 text-zinc-950 text-[7px] px-1 py-0.5 rounded font-mono font-black leading-none">
-                  GRATIS
-                </span>
-              )}
-            </button>
-          </div>
-
-          {/* 2. DUAL ROW: LEADERBOARD & FRIENDS */}
-          <div className="grid grid-cols-2 gap-2 w-full">
-            <button
-              onClick={() => {
-                resumeAudio();
-                setIsLeaderboardOpen(true);
-              }}
-              className="relative group py-2 sm:py-2.5 px-2.5 rounded-lg text-white font-bold text-[9px] sm:text-[11px] uppercase tracking-wider minecraft-font transition-all duration-75 flex items-center justify-center gap-1.5 border-t-2 border-l-2 border-yellow-200/90 border-b-4 border-r-4 border-amber-950 bg-gradient-to-b from-amber-500 via-yellow-600 to-amber-800 shadow-[0_4px_0_#78350f,0_8px_16px_rgba(0,0,0,0.55)] active:translate-y-[3px] active:shadow-[0_1px_0_#78350f] hover:brightness-110 select-none cursor-pointer"
-              style={{
-                textShadow: "1px 1px 0px #000, -1px -1px 0px #000",
-                backgroundImage: "linear-gradient(rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(to bottom, #f59e0b, #d97706, #92400e)",
-                backgroundSize: "4px 4px, 4px 4px, 100% 100%"
-              }}
-            >
-              <i className="fas fa-trophy text-yellow-200 text-xs group-hover:rotate-12 transition-transform" />
-              <span className="truncate">{lang === "es" ? "Clasificación" : "Leaderboard"}</span>
-            </button>
-
-            <button
-              onClick={() => {
-                resumeAudio();
-                setIsFriendsOpen(true);
-              }}
-              className="relative group py-2 sm:py-2.5 px-2.5 rounded-lg text-white font-bold text-[9px] sm:text-[11px] uppercase tracking-wider minecraft-font transition-all duration-75 flex items-center justify-center gap-1.5 border-t-2 border-l-2 border-purple-300/90 border-b-4 border-r-4 border-purple-950 bg-gradient-to-b from-purple-600 via-purple-700 to-indigo-900 shadow-[0_4px_0_#3b0764,0_8px_16px_rgba(0,0,0,0.55)] active:translate-y-[3px] active:shadow-[0_1px_0_#3b0764] hover:brightness-110 select-none cursor-pointer"
-              style={{
-                textShadow: "1px 1px 0px #000, -1px -1px 0px #000",
-                backgroundImage: "linear-gradient(rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.12) 1px, transparent 1px), linear-gradient(to bottom, #9333ea, #7e22ce, #3b0764)",
-                backgroundSize: "4px 4px, 4px 4px, 100% 100%"
-              }}
-            >
-              <i className="fas fa-users text-purple-200 text-xs group-hover:scale-110 transition-transform" />
-              <span className="truncate">{lang === "es" ? "Amigos" : "Friends"}</span>
-            </button>
-          </div>
-
-          {/* 3. VIP SHOP BUTTON */}
-          <button
-            onClick={() => {
-              resumeAudio();
-              setShopCategory("all");
-              setIsShopOpen(true);
-            }}
-            className="w-full relative group py-2.5 sm:py-3 px-3 rounded-lg text-zinc-950 font-black text-[11px] sm:text-xs uppercase tracking-widest minecraft-font transition-all duration-75 flex items-center justify-center gap-2 border-t-2 border-l-2 border-yellow-100 border-b-4 border-r-4 border-yellow-950 bg-gradient-to-r from-yellow-400 via-amber-300 to-yellow-500 shadow-[0_4px_0_#713f12,0_8px_16px_rgba(0,0,0,0.55)] active:translate-y-[3px] active:shadow-[0_1px_0_#713f12] hover:brightness-110 select-none cursor-pointer"
-            style={{
-              textShadow: "1px 1px 0px rgba(255,255,255,0.5)",
-              backgroundImage: "linear-gradient(rgba(255,255,255,0.18) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.18) 1px, transparent 1px), linear-gradient(to right, #eab308, #f59e0b, #eab308)",
-              backgroundSize: "4px 4px, 4px 4px, 100% 100%"
-            }}
-          >
-            <i className="fas fa-shopping-cart text-zinc-950 text-xs" />
-            <span>{lang === "es" ? "TIENDA VIP & INDEFS" : "VIP SHOP & INDEFS"}</span>
-            {mvpActive ? (
-              <span className="bg-zinc-950 text-sky-300 text-[8px] px-2 py-0.5 rounded-full border border-sky-400/40 font-extrabold ml-1 font-mono">
-                MVP+
-              </span>
-            ) : vipActive ? (
-              <span className="bg-zinc-950 text-yellow-300 text-[8px] px-2 py-0.5 rounded-full border border-yellow-400/40 font-extrabold ml-1 font-mono">
-                VIP
-              </span>
-            ) : null}
-          </button>
-
-          {/* 4. DUAL ROW: SETTINGS & LOGOUT */}
-          <div className="grid grid-cols-2 gap-2 w-full">
-            <button
-              onClick={() => {
-                resumeAudio();
-                setAppState("settings");
-              }}
-              className="relative group py-2 sm:py-2.5 px-2.5 rounded-lg text-white font-bold text-[9px] sm:text-[11px] uppercase tracking-wider minecraft-font transition-all duration-75 flex items-center justify-center gap-1.5 border-t-2 border-l-2 border-zinc-400 border-b-4 border-r-4 border-zinc-950 bg-gradient-to-b from-zinc-600 via-zinc-700 to-zinc-800 shadow-[0_4px_0_#18181b,0_8px_16px_rgba(0,0,0,0.55)] active:translate-y-[3px] active:shadow-[0_1px_0_#18181b] hover:brightness-110 select-none cursor-pointer"
-              style={{
-                textShadow: "1px 1px 0px #000, -1px -1px 0px #000",
-                backgroundImage: "linear-gradient(rgba(255,255,255,0.1) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.1) 1px, transparent 1px), linear-gradient(to bottom, #52525b, #3f3f46, #27272a)",
-                backgroundSize: "4px 4px, 4px 4px, 100% 100%"
-              }}
-            >
-              <i className="fas fa-cog text-emerald-400 text-xs group-hover:rotate-90 transition-transform duration-300" />
-              <span className="truncate">{t.settings}</span>
-            </button>
-
-            <button
-              onClick={handleLogout}
-              className="relative group py-2 sm:py-2.5 px-2.5 rounded-lg text-white/90 font-bold text-[9px] sm:text-[11px] uppercase tracking-wider minecraft-font transition-all duration-75 flex items-center justify-center gap-1.5 border-t-2 border-l-2 border-stone-500 border-b-4 border-r-4 border-black bg-gradient-to-b from-stone-700 via-stone-800 to-stone-900 hover:from-red-950/80 hover:via-red-900/60 hover:to-stone-950 shadow-[0_4px_0_#1c1917,0_8px_16px_rgba(0,0,0,0.55)] active:translate-y-[3px] active:shadow-[0_1px_0_#1c1917] select-none cursor-pointer"
-              style={{
-                textShadow: "1px 1px 0px #000, -1px -1px 0px #000",
-                backgroundImage: "linear-gradient(rgba(255,255,255,0.08) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.08) 1px, transparent 1px), linear-gradient(to bottom, #44403c, #292524, #1c1917)",
-                backgroundSize: "4px 4px, 4px 4px, 100% 100%"
-              }}
-            >
-              <i className="fas fa-door-open text-red-400 text-xs group-hover:-translate-x-0.5 transition-transform" />
-              <span className="truncate">{t.logout}</span>
-            </button>
-          </div>
-
-          <div className="w-full flex items-center justify-between px-1 pt-0.5 pointer-events-none select-none text-white/40 font-mono text-[8px] uppercase tracking-widest font-bold">
-            <span>⛏️ ALPHA MOBILE 1.0.2</span>
-            <span>60 FPS 3D VOXEL</span>
-          </div>
-        </div>
+        {/* Desktop Floating Character Card (Rendered outside scroll flex only on large screens) */}
+        {!useCompactMenuLayout && renderCharacterPreview("floating")}
 
         {renderLeaderboardModal()}
         {renderFriendsModal()}
@@ -9401,8 +9465,8 @@ const App: React.FC = () => {
 
     return (
       <div
-        className={`fixed inset-0 w-full h-full flex flex-col items-center justify-start sm:justify-center safe-area-inset p-2.5 sm:p-6 overflow-y-auto overscroll-contain select-none ${
-          asOverlay ? "z-[100005] bg-slate-950/90 backdrop-blur-md" : "bg-slate-950"
+        className={`fixed inset-0 w-full h-full flex flex-col items-center justify-start sm:justify-center safe-area-inset p-2 sm:p-5 overflow-y-auto overscroll-contain select-none ${
+          asOverlay ? "z-[100005] bg-slate-950/92" : "bg-slate-950"
         }`}
         onPointerDown={asOverlay ? (e) => e.stopPropagation() : undefined}
         onPointerMove={asOverlay ? (e) => e.stopPropagation() : undefined}
@@ -9417,20 +9481,20 @@ const App: React.FC = () => {
         {/* 3D Rotating Voxel Panorama only in menu mode */}
         {!asOverlay && <MenuPanorama3D showLogo={false} />}
 
-        <div className="z-10 bg-black/85 backdrop-blur-2xl p-3.5 sm:p-8 rounded-3xl border border-white/15 flex flex-col items-center shadow-2xl max-w-2xl w-full max-h-[94dvh] my-auto transition-all overflow-hidden">
+        <div className="z-10 bg-zinc-950/96 p-3 sm:p-6 rounded-3xl border border-white/15 flex flex-col items-center shadow-2xl max-w-[min(42rem,calc(100vw-1rem))] w-full max-h-[calc(100dvh-1rem)] my-auto transition-all overflow-hidden">
           {/* Header */}
-          <div className="flex flex-col items-center justify-center w-full mb-5">
-            <h1 className="text-white text-2xl sm:text-3xl font-black minecraft-font uppercase tracking-tight text-center drop-shadow-lg flex items-center gap-2.5">
+          <div className="flex flex-col items-center justify-center w-full mb-2.5 sm:mb-4 shrink-0">
+            <h1 className="text-white text-xl sm:text-3xl font-black minecraft-font uppercase tracking-tight text-center drop-shadow-lg flex items-center gap-2.5">
               <i className="fas fa-sliders text-emerald-400" />
               <span>{t.settings}</span>
             </h1>
-            <span className="text-[10px] text-zinc-400 font-mono mt-0.5">
+            <span className="text-[10px] text-zinc-400 font-mono mt-0.5 text-center">
               {lang === "es" ? "Ajusta controles, gráficos, audio, mundo y multijugador" : "Configure controls, graphics, audio, world and multiplayer"}
             </span>
           </div>
 
           {/* Section Category Tabs */}
-          <div className="grid grid-cols-5 gap-1.5 w-full mb-5 bg-zinc-900/80 p-1.5 rounded-2xl border border-white/10">
+          <div className="grid grid-cols-5 gap-1.5 w-full mb-2.5 sm:mb-4 bg-zinc-900/80 p-1 sm:p-1.5 rounded-2xl border border-white/10 shrink-0">
             {[
               { id: "game", icon: "fa-gamepad", label: lang === "es" ? "Juego" : "Game" },
               { id: "graphics", icon: "fa-desktop", label: lang === "es" ? "Gráficos" : "Graphics" },
@@ -10402,13 +10466,13 @@ const App: React.FC = () => {
           )}
 
           {/* Action Bar: Botón Volver */}
-          <div className="w-full pt-4 mt-2 border-t border-white/10 flex items-center gap-3">
+          <div className="w-full pt-2.5 sm:pt-4 mt-1.5 sm:mt-2 border-t border-white/10 flex items-center gap-3 shrink-0">
             <button
               onClick={() => {
                 resumeAudio();
                 setAppState(currentWorld ? "playing" : "menu");
               }}
-              className="w-full bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 border border-emerald-400/40 text-white font-black py-3 rounded-2xl text-center uppercase tracking-wider transition-all active:scale-[0.98] shadow-lg shadow-emerald-500/20 text-xs sm:text-sm flex items-center justify-center gap-2"
+              className="w-full bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 border border-emerald-400/40 text-white font-black py-2.5 sm:py-3 rounded-2xl text-center uppercase tracking-wider transition-all active:scale-[0.98] shadow-lg shadow-emerald-500/20 text-xs sm:text-sm flex items-center justify-center gap-2"
             >
               <i className="fas fa-arrow-left" />
               <span>{currentWorld ? (lang === "es" ? "VOLVER AL JUEGO" : "BACK TO GAME") : (lang === "es" ? "VOLVER AL MENÚ" : "BACK TO MENU")}</span>
@@ -10458,8 +10522,8 @@ const App: React.FC = () => {
     };
 
     return (
-      <div className="fixed inset-0 z-[150] bg-black/85 backdrop-blur-md flex flex-col items-center justify-center safe-area-inset p-3 sm:p-6 overflow-y-auto">
-        <div className="bg-zinc-900 border-2 border-orange-500/40 rounded-3xl p-4 sm:p-6 max-w-2xl w-full max-h-[92dvh] overflow-y-auto my-auto shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+      <div className="fixed inset-0 z-[150] bg-black/88 flex flex-col items-center justify-start safe-area-inset p-2 sm:p-5 overflow-y-auto overscroll-contain">
+        <div className="bg-zinc-900 border-2 border-orange-500/40 rounded-3xl p-4 sm:p-6 max-w-[min(42rem,calc(100vw-1rem))] w-full max-h-[calc(100dvh-1rem)] overflow-y-auto my-auto shadow-2xl animate-in fade-in zoom-in-95 duration-200">
           <div className="flex justify-between items-center border-b border-white/10 pb-3 mb-4">
             <h3 className="text-white text-xl font-bold minecraft-font flex items-center gap-2 uppercase tracking-wide">
               <i className="fas fa-fire text-orange-500 animate-pulse" />
@@ -10539,7 +10603,7 @@ const App: React.FC = () => {
             </div>
 
             {/* Inventory Column */}
-            <div className="bg-zinc-950/40 border border-white/5 p-4 rounded-2xl flex flex-col h-[400px] overflow-y-auto">
+            <div className="bg-zinc-950/40 border border-white/5 p-4 rounded-2xl flex flex-col max-h-[42dvh] md:h-[360px] overflow-y-auto">
               <span className="text-[10px] text-zinc-400 font-bold uppercase tracking-wider mb-3 block text-center">Tu Inventario (Cargar Horno)</span>
               
               <div className="grid grid-cols-4 gap-2">
@@ -10607,8 +10671,8 @@ const App: React.FC = () => {
     };
 
     return (
-      <div className="fixed inset-0 z-[150] bg-black/85 backdrop-blur-md flex flex-col items-center justify-center safe-area-inset p-3 sm:p-6 overflow-y-auto">
-        <div className="bg-zinc-900 border-2 border-yellow-600/40 rounded-3xl p-4 sm:p-6 max-w-3xl w-full max-h-[92dvh] overflow-y-auto my-auto shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+      <div className="fixed inset-0 z-[150] bg-black/88 flex flex-col items-center justify-start safe-area-inset p-2 sm:p-5 overflow-y-auto overscroll-contain">
+        <div className="bg-zinc-900 border-2 border-yellow-600/40 rounded-3xl p-4 sm:p-6 max-w-[min(48rem,calc(100vw-1rem))] w-full max-h-[calc(100dvh-1rem)] overflow-y-auto my-auto shadow-2xl animate-in fade-in zoom-in-95 duration-200">
           <div className="flex justify-between items-center border-b border-white/10 pb-3 mb-5">
             <h3 className="text-white text-xl font-bold minecraft-font flex items-center gap-2 uppercase tracking-wide">
               <i className="fas fa-box text-yellow-500" />
@@ -10624,7 +10688,7 @@ const App: React.FC = () => {
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {/* Left Column: Player Inventory */}
-            <div className="bg-zinc-950/40 border border-white/5 p-4 rounded-2xl flex flex-col h-[380px] overflow-y-auto">
+            <div className="bg-zinc-950/40 border border-white/5 p-4 rounded-2xl flex flex-col max-h-[38dvh] md:h-[360px] overflow-y-auto">
               <span className="text-[10px] text-emerald-400 font-bold uppercase tracking-wider mb-3 block text-center">Tu Inventario (Toca para Guardar)</span>
               
               <div className="grid grid-cols-4 gap-2">
@@ -10643,7 +10707,7 @@ const App: React.FC = () => {
             </div>
 
             {/* Right Column: Chest Inventory */}
-            <div className="bg-zinc-950/60 border border-white/5 p-4 rounded-2xl flex flex-col h-[380px] overflow-y-auto">
+            <div className="bg-zinc-950/60 border border-white/5 p-4 rounded-2xl flex flex-col max-h-[38dvh] md:h-[360px] overflow-y-auto">
               <span className="text-[10px] text-yellow-500 font-bold uppercase tracking-wider mb-3 block text-center">Contenido del Cofre (Toca para Sacar)</span>
               
               {Object.keys(chestInventory).map(Number).filter(k => chestInventory[k] > 0).length === 0 ? (
@@ -10713,8 +10777,8 @@ const App: React.FC = () => {
     };
 
     return (
-      <div className="fixed inset-0 z-[150] bg-black/85 backdrop-blur-md flex flex-col items-center justify-center safe-area-inset p-3 sm:p-6 overflow-y-auto">
-        <div className="bg-zinc-900 border-2 border-indigo-500/40 rounded-3xl p-4 sm:p-6 max-w-xl w-full max-h-[92dvh] overflow-y-auto my-auto shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+      <div className="fixed inset-0 z-[150] bg-black/88 flex flex-col items-center justify-start safe-area-inset p-2 sm:p-5 overflow-y-auto overscroll-contain">
+        <div className="bg-zinc-900 border-2 border-indigo-500/40 rounded-3xl p-4 sm:p-6 max-w-[min(36rem,calc(100vw-1rem))] w-full max-h-[calc(100dvh-1rem)] overflow-y-auto my-auto shadow-2xl animate-in fade-in zoom-in-95 duration-200">
           <div className="flex justify-between items-center border-b border-white/10 pb-3 mb-5">
             <h3 className="text-white text-xl font-bold minecraft-font flex items-center gap-2 uppercase tracking-wide">
               <i className="fas fa-map text-indigo-400 animate-bounce" />
@@ -10822,8 +10886,8 @@ const App: React.FC = () => {
     }
 
     return (
-      <div className="fixed inset-0 z-[150] bg-black/90 backdrop-blur-md flex flex-col items-center justify-center safe-area-inset p-3 sm:p-6 overflow-y-auto">
-        <div className="bg-zinc-900 border-2 border-emerald-500/40 rounded-3xl p-4 sm:p-6 max-w-md w-full max-h-[92dvh] overflow-y-auto my-auto shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+      <div className="fixed inset-0 z-[150] bg-black/90 flex flex-col items-center justify-start safe-area-inset p-2 sm:p-5 overflow-y-auto overscroll-contain">
+        <div className="bg-zinc-900 border-2 border-emerald-500/40 rounded-3xl p-3.5 sm:p-6 max-w-[min(28rem,calc(100vw-1rem))] w-full max-h-[calc(100dvh-1rem)] overflow-y-auto my-auto shadow-2xl animate-in fade-in zoom-in-95 duration-200">
           <div className="flex justify-between items-center border-b border-white/10 pb-3 mb-4">
             <h3 className="text-white text-lg font-bold minecraft-font flex items-center gap-2 uppercase tracking-wide">
               <i className="fas fa-map-location-dot text-emerald-400 animate-pulse" />
@@ -10837,11 +10901,11 @@ const App: React.FC = () => {
             </button>
           </div>
 
-          <div className="bg-zinc-950 p-4 rounded-2xl border border-white/5 flex flex-col items-center gap-4">
+          <div className="bg-zinc-950 p-3 sm:p-4 rounded-2xl border border-white/5 flex flex-col items-center gap-3 sm:gap-4">
             <span className="text-[10px] text-zinc-500 font-mono font-bold">X: {px} | Z: {pz} | {dimension.toUpperCase()}</span>
             
             {/* Visual Radar grid */}
-            <div className="grid grid-cols-11 gap-1 bg-zinc-900 p-2 rounded-xl border border-zinc-800 shadow-inner relative">
+            <div className="grid grid-cols-11 gap-0.5 sm:gap-1 bg-zinc-900 p-1.5 sm:p-2 rounded-xl border border-zinc-800 shadow-inner relative">
               {rows.map((row, rIdx) => 
                 row.map((col, cIdx) => {
                   const isCenter = rIdx === 5 && cIdx === 5;
@@ -10856,7 +10920,7 @@ const App: React.FC = () => {
                   return (
                     <div
                       key={`${rIdx}-${cIdx}`}
-                      className={`w-6 h-6 rounded flex items-center justify-center text-[7px] font-bold ${colorClass} ${isCenter ? "outline-2 outline-yellow-400 ring-1 ring-yellow-400 z-10 scale-105" : ""}`}
+                      className={`w-5 h-5 sm:w-6 sm:h-6 rounded flex items-center justify-center text-[7px] font-bold ${colorClass} ${isCenter ? "outline-2 outline-yellow-400 ring-1 ring-yellow-400 z-10 scale-105" : ""}`}
                       title={`Coord: [${col.x}, ${col.z}]`}
                     >
                       {isCenter && (
@@ -10868,7 +10932,7 @@ const App: React.FC = () => {
               )}
             </div>
 
-            <div className="text-[9px] text-zinc-400 font-mono flex items-center justify-center gap-3">
+            <div className="text-[9px] text-zinc-400 font-mono flex flex-wrap items-center justify-center gap-3">
               <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-emerald-600 inline-block" /> Césped</span>
               <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-blue-600 inline-block" /> Agua</span>
               <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded bg-yellow-100 inline-block" /> Arena</span>
@@ -11078,7 +11142,7 @@ const App: React.FC = () => {
         initialBlockColors={dimensionBlockColors}
         onBatchWorldEdit={handleBatchWorldEdit}
         virtualRotationDeg={virtualRotationDeg}
-        realmEditorConfig={activeRealmId ? { ...realmEditorConfig, enabled: true } : undefined}
+        realmEditorConfig={realmEditorConfigForWorld}
         realmActionRequest={realmActionRequest}
         onRealmUndoChange={setRealmCanUndo}
       />
@@ -11229,7 +11293,7 @@ const App: React.FC = () => {
               onTouchStart={(e) => e.stopPropagation()}
               onTouchMove={(e) => e.stopPropagation()}
               onTouchEnd={(e) => e.stopPropagation()}
-              className="pointer-events-auto bg-zinc-950/95 border border-fuchsia-500/45 rounded-2xl p-3 w-[290px] sm:w-[330px] max-w-[calc(100%-20px)] max-h-[calc(100%-210px)] overflow-y-auto shadow-2xl text-white flex flex-col gap-2.5"
+              className="fixed left-2 sm:left-4 top-2 sm:top-4 z-40 pointer-events-auto bg-zinc-950/96 border border-fuchsia-500/45 rounded-2xl p-3 w-[min(320px,calc(100vw-1rem))] max-h-[calc(100dvh-1rem)] overflow-y-auto overscroll-contain shadow-2xl text-white flex flex-col gap-2.5"
             >
               <div className="flex items-center justify-between border-b border-white/10 pb-1.5">
                 <div className="flex items-center gap-1.5">
@@ -11744,7 +11808,7 @@ const App: React.FC = () => {
               onTouchStart={(e) => e.stopPropagation()}
               onTouchMove={(e) => e.stopPropagation()}
               onTouchEnd={(e) => e.stopPropagation()}
-              className="pointer-events-auto bg-zinc-950/95 backdrop-blur-md border border-cyan-500/40 rounded-2xl p-3 w-64 sm:w-72 max-w-[calc(100vw-16px)] max-h-[calc(100dvh-150px)] overflow-y-auto shadow-2xl text-white flex flex-col gap-2"
+              className="fixed right-2 sm:right-4 top-12 sm:top-16 z-40 pointer-events-auto bg-zinc-950/96 border border-cyan-500/40 rounded-2xl p-3 w-[min(18rem,calc(100vw-1rem))] max-h-[calc(100dvh-4.5rem)] overflow-y-auto overscroll-contain shadow-2xl text-white flex flex-col gap-2"
             >
               <div className="flex items-center justify-between border-b border-white/10 pb-1.5">
                 <div className="flex items-center gap-2">
@@ -12626,8 +12690,8 @@ const App: React.FC = () => {
 
       {/* Gemini Suggestion Modal */}
       {suggestion && (
-        <div className="fixed inset-0 z-[110] bg-indigo-950/60 backdrop-blur-sm flex items-center justify-center safe-area-inset p-3 sm:p-6 overflow-y-auto">
-          <div className="bg-zinc-900 border-2 border-indigo-500/50 rounded-3xl w-full max-w-md p-4 sm:p-6 max-h-[92dvh] overflow-y-auto my-auto shadow-2xl animate-in fade-in zoom-in duration-300">
+        <div className="fixed inset-0 z-[110] bg-indigo-950/85 flex flex-col items-center justify-start safe-area-inset p-2 sm:p-5 overflow-y-auto overscroll-contain">
+          <div className="bg-zinc-900 border-2 border-indigo-500/50 rounded-3xl w-full max-w-[min(28rem,calc(100vw-1rem))] p-4 sm:p-6 max-h-[calc(100dvh-1rem)] overflow-y-auto my-auto shadow-2xl animate-in fade-in zoom-in duration-300">
             <div className="flex justify-between items-center mb-6">
               <span className="bg-indigo-600/30 text-indigo-400 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider border border-indigo-500/20">
                 {t.suggestion_title}
@@ -12746,9 +12810,9 @@ const App: React.FC = () => {
           onMouseUp={(e) => e.stopPropagation()}
           onMouseMove={(e) => e.stopPropagation()}
           onClick={(e) => e.stopPropagation()}
-          className="fixed inset-0 z-[120] bg-zinc-950/95 backdrop-blur-md safe-area-inset p-3 sm:p-6 flex flex-col items-center justify-center overflow-y-auto pointer-events-auto"
+          className="fixed inset-0 z-[120] bg-zinc-950/94 safe-area-inset p-2 sm:p-5 flex flex-col items-center justify-start overflow-y-auto overscroll-contain pointer-events-auto"
         >
-          <div className="w-full max-w-xl bg-zinc-900 border-2 border-sky-500/30 rounded-3xl p-4 sm:p-5 flex flex-col h-[85dvh] sm:h-[75dvh] max-h-[92dvh] my-auto shadow-2xl animate-in fade-in zoom-in-95 duration-205">
+          <div className="w-full max-w-[min(36rem,calc(100vw-1rem))] bg-zinc-900 border-2 border-sky-500/30 rounded-3xl p-3.5 sm:p-5 flex flex-col h-[min(85dvh,calc(100dvh-1rem))] max-h-[calc(100dvh-1rem)] my-auto shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-205">
             {/* Modal Header */}
             <div className="flex justify-between items-center border-b border-white/10 pb-3 mb-4">
               <div className="flex items-center gap-2">
@@ -12845,16 +12909,16 @@ const App: React.FC = () => {
       {/* Minecraft-style Game Pause Menu */}
       {isGameMenuOpen && (
         <div 
-          className="absolute inset-0 bg-zinc-950/80 backdrop-blur-md z-[10005] flex flex-col items-center justify-center p-4 overflow-y-auto"
+          className="fixed inset-0 bg-zinc-950/88 z-[10005] flex flex-col items-center justify-start safe-area-inset p-2 sm:p-4 overflow-y-auto overscroll-contain"
           onPointerDown={(e) => e.stopPropagation()}
           onTouchStart={(e) => e.stopPropagation()}
         >
           {/* Menu Card Container */}
-          <div className="bg-zinc-900 border-4 border-zinc-700 p-6 sm:p-8 rounded-2xl w-full max-w-md shadow-2xl flex flex-col gap-5 relative">
+          <div className="bg-zinc-900 border-4 border-zinc-700 p-4 sm:p-6 rounded-2xl w-full max-w-[min(28rem,calc(100vw-1rem))] max-h-[calc(100dvh-1rem)] my-auto shadow-2xl flex flex-col gap-3 sm:gap-4 relative overflow-hidden">
             
             {/* Minecraft header banner */}
-            <div className="text-center">
-              <h2 className="text-white text-3xl font-bold minecraft-font uppercase tracking-wider drop-shadow-lg flex items-center justify-center gap-2">
+            <div className="text-center shrink-0">
+              <h2 className="text-white text-2xl sm:text-3xl font-bold minecraft-font uppercase tracking-wider drop-shadow-lg flex items-center justify-center gap-2">
                 <i className="fas fa-gamepad text-emerald-400" />
                 {lang === "es" ? "Menú de Juego" : "Game Menu"}
               </h2>
@@ -12888,8 +12952,8 @@ const App: React.FC = () => {
               </div>
             </div>
 
-            {/* Menu Buttons Grid */}
-            <div className="flex flex-col gap-3">
+            {/* Menu Buttons Grid (Scrollable if screen is short) */}
+            <div className="flex-1 min-h-0 overflow-y-auto pr-1 flex flex-col gap-2.5 sm:gap-3">
               
               {/* Button: Resume Game */}
               <button
