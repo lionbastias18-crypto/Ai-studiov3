@@ -9352,14 +9352,26 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
       className="absolute inset-0 w-full h-full overflow-hidden"
       onContextMenu={(e) => e.preventDefault()}
     >
-      <div className="absolute top-2 right-20 bg-black/50 text-white font-mono text-xs p-1 pointer-events-none z-50 rounded">
+      <div
+        className="absolute bg-black/50 text-white font-mono text-xs p-1 pointer-events-none z-50 rounded"
+        style={{
+          top: 'max(0.5rem, var(--tv-safe-y, 0px))',
+          right: 'max(5rem, calc(var(--tv-safe-x, 0px) + 5rem))',
+        }}
+      >
         Chunks loaded: {Object.keys(chunks).length}
       </div>
       <Canvas 
         id="voxel-canvas"
         resize={{ offsetSize: true }}
         style={{ width: '100%', height: '100%', display: 'block' }}
-        dpr={isSoftwareGL || ultraOptimization ? 0.75 : (perfConfig?.effectsQuality === 'high' ? [1, 1.25] : 1)}
+        dpr={
+          isSoftwareGL || ultraOptimization
+            ? 0.75
+            : (typeof navigator !== 'undefined' && /PlayStation\s*4|\bPS4\b/i.test(navigator.userAgent || ''))
+              ? 1
+              : (perfConfig?.effectsQuality === 'high' ? [1, 1.25] : 1)
+        }
         camera={{
           fov: fov,
           near: 0.1,
@@ -9397,7 +9409,7 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
           }
         }}
       >
-        <ScreenshotBridge virtualRotationDeg={virtualRotationDeg} />
+        <ViewportResizeBridge virtualRotationDeg={virtualRotationDeg} />
         <TargetBlockHighlight
           chunksRef={chunksRef}
           currentBlockRef={currentBlockRef}
@@ -9613,13 +9625,9 @@ const JukeboxEmitter: React.FC<JukeboxEmitterProps> = ({ playingJukeboxesRef, pa
   return null;
 };
 
-const ScreenshotBridge: React.FC<{ virtualRotationDeg?: 0 | 90 | -90 }> = ({ virtualRotationDeg = 0 }) => {
-  const { gl, scene, camera, setSize } = useThree();
+const ViewportResizeBridge: React.FC<{ virtualRotationDeg?: 0 | 90 | -90 }> = ({ virtualRotationDeg = 0 }) => {
+  const { gl, camera, setSize } = useThree();
   useEffect(() => {
-    (window as any).__captureVoxelScreenshot = () => {
-      gl.render(scene, camera);
-      return gl.domElement.toDataURL('image/png');
-    };
     const syncViewportSize = () => {
       const parent = gl.domElement.parentElement;
       const w = parent?.clientWidth || Math.round(window.visualViewport?.width || window.innerWidth);
@@ -9668,11 +9676,8 @@ const ScreenshotBridge: React.FC<{ virtualRotationDeg?: 0 | 90 | -90 }> = ({ vir
       try {
         (window.screen as any)?.orientation?.removeEventListener?.('change', handleOrientationSync);
       } catch {}
-      if ((window as any).__captureVoxelScreenshot) {
-        delete (window as any).__captureVoxelScreenshot;
-      }
     };
-  }, [gl, scene, camera, setSize, virtualRotationDeg]);
+  }, [gl, camera, setSize, virtualRotationDeg]);
   return null;
 };
 

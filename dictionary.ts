@@ -9,11 +9,6 @@ export const dict = {
     inventory: 'INVENTARIO',
     break: 'QUITAR',
     place: 'PONER',
-    suggestion_title: 'Sugerencia AI',
-    great: '¡GENIAL!',
-    steps: 'Pasos de construcción',
-    biome_high: 'Superficie Elevada',
-    biome_low: 'Valle Profundo',
     jump: 'SALTAR',
     ultra_optimization: 'Ultra Optimización',
     optimization_on: 'ACTIVADO (Bajo DPR, alta fluidez)',
@@ -56,8 +51,7 @@ export const dict = {
     world_type: 'Tipo de mundo',
     world_type_normal: 'Mundo normal',
     world_type_flat: 'Plano infinito (optimizado)',
-    world_type_edge_farlands: 'Edge Farlands (pasado de Far Lands)',
-    screenshot_saved: '¡Captura de pantalla guardada!'
+    world_type_edge_farlands: 'Edge Farlands (pasado de Far Lands)'
   },
   en: {
     menu_title: 'ALPHA',
@@ -69,11 +63,6 @@ export const dict = {
     inventory: 'INVENTORY',
     break: 'BREAK',
     place: 'PLACE',
-    suggestion_title: 'AI Suggestion',
-    great: 'GREAT!',
-    steps: 'Building steps',
-    biome_high: 'High Surface',
-    biome_low: 'Deep Valley',
     jump: 'JUMP',
     ultra_optimization: 'Ultra Optimization',
     optimization_on: 'ENABLED (Low DPR, high performance)',
@@ -116,8 +105,7 @@ export const dict = {
     world_type: 'World Type',
     world_type_normal: 'Normal World',
     world_type_flat: 'Infinite Flat (optimized)',
-    world_type_edge_farlands: 'Edge Farlands (past Far Lands)',
-    screenshot_saved: 'Screenshot saved!'
+    world_type_edge_farlands: 'Edge Farlands (past Far Lands)'
   },
   fr: {
     menu_title: 'ALPHA',
@@ -129,11 +117,6 @@ export const dict = {
     inventory: 'INVENTAIRE',
     break: 'CASSER',
     place: 'POSER',
-    suggestion_title: 'Suggestion IA',
-    great: 'GÉNIAL !',
-    steps: 'Étapes de construction',
-    biome_high: 'Surface Élevée',
-    biome_low: 'Vallée Profonde',
     jump: 'SAUTER',
     ultra_optimization: 'Ultra Optimisation',
     optimization_on: 'ACTIVÉ (DPR bas, haute fluidité)',
@@ -176,8 +159,7 @@ export const dict = {
     world_type: 'Type de monde',
     world_type_normal: 'Monde normal',
     world_type_flat: 'Plat infini (optimisé)',
-    world_type_edge_farlands: 'Edge Farlands (au-delà des Far Lands)',
-    screenshot_saved: 'Capture dʼécran sauvegardée !'
+    world_type_edge_farlands: 'Edge Farlands (au-delà des Far Lands)'
   },
   pt: {
     menu_title: 'ALPHA',
@@ -189,11 +171,6 @@ export const dict = {
     inventory: 'INVENTÁRIO',
     break: 'QUEBRAR',
     place: 'COLOCAR',
-    suggestion_title: 'Sugestão IA',
-    great: 'INCRÍVEL!',
-    steps: 'Passos de construção',
-    biome_high: 'Superfície Elevada',
-    biome_low: 'Vale Profundo',
     jump: 'PULAR',
     ultra_optimization: 'Ultra Otimização',
     optimization_on: 'ATIVADO (DPR baixo, alta fluidez)',
@@ -236,8 +213,7 @@ export const dict = {
     world_type: 'Tipo de mundo',
     world_type_normal: 'Mundo normal',
     world_type_flat: 'Plano infinito (otimizado)',
-    world_type_edge_farlands: 'Edge Farlands (passando as Far Lands)',
-    screenshot_saved: 'Captura de tela salva!'
+    world_type_edge_farlands: 'Edge Farlands (passando as Far Lands)'
   },
   de: {
     menu_title: 'ALPHA',
@@ -249,11 +225,6 @@ export const dict = {
     inventory: 'INVENTAR',
     break: 'ABBAUEN',
     place: 'PLATZIEREN',
-    suggestion_title: 'KI Vorschlag',
-    great: 'SUPER!',
-    steps: 'Bauschritte',
-    biome_high: 'Hohe Oberfläche',
-    biome_low: 'Tiefes Tal',
     jump: 'SPRINGEN',
     ultra_optimization: 'Ultra-Optimierung',
     optimization_on: 'AKTIVIERT (Niedriges DPR, flüssig)',
@@ -296,8 +267,7 @@ export const dict = {
     world_type: 'Welttyp',
     world_type_normal: 'Normale Welt',
     world_type_flat: 'Flache Welt (optimiert)',
-    world_type_edge_farlands: 'Edge Farlands (hinter den Far Lands)',
-    screenshot_saved: 'Screenshot gespeichert!'
+    world_type_edge_farlands: 'Edge Farlands (hinter den Far Lands)'
   }
 };
 export type Language = 'es' | 'en' | 'fr' | 'pt' | 'de';

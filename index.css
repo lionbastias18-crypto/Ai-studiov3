@@ -6,6 +6,9 @@
   --sar: env(safe-area-inset-right, 0px);
   --sab: env(safe-area-inset-bottom, 0px);
   --sal: env(safe-area-inset-left, 0px);
+  --tv-safe-x: 0px;
+  --tv-safe-y: 0px;
+  --tv-ui-scale: 1;
   --ui-scale: 1;
 }
 
@@ -47,10 +50,10 @@
 }
 
 .safe-area-inset {
-  padding-top: env(safe-area-inset-top, 0px);
-  padding-right: env(safe-area-inset-right, 0px);
-  padding-bottom: env(safe-area-inset-bottom, 0px);
-  padding-left: env(safe-area-inset-left, 0px);
+  padding-top: max(env(safe-area-inset-top, 0px), var(--tv-safe-y, 0px));
+  padding-right: max(env(safe-area-inset-right, 0px), var(--tv-safe-x, 0px));
+  padding-bottom: max(env(safe-area-inset-bottom, 0px), var(--tv-safe-y, 0px));
+  padding-left: max(env(safe-area-inset-left, 0px), var(--tv-safe-x, 0px));
 }
 
 .scrollbar-none::-webkit-scrollbar {
@@ -61,7 +64,7 @@
   scrollbar-width: none;
 }
 
-/* Auto-adapt base UI scale smoothly across mobile/tablet screens */
+/* Auto-adapt base UI scale smoothly across mobile/tablet/TV screens */
 @media (max-height: 460px) and (orientation: landscape) {
   html {
     font-size: 13px;
@@ -88,8 +91,22 @@
 
 @media (min-width: 900px) and (min-height: 700px) {
   html {
-    font-size: 16.5px;
+    font-size: calc(16px * var(--tv-ui-scale, 1));
   }
+}
+
+html[data-tv-mode="true"] {
+  font-size: calc(16.5px * var(--tv-ui-scale, 1));
+}
+
+/* Crisp PS4 / Gamepad focus ring readable from TV viewing distance */
+html[data-gamepad-active="true"] button:focus,
+html[data-gamepad-active="true"] input:focus,
+html[data-gamepad-active="true"] select:focus,
+html[data-gamepad-active="true"] a:focus {
+  outline: 3px solid #34d399 !important;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 5px rgba(16, 185, 129, 0.28) !important;
 }
 
 /* Minecraft Corner Splash Bounce */

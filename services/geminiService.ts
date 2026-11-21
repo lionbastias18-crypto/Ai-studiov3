@@ -3,7 +3,6 @@ import {
   GeminiAgentGoal,
   GeminiAgentMemory,
   GeminiAgentOutcome,
-  GeminiSuggestion,
 } from "../types";
 
 const AGENT_MEMORY_STORAGE_KEY = "gemini_autonomous_agent_memory_v1";
@@ -92,27 +91,6 @@ export const recordAgentExperience = (
     },
     recentOutcomes: [...memory.recentOutcomes.slice(-15), outcome],
   };
-};
-
-export const getBuildingSuggestion = async (
-  biome: string,
-  availableBlocks: string[]
-): Promise<GeminiSuggestion | null> => {
-  try {
-    const response = await fetch("/api/gemini/suggest-build", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ biome, availableBlocks }),
-    });
-    if (!response.ok) {
-      const errBody = await response.json().catch(() => ({}));
-      throw new Error(errBody?.error || `HTTP ${response.status}`);
-    }
-    return (await response.json()) as GeminiSuggestion;
-  } catch (error) {
-    console.error("Gemini suggestion error:", error);
-    return null;
-  }
 };
 
 export interface GeminiAgentStepPayload {

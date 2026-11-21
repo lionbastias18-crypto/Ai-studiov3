@@ -3,12 +3,21 @@ import VoxelWorld, { DEFAULT_NOISE_CONFIG } from "./components/VoxelWorld";
 import Joystick from "./components/Joystick";
 import { FpsCounter } from "./components/FpsCounter";
 import { MenuPanorama3D } from "./components/MenuPanorama3D";
-import { BlockType, ToolType, Vector3D, GeminiSuggestion, NoiseConfig, PerformanceConfig, CharacterSkinId, CustomCharacterConfig, ActivePlayerInfo, GeminiAgentConfig, GeminiAgentTelemetry, RealmData, RealmPlanTier, RealmWorldMeta, RealmEditorTool, RealmEditorConfig, RealmBatchEditPayload } from "./types";
+import { BlockType, ToolType, Vector3D, NoiseConfig, PerformanceConfig, CharacterSkinId, CustomCharacterConfig, ActivePlayerInfo, GeminiAgentConfig, GeminiAgentTelemetry, RealmData, RealmPlanTier, RealmWorldMeta, RealmEditorTool, RealmEditorConfig, RealmBatchEditPayload } from "./types";
 import { CharacterModel, CHARACTER_SKINS, DEFAULT_CUSTOM_SKIN } from "./components/CharacterModel";
 import { CharacterPreviewCard } from "./components/CharacterPreviewCard";
 import { CatEasterEggs, CatEasterEggType } from "./components/CatEasterEggs";
 import { BLOCK_NAMES, BLOCK_COLORS } from "./constants";
-import { getBuildingSuggestion, loadGeminiAgentMemory, resetGeminiAgentMemory } from "./services/geminiService";
+import { loadGeminiAgentMemory, resetGeminiAgentMemory } from "./services/geminiService";
+import {
+  TvDisplayMode,
+  Ps4GamepadInfo,
+  isPs4OrTvBrowser,
+  findConnectedGamepad,
+  applyTvSafeCssVars,
+  navigateFocusSpatial,
+  activateFocusedElement,
+} from "./services/ps4Support";
 import {
   resumeAudio,
   setUseProceduralMusic,
@@ -937,8 +946,6 @@ const App: React.FC = () => {
     "place",
   );
   const [buildBrush, setBuildBrush] = useState<"single" | "line3" | "wall3x2">("single");
-  const [isLoadingSuggestion, setIsLoadingSuggestion] = useState(false);
-  const [suggestion, setSuggestion] = useState<GeminiSuggestion | null>(null);
   const [appState, setAppState] = useState<"login-prompt" | "login" | "menu" | "settings" | "playing" | "worlds-list">(
     getActiveSession() ? "menu" : "login-prompt"
   );
@@ -1104,9 +1111,7 @@ const App: React.FC = () => {
     }
     return false;
   });
-  const [showCameraFlash, setShowCameraFlash] = useState<boolean>(false);
-  const [flashOpacity, setFlashOpacity] = useState<number>(0);
-  const [screenshotToast, setScreenshotToast] = useState<string | null>(null);
+  const [hudToast, setHudToast] = useState<string | null>(null);
   const [firestoreQuotaPaused, setFirestoreQuotaPaused] = useState<boolean>(() => isFirestoreWritePaused());
   const [quotaBannerDismissed, setQuotaBannerDismissed] = useState<boolean>(false);
   const otherPlayersCountRef = useRef<number>(0);
@@ -1115,6 +1120,10 @@ const App: React.FC = () => {
   const lastAutoSaveSignatureRef = useRef<string>("");
 
   useEffect(() => {
+    try {
+      localStorage.removeItem("minecraft_device_preset");
+      localStorage.removeItem("voxel_ai_companion");
+    } catch {}
     const unsub = onFirestoreQuotaChange((paused) => {
       setFirestoreQuotaPaused(paused);
       if (paused) {
@@ -1123,15 +1132,6 @@ const App: React.FC = () => {
     });
     return unsub;
   }, []);
-  const [devicePreset, setDevicePreset] = useState<"auto" | "redmi" | "funtouch" | "galaxy">(() => {
-    if (typeof window !== "undefined") {
-      const saved = localStorage.getItem("minecraft_device_preset");
-      if (saved === "auto" || saved === "redmi" || saved === "funtouch" || saved === "galaxy") {
-        return saved as "auto" | "redmi" | "funtouch" | "galaxy";
-      }
-    }
-    return "auto";
-  });
   const [webAutoRotateMode, setWebAutoRotateMode] = useState<"auto" | "landscape" | "portrait">(() => {
     if (typeof window !== "undefined") {
       const saved = localStorage.getItem("minecraft_web_autorotate");
@@ -1660,6 +1660,59 @@ const App: React.FC = () => {
   const [isTouchDevice, setIsTouchDevice] = useState(false);
   const [isSmallScreen, setIsSmallScreen] = useState(false);
   const [touchControlsMode, setTouchControlsMode] = useState<"auto" | "yes" | "no">("auto");
+  const [gamepadInfo, setGamepadInfo] = useState<Ps4GamepadInfo>(() => findConnectedGamepad());
+  const [gamepadSensitivity, setGamepadSensitivity] = useState<number>(() => {
+    if (typeof window !== "undefined") {
+      const val = parseFloat(localStorage.getItem("minecraft_gamepad_sens") || "1");
+      if (!Number.isNaN(val) && val >= 0.4 && val <= 2.5) return val;
+    }
+    return 1.0;
+  });
+  const [gamepadInvertY, setGamepadInvertY] = useState<boolean>(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("minecraft_gamepad_invert_y") === "true";
+    }
+    return false;
+  });
+  const [tvDisplayMode, setTvDisplayMode] = useState<TvDisplayMode>(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("minecraft_tv_mode");
+      if (saved === "auto" || saved === "tv" || saved === "standard") return saved;
+    }
+    return "auto";
+  });
+  const [tvOverscanCustom, setTvOverscanCustom] = useState<number | null>(() => {
+    if (typeof window !== "undefined") {
+      const raw = localStorage.getItem("minecraft_tv_overscan");
+      if (raw !== null && raw !== "" && raw !== "auto") {
+        const val = parseInt(raw, 10);
+        if (!Number.isNaN(val) && val >= 85 && val <= 100) return val;
+      }
+    }
+    return null;
+  });
+  const [tvUiScaleCustom, setTvUiScaleCustom] = useState<number | null>(() => {
+    if (typeof window !== "undefined") {
+      const raw = localStorage.getItem("minecraft_tv_ui_scale");
+      if (raw !== null && raw !== "" && raw !== "auto") {
+        const val = parseFloat(raw);
+        if (!Number.isNaN(val) && val >= 0.85 && val <= 1.35) return val;
+      }
+    }
+    return null;
+  });
+  const [showTvBorderGuide, setShowTvBorderGuide] = useState(false);
+  const tvBorderGuideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const triggerTvBorderGuide = useCallback(() => {
+    setShowTvBorderGuide(true);
+    if (tvBorderGuideTimerRef.current) clearTimeout(tvBorderGuideTimerRef.current);
+    tvBorderGuideTimerRef.current = setTimeout(() => {
+      setShowTvBorderGuide(false);
+    }, 3000);
+  }, []);
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(() =>
+    typeof document !== "undefined" ? Boolean(document.fullscreenElement) : false
+  );
 
   const MENU_SPLASHES = useMemo(() => [
     "¡60 FPS Ultra Optimizado!",
@@ -1722,12 +1775,14 @@ const App: React.FC = () => {
     }
   }, [MENU_SPLASHES.length]);
 
+  const isPs4ConsoleBrowser = useMemo(() => isPs4OrTvBrowser(), []);
+
   const showTouchControls = 
     touchControlsMode === "yes" 
       ? true 
       : touchControlsMode === "no" 
         ? false 
-        : (isTouchDevice || isSmallScreen);
+        : (!gamepadInfo.connected && !isPs4ConsoleBrowser && (isTouchDevice || isSmallScreen));
 
   const physIsLandscape = physicalViewport.width > physicalViewport.height;
   const virtualRotationDeg: 0 | 90 | -90 = (() => {
@@ -1754,115 +1809,87 @@ const App: React.FC = () => {
     };
   })();
 
-  const activeDevice = (() => {
-    if (devicePreset !== "auto") return devicePreset;
-    const ratio = screenSize.aspectRatio;
-
-    // Landscape or Portrait 5:3 (Redmi Pad SE 8.7: 1340 x 800)
-    if ((ratio >= 1.55 && ratio <= 1.75) || (ratio >= 0.55 && ratio <= 0.65)) {
-      return "redmi";
-    }
-    // Landscape or Portrait 3:2 / 4:3 (Funtouch Tablet)
-    if ((ratio >= 1.2 && ratio < 1.55) || (ratio >= 0.64 && ratio <= 0.83)) {
-      return "funtouch";
-    }
-    // Landscape or Portrait 20:9 (Galaxy A23)
-    if (ratio >= 1.95 || ratio <= 0.52) {
-      return "galaxy";
-    }
-    return "auto"; // Default / standard
-  })();
-
   const isPortrait = screenSize.height > screenSize.width && screenSize.width < 900;
   const isCompactHeight = screenSize.height < 640;
   const isVeryCompactHeight = screenSize.height < 460;
   const isCompactWidth = screenSize.width < 820;
   const useCompactUI = isCompactHeight || isCompactWidth;
+  const isUltraWide = screenSize.aspectRatio >= 1.92 || screenSize.aspectRatio <= 0.52;
   const autoMinDim = Math.min(screenSize.width, screenSize.height);
-  const autoJoystickPx = Math.round(Math.max(72, Math.min(144, autoMinDim * (isPortrait ? 0.21 : 0.22))));
-  const autoHotbarScaleClass = isPortrait
-    ? (screenSize.width < 370 ? "scale-[0.82] origin-bottom" : "scale-[0.90] origin-bottom")
-    : (isVeryCompactHeight ? "scale-[0.76] origin-bottom" : useCompactUI ? "scale-[0.84] origin-bottom" : "scale-100 origin-bottom");
+  const autoJoystickPx = Math.round(
+    Math.max(76, Math.min(146, autoMinDim * (isPortrait ? 0.215 : 0.225)))
+  );
 
-  const uiScaleConfig = (() => {
-    switch (activeDevice) {
-      case "redmi":
-        return {
-          name: "Redmi Pad SE 8.7 (5:3)",
-          joystickSize: isPortrait ? 84 : (useCompactUI ? (screenSize.height < 450 ? 88 : 100) : 135),
-          jumpButtonSize: isPortrait ? "w-10 h-10" : (useCompactUI ? (screenSize.height < 450 ? "w-10 h-10" : "w-11 h-11") : "w-16 h-16"),
-          hotbarScale: isPortrait ? "scale-[0.92] origin-bottom" : (useCompactUI ? "scale-[0.82] origin-bottom" : "scale-[1.08] origin-bottom"),
-          controlPadding: isPortrait ? "px-2 pb-2 pt-0.5" : (useCompactUI ? "px-2.5 pb-1.5 pt-0.5" : "px-6 pb-4 pt-2"),
-          marginClass: useCompactUI ? "mb-1 mx-2 px-1" : "mb-3 mx-4 px-2",
-          gapClass: useCompactUI ? "gap-1.5" : "gap-4",
-          fontSize: "text-[10px]",
-          badge: "bg-orange-500/20 text-orange-400 border border-orange-500/30",
-          desc: "Redmi Pad SE 8.7 (Pantalla compacta 5:3 / 1.67)",
-          containerPadding: useCompactUI ? "p-2" : "p-4 md:p-6",
-          statsPadding: useCompactUI ? "p-2" : "p-3.5",
-          statsTitle: useCompactUI ? "text-xs sm:text-sm" : "text-lg",
-          statsText: useCompactUI ? "text-[8px]" : "text-[9px]",
-          btnSize: useCompactUI ? "w-8 h-8 sm:w-9 sm:h-9" : "w-11 h-11",
-          btnIcon: useCompactUI ? "text-xs" : "text-base",
-        };
-      case "funtouch":
-        return {
-          name: "Funtouch OS 15 (3:2)",
-          joystickSize: isPortrait ? 88 : (useCompactUI ? (screenSize.height < 450 ? 92 : 108) : 150),
-          jumpButtonSize: isPortrait ? "w-10 h-10" : (useCompactUI ? "w-11 h-11" : "w-16 h-16"),
-          hotbarScale: isPortrait ? "scale-[0.94] origin-bottom" : (useCompactUI ? "scale-[0.85] origin-bottom" : "scale-[1.12] origin-bottom"),
-          controlPadding: isPortrait ? "px-2.5 pb-2 pt-0.5" : (useCompactUI ? "px-3 pb-2 pt-0.5" : "px-8 pb-5 pt-2"),
-          marginClass: useCompactUI ? "mb-1.5 mx-3 px-1.5" : "mb-4 mx-6 px-3",
-          gapClass: useCompactUI ? "gap-2" : "gap-5",
-          fontSize: "text-xs",
-          badge: "bg-cyan-500/20 text-cyan-400 border border-cyan-500/30",
-          desc: "Funtouch OS 15 Tablet (Pantalla grande 3:2 / 1.50)",
-          containerPadding: useCompactUI ? "p-2" : "p-4 md:p-6",
-          statsPadding: useCompactUI ? "p-2.5" : "p-3.5",
-          statsTitle: useCompactUI ? "text-sm sm:text-base" : "text-lg",
-          statsText: useCompactUI ? "text-[8.5px]" : "text-xs",
-          btnSize: useCompactUI ? "w-9 h-9 sm:w-10 sm:h-10" : "w-11 h-11",
-          btnIcon: useCompactUI ? "text-sm" : "text-base",
-        };
-      case "galaxy":
-        return {
-          name: "Galaxy A23 (20:9)",
-          joystickSize: isPortrait ? 80 : (useCompactUI ? 86 : 120),
-          jumpButtonSize: isPortrait ? "w-9.5 h-9.5" : (useCompactUI ? "w-9.5 h-9.5 sm:w-10 sm:h-10" : "w-14 h-14"),
-          hotbarScale: isPortrait ? "scale-[0.88] origin-bottom" : (useCompactUI ? "scale-[0.78] origin-bottom" : "scale-[0.92] origin-bottom"),
-          controlPadding: isPortrait ? "px-2 pb-2 pt-0.5" : (useCompactUI ? "px-2.5 pb-1.5 pt-0.5" : "px-10 pb-4 pt-1"),
-          marginClass: useCompactUI ? "mb-0.5 mx-2 px-0.5" : "mb-2 mx-6 px-1",
-          gapClass: useCompactUI ? "gap-1.5" : "gap-3",
-          fontSize: "text-[9px]",
-          badge: "bg-fuchsia-500/20 text-fuchsia-400 border border-fuchsia-500/30",
-          desc: "Galaxy A23 (Ultra panorámico 20:9 / 2.22)",
-          containerPadding: useCompactUI ? "p-1.5 sm:p-2" : "p-4 md:p-6",
-          statsPadding: useCompactUI ? "p-2" : "p-3.5",
-          statsTitle: useCompactUI ? "text-xs" : "text-base",
-          statsText: useCompactUI ? "text-[8px]" : "text-[9px]",
-          btnSize: useCompactUI ? "w-8 h-8" : "w-11 h-11",
-          btnIcon: useCompactUI ? "text-[11px]" : "text-base",
-        };
-      default:
-        return {
-          name: "Adaptable Auto",
-          joystickSize: autoJoystickPx,
-          jumpButtonSize: isPortrait || isVeryCompactHeight ? "w-10 h-10" : (useCompactUI ? "w-11 h-11" : "w-14 h-14"),
-          hotbarScale: autoHotbarScaleClass,
-          controlPadding: isPortrait ? "px-2 pb-2 pt-0.5" : (useCompactUI ? "px-2.5 pb-1.5 pt-0.5" : "px-6 pb-4 pt-2"),
-          marginClass: useCompactUI ? "mb-1 mx-2 px-1" : "mb-3 mx-4 px-2",
-          gapClass: useCompactUI ? "gap-1.5" : "gap-4",
-          fontSize: "text-[10px]",
-          badge: "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30",
-          desc: "Estándar auto-adaptable fluido a cualquier pantalla",
-          containerPadding: useCompactUI ? "p-1.5 sm:p-2" : "p-4 md:p-6",
-          statsPadding: isVeryCompactHeight ? "p-1.5" : useCompactUI ? "p-2" : "p-3.5",
-          statsTitle: useCompactUI ? "text-xs sm:text-sm" : "text-lg",
-          statsText: useCompactUI ? "text-[8px]" : "text-[9px]",
-          btnSize: isVeryCompactHeight ? "w-8 h-8" : useCompactUI ? "w-8 h-8 sm:w-9 sm:h-9" : "w-11 h-11",
-          btnIcon: useCompactUI ? "text-xs" : "text-base",
-        };
+  // Automatic TV detection & adaptive safe-area / living-room scaling
+  const isTvEnvironment =
+    isPs4ConsoleBrowser ||
+    (!isTouchDevice && gamepadInfo.connected && screenSize.width >= 960 && screenSize.height >= 540);
+  const isTvModeActive =
+    tvDisplayMode === "tv" ? true : tvDisplayMode === "standard" ? false : isTvEnvironment;
+  const effectiveTvOverscan =
+    tvOverscanCustom !== null ? tvOverscanCustom : (isTvModeActive ? 94 : 100);
+  const autoTvUiScale = (() => {
+    if (!isTvModeActive) {
+      if (screenSize.width >= 2200 && screenSize.height >= 1200) return 1.1;
+      return 1.0;
     }
+    if (screenSize.height >= 1800 || screenSize.width >= 3200) return 1.24;
+    if (screenSize.height >= 1000 || screenSize.width >= 1800) return 1.14;
+    if (screenSize.height >= 680 || screenSize.width >= 1200) return 1.04;
+    return 0.96;
+  })();
+  const effectiveTvUiScale = tvUiScaleCustom !== null ? tvUiScaleCustom : autoTvUiScale;
+
+  useEffect(() => {
+    applyTvSafeCssVars(effectiveTvOverscan, isTvModeActive, effectiveTvUiScale, gamepadInfo.connected);
+  }, [effectiveTvOverscan, isTvModeActive, effectiveTvUiScale, gamepadInfo.connected]);
+
+  useEffect(() => {
+    const syncFs = () => setIsFullscreen(Boolean(document.fullscreenElement));
+    document.addEventListener("fullscreenchange", syncFs);
+    return () => {
+      document.removeEventListener("fullscreenchange", syncFs);
+      if (tvBorderGuideTimerRef.current) clearTimeout(tvBorderGuideTimerRef.current);
+    };
+  }, []);
+
+  // Automatic zero-footprint continuous responsive UI scaling (adapts seamlessly to phones, tablets, PC, and TVs)
+  const uiScaleConfig = (() => {
+    const isLargeScreen = autoMinDim >= 720 && screenSize.width >= 960;
+    const isFourKTv = isTvModeActive && (screenSize.width >= 2500 || screenSize.height >= 1400);
+    const hotbarScale = isPortrait
+      ? (screenSize.width < 365 ? "scale-[0.80] origin-bottom" : screenSize.width < 430 ? "scale-[0.88] origin-bottom" : "scale-[0.94] origin-bottom")
+      : (isVeryCompactHeight
+          ? "scale-[0.76] origin-bottom"
+          : useCompactUI
+            ? "scale-[0.85] origin-bottom"
+            : isFourKTv
+              ? "scale-[1.18] origin-bottom"
+              : isTvModeActive || isLargeScreen
+                ? "scale-[1.08] origin-bottom"
+                : "scale-100 origin-bottom");
+
+    const controlPadding = isPortrait
+      ? "px-2.5 pb-2 pt-0.5"
+      : isUltraWide
+        ? (useCompactUI ? "px-4 pb-1.5 pt-0.5" : "px-8 pb-4 pt-1.5")
+        : (useCompactUI ? "px-3 pb-1.5 pt-0.5" : isTvModeActive ? "px-8 pb-5 pt-2" : "px-6 pb-4 pt-2");
+
+    return {
+      joystickSize: autoJoystickPx,
+      jumpButtonSize: isPortrait || isVeryCompactHeight
+        ? (autoMinDim < 360 ? "w-9.5 h-9.5" : "w-10.5 h-10.5")
+        : (useCompactUI ? "w-11 h-11" : isLargeScreen ? "w-16 h-16" : "w-14 h-14"),
+      hotbarScale,
+      controlPadding,
+      gapClass: isPortrait ? "gap-1.5" : (useCompactUI ? "gap-2" : "gap-4"),
+      containerPadding: useCompactUI ? "p-1.5 sm:p-2.5" : isTvModeActive ? "p-5 md:p-6" : "p-4 md:p-5",
+      statsPadding: isVeryCompactHeight ? "p-1.5" : useCompactUI ? "p-2" : isTvModeActive ? "p-3.5" : "p-3",
+      statsTitle: useCompactUI ? "text-xs sm:text-sm" : isTvModeActive ? "text-lg sm:text-xl" : "text-base sm:text-lg",
+      statsText: useCompactUI ? "text-[8px]" : isTvModeActive ? "text-[10.5px]" : "text-[9px]",
+      btnSize: isVeryCompactHeight ? "w-8 h-8" : useCompactUI ? "w-8.5 h-8.5 sm:w-9.5 sm:h-9.5" : isTvModeActive ? "w-12 h-12" : "w-11 h-11",
+      btnIcon: useCompactUI ? "text-xs" : isTvModeActive ? "text-lg" : "text-base",
+    };
   })();
 
   useEffect(() => {
@@ -3869,12 +3896,12 @@ const App: React.FC = () => {
     }
 
     setCurrentWorld(updatedWorld);
-    setScreenshotToast(
+    setHudToast(
       isFirestoreWritePaused()
         ? (lang === "es" ? "¡Guardado localmente (cuota en nube pausada)!" : "Saved locally (cloud quota paused)!")
         : (lang === "es" ? "¡Mundo guardado con éxito!" : "World saved successfully!")
     );
-    setTimeout(() => setScreenshotToast(null), 2500);
+    setTimeout(() => setHudToast(null), 2500);
   };
 
   const handleExportWorld = () => {
@@ -3894,8 +3921,8 @@ const App: React.FC = () => {
     downloadAnchor.click();
     downloadAnchor.remove();
 
-    setScreenshotToast(lang === "es" ? "¡Mundo exportado como JSON!" : "World exported as JSON!");
-    setTimeout(() => setScreenshotToast(null), 2500);
+    setHudToast(lang === "es" ? "¡Mundo exportado como JSON!" : "World exported as JSON!");
+    setTimeout(() => setHudToast(null), 2500);
   };
 
   const handleImportWorld = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -3928,11 +3955,11 @@ const App: React.FC = () => {
           });
         }
 
-        setScreenshotToast(lang === "es" ? "¡Mundo importado correctamente!" : "World imported successfully!");
-        setTimeout(() => setScreenshotToast(null), 2500);
+        setHudToast(lang === "es" ? "¡Mundo importado correctamente!" : "World imported successfully!");
+        setTimeout(() => setHudToast(null), 2500);
       } catch (err) {
-        setScreenshotToast(lang === "es" ? "Error al importar el archivo" : "Error importing file");
-        setTimeout(() => setScreenshotToast(null), 2500);
+        setHudToast(lang === "es" ? "Error al importar el archivo" : "Error importing file");
+        setTimeout(() => setHudToast(null), 2500);
       }
     };
     reader.readAsText(file);
@@ -4229,6 +4256,418 @@ const App: React.FC = () => {
     };
   }, [appState]);
 
+  // PS4 DualShock 4 & Standard Gamepad Support (3D Gameplay + TV Menu Navigation)
+  const gamepadLiveRef = useRef({
+    appState,
+    lang,
+    currentBlock,
+    buildBrush,
+    isInventoryOpen,
+    isGameMenuOpen,
+    isChatOpen,
+    isFurnaceOpen,
+    isChestOpen,
+    isCartographyOpen,
+    isMapOpen,
+    isRealmsOpen,
+    isLeaderboardOpen,
+    isFriendsOpen,
+    isShopOpen,
+    hasCurrentWorld: Boolean(currentWorld),
+    gamepadSensitivity,
+    gamepadInvertY,
+    handleAttack,
+    startContinuousPlace,
+    stopContinuousPlace,
+  });
+  gamepadLiveRef.current = {
+    appState,
+    lang,
+    currentBlock,
+    buildBrush,
+    isInventoryOpen,
+    isGameMenuOpen,
+    isChatOpen,
+    isFurnaceOpen,
+    isChestOpen,
+    isCartographyOpen,
+    isMapOpen,
+    isRealmsOpen,
+    isLeaderboardOpen,
+    isFriendsOpen,
+    isShopOpen,
+    hasCurrentWorld: Boolean(currentWorld),
+    gamepadSensitivity,
+    gamepadInvertY,
+    handleAttack,
+    startContinuousPlace,
+    stopContinuousPlace,
+  };
+
+  useEffect(() => {
+    const syncGamepadConnection = (announce: boolean) => {
+      const next = findConnectedGamepad();
+      setGamepadInfo((prev) => {
+        if (
+          prev.connected === next.connected &&
+          prev.index === next.index &&
+          prev.isPlayStation === next.isPlayStation &&
+          prev.name === next.name
+        ) {
+          return prev;
+        }
+        if (announce && next.connected && !prev.connected) {
+          const msg = next.isPlayStation
+            ? (gamepadLiveRef.current.lang === "es"
+                ? "🎮 Mando PS4 DualShock 4 conectado"
+                : "🎮 PS4 DualShock 4 connected")
+            : (gamepadLiveRef.current.lang === "es"
+                ? "🎮 Mando conectado"
+                : "🎮 Controller connected");
+          setHudToast(msg);
+          setTimeout(() => setHudToast(null), 2600);
+        }
+        return next;
+      });
+    };
+
+    const onConnect = () => syncGamepadConnection(true);
+    const onDisconnect = () => syncGamepadConnection(false);
+    window.addEventListener("gamepadconnected", onConnect);
+    window.addEventListener("gamepaddisconnected", onDisconnect);
+    syncGamepadConnection(false);
+
+    const pollInterval = setInterval(() => {
+      syncGamepadConnection(true);
+    }, 1500);
+
+    return () => {
+      window.removeEventListener("gamepadconnected", onConnect);
+      window.removeEventListener("gamepaddisconnected", onDisconnect);
+      clearInterval(pollInterval);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!gamepadInfo.connected) return;
+
+    let rafId = 0;
+    let lastTime = performance.now();
+    const prevButtons: boolean[] = [];
+    let wasStickMoved = false;
+    let wasJumpHeld = false;
+    let wasZoomHeld = false;
+    let wasL2Held = false;
+    let lastR2AttackAt = 0;
+    let navDirHeld: "up" | "down" | "left" | "right" | null = null;
+    let navNextRepeatAt = 0;
+
+    const btnDown = (pad: Gamepad, idx: number): boolean => {
+      const b = pad.buttons[idx];
+      if (!b) return false;
+      return Boolean(b.pressed || b.value > 0.35);
+    };
+
+    const cycleHotbarSlot = (delta: number) => {
+      const items = inventoryItemsRef.current;
+      if (!items || items.length === 0) return;
+      const curIdx = items.indexOf(gamepadLiveRef.current.currentBlock);
+      const baseIdx = curIdx >= 0 ? curIdx : 0;
+      const nextIdx = (baseIdx + delta + items.length) % items.length;
+      setCurrentBlock(items[nextIdx]);
+      setInteractionMode("place");
+    };
+
+    const closeTopModalOrBack = (): boolean => {
+      const s = gamepadLiveRef.current;
+      if (s.isShopOpen) { setIsShopOpen(false); return true; }
+      if (s.isFriendsOpen) { setIsFriendsOpen(false); return true; }
+      if (s.isLeaderboardOpen) { setIsLeaderboardOpen(false); return true; }
+      if (s.isRealmsOpen) { setIsRealmsOpen(false); return true; }
+      if (s.isChatOpen) { setIsChatOpen(false); return true; }
+      if (s.isFurnaceOpen) { setIsFurnaceOpen(false); return true; }
+      if (s.isChestOpen) { setIsChestOpen(false); return true; }
+      if (s.isCartographyOpen) { setIsCartographyOpen(false); return true; }
+      if (s.isMapOpen) { setIsMapOpen(false); return true; }
+      if (s.isInventoryOpen) {
+        setIsInventoryOpen(false);
+        setIsCraftingTableActive(false);
+        return true;
+      }
+      if (s.isGameMenuOpen) { setIsGameMenuOpen(false); return true; }
+      if (s.appState === "settings") {
+        setAppState(s.hasCurrentWorld ? "playing" : "menu");
+        return true;
+      }
+      return false;
+    };
+
+    const tick = (now: number) => {
+      const dt = Math.min(0.05, Math.max(0.004, (now - lastTime) / 1000));
+      lastTime = now;
+
+      const pads = navigator.getGamepads?.();
+      let pad: Gamepad | null = pads?.[gamepadInfo.index] || null;
+      if (!pad || !pad.connected) {
+        const refound = findConnectedGamepad();
+        if (refound.connected) pad = pads?.[refound.index] || null;
+      }
+
+      if (pad && pad.connected) {
+        const s = gamepadLiveRef.current;
+        const pressedNow = pad.buttons.map((_, idx) => btnDown(pad!, idx));
+        const justPressed = (idx: number) => Boolean(pressedNow[idx] && !prevButtons[idx]);
+        const justReleased = (idx: number) => Boolean(!pressedNow[idx] && prevButtons[idx]);
+
+        const hasModalOpen =
+          s.appState !== "playing" ||
+          s.isGameMenuOpen ||
+          s.isInventoryOpen ||
+          s.isChatOpen ||
+          s.isFurnaceOpen ||
+          s.isChestOpen ||
+          s.isCartographyOpen ||
+          s.isMapOpen ||
+          s.isRealmsOpen ||
+          s.isLeaderboardOpen ||
+          s.isFriendsOpen ||
+          s.isShopOpen;
+
+        // Options (button 9): Toggle Pause / Game Menu while playing
+        if (justPressed(9) && s.appState === "playing") {
+          resumeAudio();
+          if (s.isInventoryOpen || s.isChatOpen || s.isFurnaceOpen || s.isChestOpen || s.isCartographyOpen || s.isMapOpen) {
+            closeTopModalOrBack();
+          } else {
+            setIsGameMenuOpen((prev) => !prev);
+          }
+        }
+
+        // Share (button 8) or Touchpad click (button 17): Toggle Chat in gameplay
+        if ((justPressed(8) || justPressed(17)) && s.appState === "playing" && !s.isGameMenuOpen && !s.isInventoryOpen) {
+          resumeAudio();
+          setIsChatOpen((prev) => !prev);
+        }
+
+        if (hasModalOpen) {
+          // Ensure continuous world actions stop cleanly when entering a menu
+          if (wasStickMoved) {
+            moveVectorRef.current.x = 0;
+            moveVectorRef.current.y = 0;
+            wasStickMoved = false;
+          }
+          if (wasJumpHeld && !activeKeys.current[" "]) {
+            setIsJumping(false);
+            wasJumpHeld = false;
+          }
+          if (wasZoomHeld && !activeKeys.current["c"] && !activeKeys.current["z"]) {
+            setIsZooming(false);
+            wasZoomHeld = false;
+          }
+          if (wasL2Held) {
+            s.stopContinuousPlace();
+            wasL2Held = false;
+          }
+
+          // Spatial D-Pad / Left Stick Navigation in Menus & Settings
+          const ax = pad.axes[0] ?? 0;
+          const ay = pad.axes[1] ?? 0;
+          let dir: "up" | "down" | "left" | "right" | null = null;
+          if (pressedNow[12] || ay < -0.58) dir = "up";
+          else if (pressedNow[13] || ay > 0.58) dir = "down";
+          else if (pressedNow[14] || ax < -0.58) dir = "left";
+          else if (pressedNow[15] || ax > 0.58) dir = "right";
+
+          if (dir) {
+            if (dir !== navDirHeld || now >= navNextRepeatAt) {
+              navigateFocusSpatial(dir);
+              navNextRepeatAt = now + (dir !== navDirHeld ? 290 : 140);
+              navDirHeld = dir;
+            }
+          } else {
+            navDirHeld = null;
+          }
+
+          // Cross (0): Activate focused button/control
+          if (justPressed(0)) {
+            resumeAudio();
+            activateFocusedElement();
+          }
+
+          // Circle (1): Back / Close active overlay
+          if (justPressed(1)) {
+            resumeAudio();
+            closeTopModalOrBack();
+          }
+
+          // L1 (4) / R1 (5): Cycle tabs in Settings or Inventory
+          if ((justPressed(4) || justPressed(5)) && s.appState === "settings") {
+            const tabs = ["game", "graphics", "audio", "world", "multiplayer"] as const;
+            const delta = justPressed(5) ? 1 : -1;
+            setSettingsSection((prev) => {
+              const i = tabs.indexOf(prev);
+              return tabs[(i + delta + tabs.length) % tabs.length];
+            });
+          } else if ((justPressed(4) || justPressed(5)) && s.isInventoryOpen) {
+            setInventoryTab((prev) => (prev === "items" ? "crafting" : "items"));
+          }
+        } else {
+          // 3D Gameplay Controls (DualShock 4)
+          const rawLx = pad.axes[0] ?? 0;
+          const rawLy = pad.axes[1] ?? 0;
+          const lMag = Math.hypot(rawLx, rawLy);
+          const lDead = 0.16;
+          const kbMoveActive =
+            activeKeys.current["w"] ||
+            activeKeys.current["s"] ||
+            activeKeys.current["a"] ||
+            activeKeys.current["d"] ||
+            activeKeys.current["arrowup"] ||
+            activeKeys.current["arrowdown"] ||
+            activeKeys.current["arrowleft"] ||
+            activeKeys.current["arrowright"];
+
+          if (!kbMoveActive) {
+            if (lMag > lDead) {
+              const norm = Math.min(1, (lMag - lDead) / (1 - lDead));
+              const scale = norm / lMag;
+              moveVectorRef.current.x = rawLx * scale;
+              moveVectorRef.current.y = -rawLy * scale;
+              wasStickMoved = true;
+            } else if (wasStickMoved) {
+              moveVectorRef.current.x = 0;
+              moveVectorRef.current.y = 0;
+              wasStickMoved = false;
+            }
+          }
+
+          // Right Stick Camera Look (axes 2 & 3)
+          const rawRx = pad.axes[2] ?? 0;
+          const rawRy = pad.axes[3] ?? 0;
+          const rMag = Math.hypot(rawRx, rawRy);
+          const rDead = 0.15;
+          if (rMag > rDead) {
+            const norm = Math.min(1, (rMag - rDead) / (1 - rDead));
+            const curve = Math.pow(norm, 1.55);
+            const speed = 15.0 * s.gamepadSensitivity * (dt * 60);
+            const lookDx = (rawRx / rMag) * curve * speed;
+            const lookDy = (rawRy / rMag) * curve * speed * (s.gamepadInvertY ? -1 : 1);
+            lookOffsetRef.current.x += lookDx;
+            lookOffsetRef.current.y += lookDy;
+          }
+
+          // Cross (0): Jump / Swim / Creative Fly double-tap
+          if (pressedNow[0]) {
+            if (!wasJumpHeld) {
+              setIsJumping(true);
+              wasJumpHeld = true;
+            }
+          } else if (wasJumpHeld) {
+            if (!activeKeys.current[" "]) {
+              setIsJumping(false);
+            }
+            wasJumpHeld = false;
+          }
+
+          // Circle (1): Hold Zoom | L3 (10): Toggle Zoom
+          if (justPressed(10)) {
+            setIsZooming((prev) => !prev);
+          }
+          if (pressedNow[1] && !wasZoomHeld) {
+            setIsZooming(true);
+            wasZoomHeld = true;
+          } else if (!pressedNow[1] && wasZoomHeld) {
+            if (!activeKeys.current["c"] && !activeKeys.current["z"]) {
+              setIsZooming(false);
+            }
+            wasZoomHeld = false;
+          }
+
+          // R2 (7): Attack / Break (tap or hold continuous mining)
+          if (justPressed(7) || (pressedNow[7] && now - lastR2AttackAt >= 215)) {
+            lastR2AttackAt = now;
+            s.handleAttack();
+          }
+
+          // L2 (6): Place / Build / Use (hold for rapid build)
+          if (justPressed(6)) {
+            wasL2Held = true;
+            s.startContinuousPlace();
+          } else if (justReleased(6) && wasL2Held) {
+            wasL2Held = false;
+            s.stopContinuousPlace();
+          }
+
+          // L1 (4) / D-Pad Left (14) and R1 (5) / D-Pad Right (15): Cycle Hotbar
+          if (justPressed(4) || justPressed(14)) {
+            resumeAudio();
+            cycleHotbarSlot(-1);
+          }
+          if (justPressed(5) || justPressed(15)) {
+            resumeAudio();
+            cycleHotbarSlot(1);
+          }
+
+          // Triangle (3): Open Inventory & Crafting
+          if (justPressed(3)) {
+            resumeAudio();
+            setIsInventoryOpen(true);
+          }
+
+          // Square (2): Eat mushroom if held, otherwise cycle Build Brush (1x1 -> Row x3 -> Wall 3x2)
+          if (justPressed(2)) {
+            resumeAudio();
+            if (s.currentBlock === BlockType.MUSHROOM_RED || s.currentBlock === BlockType.MUSHROOM_BROWN) {
+              gameState.eat(4);
+            } else {
+              const order: Array<"single" | "line3" | "wall3x2"> = ["single", "line3", "wall3x2"];
+              const nextBrush = order[(order.indexOf(s.buildBrush) + 1) % order.length];
+              setBuildBrush(nextBrush);
+              const label =
+                nextBrush === "single"
+                  ? "1x1"
+                  : nextBrush === "line3"
+                    ? (s.lang === "es" ? "Fila x3" : "Row x3")
+                    : (s.lang === "es" ? "Pared 3x2" : "Wall 3x2");
+              setHudToast(`🧱 ${label}`);
+              setTimeout(() => setHudToast(null), 1400);
+            }
+          }
+
+          // R3 (11) or D-Pad Up (12): Cycle Camera Perspective (1st / 3rd / 2nd)
+          if (justPressed(11) || justPressed(12)) {
+            resumeAudio();
+            setPerspective((prev) => (prev === "first" ? "third" : prev === "third" ? "second" : "first"));
+          }
+
+          // D-Pad Down (13): Toggle Tap Mode (Place / Break)
+          if (justPressed(13)) {
+            resumeAudio();
+            setInteractionMode((prev) => (prev === "place" ? "break" : "place"));
+          }
+        }
+
+        for (let i = 0; i < pressedNow.length; i++) {
+          prevButtons[i] = pressedNow[i];
+        }
+      }
+
+      rafId = requestAnimationFrame(tick);
+    };
+
+    rafId = requestAnimationFrame(tick);
+    return () => {
+      cancelAnimationFrame(rafId);
+      if (wasStickMoved) {
+        moveVectorRef.current.x = 0;
+        moveVectorRef.current.y = 0;
+      }
+      if (wasL2Held) {
+        gamepadLiveRef.current.stopContinuousPlace();
+      }
+    };
+  }, [gamepadInfo.connected, gamepadInfo.index]);
+
   const lastChunkReactRef = useRef({ cx: NaN, cz: NaN, farZone: 0 });
   const handlePosChange = useCallback((newPos: Vector3D) => {
     activePlayerPosRef.current = newPos;
@@ -4340,20 +4779,6 @@ const App: React.FC = () => {
     }
   };
 
-  const handleGetBuildingSuggestion = async () => {
-    resumeAudio();
-    setIsLoadingSuggestion(true);
-    // Dynamic context based on current environment and items
-    const availableBlocks = inventoryItems.map((item) => BLOCK_NAMES[item]);
-    const biome =
-      activePlayerPosRef.current.y - 55 > 10 ? dict[lang].biome_high : dict[lang].biome_low;
-    const res = await getBuildingSuggestion(biome, availableBlocks);
-    if (res) {
-      setSuggestion(res);
-    }
-    setIsLoadingSuggestion(false);
-  };
-
   const handleOpenCraftingTable = useCallback(() => {
     setIsCraftingTableActive(true);
     setInventoryTab("crafting");
@@ -4363,46 +4788,6 @@ const App: React.FC = () => {
   const handleOpenCartographyTable = useCallback(() => setIsCartographyOpen(true), []);
   const handleOpenChest = useCallback(() => setIsChestOpen(true), []);
   const handleUseMap = useCallback(() => setIsMapOpen(true), []);
-
-  const handleCaptureScreenshot = () => {
-    resumeAudio();
-    const captureBridge = (window as any).__captureVoxelScreenshot as (() => string) | undefined;
-    const container = document.getElementById("voxel-canvas");
-    const canvas = (container?.tagName === "CANVAS" 
-      ? container 
-      : container?.querySelector("canvas") || document.querySelector("canvas")) as HTMLCanvasElement | null;
-    
-    if (captureBridge || canvas) {
-      try {
-        // Trigger camera flash
-        setShowCameraFlash(true);
-        setFlashOpacity(1);
-        setTimeout(() => {
-          setFlashOpacity(0);
-        }, 50);
-        setTimeout(() => {
-          setShowCameraFlash(false);
-        }, 550);
-
-        // Capture frame as image (uses immediate re-render bridge when preserveDrawingBuffer is false)
-        const dataUrl = captureBridge ? captureBridge() : canvas!.toDataURL("image/png");
-        const link = document.createElement("a");
-        link.download = `voxelworld-${Date.now()}.png`;
-        link.href = dataUrl;
-        link.click();
-
-        // Show Toast
-        setScreenshotToast(t.screenshot_saved);
-        setTimeout(() => {
-          setScreenshotToast(null);
-        }, 3000);
-      } catch (err) {
-        console.error("Error capturing frame:", err);
-      }
-    } else {
-      console.error("Voxel world canvas element not found");
-    }
-  };
 
   const t = dict[lang];
 
@@ -9728,41 +10113,6 @@ const App: React.FC = () => {
                 </div>
               </div>
 
-              {/* Soporte para Tablets / Dispositivos */}
-              <div className="bg-zinc-900/60 p-3.5 rounded-2xl border border-white/5 flex flex-col gap-2">
-                <label className="text-emerald-400 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5">
-                  <i className="fas fa-tablet-screen-button text-xs" />
-                  <span>{lang === "es" ? "Ajuste de Pantalla y Tablet" : "Tablet & Screen Profile"}</span>
-                </label>
-                <div className="grid grid-cols-2 gap-2">
-                  {[
-                    { code: "auto", name: lang === "es" ? "Auto-Detectar" : "Auto-Detect" },
-                    { code: "redmi", name: "Redmi Pad 8.7" },
-                    { code: "funtouch", name: "Funtouch OS 15" },
-                    { code: "galaxy", name: "Galaxy A23 (20:9)" },
-                  ].map((preset) => {
-                    const isActive = devicePreset === preset.code;
-                    return (
-                      <button
-                        key={preset.code}
-                        onClick={() => {
-                          resumeAudio();
-                          setDevicePreset(preset.code as any);
-                          localStorage.setItem("minecraft_device_preset", preset.code);
-                        }}
-                        className={`text-[10px] sm:text-xs py-2 px-2 rounded-xl font-bold border transition-all ${
-                          isActive
-                            ? "bg-emerald-500 border-transparent text-white shadow-md font-black"
-                            : "bg-zinc-850 border-white/5 text-zinc-400 hover:text-white"
-                        }`}
-                      >
-                        {preset.name}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
               {/* Rotación Automática en Teléfonos (Web) */}
               <div className="bg-zinc-900/60 p-3.5 rounded-2xl border border-white/5 flex flex-col gap-2">
                 <div className="flex items-center justify-between">
@@ -9812,12 +10162,273 @@ const App: React.FC = () => {
                   </button>
                 )}
               </div>
+
+              {/* Soporte para PS4 (DualShock 4) */}
+              <div className="bg-zinc-900/60 p-3.5 rounded-2xl border border-indigo-500/25 flex flex-col gap-3">
+                <div className="flex items-center justify-between gap-2">
+                  <label className="text-indigo-300 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5">
+                    <i className="fab fa-playstation text-sm text-sky-400" />
+                    <span>{lang === "es" ? "Soporte PS4 / DualShock 4" : "PS4 / DualShock 4 Support"}</span>
+                  </label>
+                  <span
+                    className={`text-[9px] font-mono font-black px-2 py-0.5 rounded-full border ${
+                      gamepadInfo.connected
+                        ? "bg-emerald-500/20 border-emerald-400/50 text-emerald-300"
+                        : "bg-zinc-800 border-white/10 text-zinc-400"
+                    }`}
+                  >
+                    {gamepadInfo.connected
+                      ? (gamepadInfo.isPlayStation ? "DualShock PS4 ✓" : "Gamepad ✓")
+                      : (lang === "es" ? "Esperando mando..." : "Waiting...")}
+                  </span>
+                </div>
+
+                {/* Sensibilidad Stick Derecho PS4 */}
+                <div className="flex flex-col gap-1">
+                  <div className="flex justify-between items-center text-[10px]">
+                    <span className="text-zinc-300 font-bold">
+                      {lang === "es" ? "Sensibilidad Cámara (Stick R3)" : "Right Stick Sensitivity"}
+                    </span>
+                    <span className="text-white font-mono font-black bg-zinc-800 px-2 py-0.5 rounded-lg border border-white/10">
+                      {gamepadSensitivity.toFixed(1)}x
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0.4"
+                    max="2.4"
+                    step="0.1"
+                    value={gamepadSensitivity}
+                    onChange={(e) => {
+                      const val = parseFloat(e.target.value);
+                      setGamepadSensitivity(val);
+                      try {
+                        localStorage.setItem("minecraft_gamepad_sens", String(val));
+                      } catch {}
+                    }}
+                    className="w-full accent-sky-400 h-2 bg-zinc-800 rounded-lg appearance-none cursor-pointer"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      resumeAudio();
+                      const next = !gamepadInvertY;
+                      setGamepadInvertY(next);
+                      try {
+                        localStorage.setItem("minecraft_gamepad_invert_y", String(next));
+                      } catch {}
+                    }}
+                    className={`py-2 px-2.5 rounded-xl text-[10px] font-bold border transition flex items-center justify-center gap-1.5 ${
+                      gamepadInvertY
+                        ? "bg-sky-600/35 border-sky-400 text-sky-200"
+                        : "bg-zinc-950/60 border-white/10 text-zinc-300 hover:text-white"
+                    }`}
+                  >
+                    <i className="fas fa-arrows-up-down" />
+                    <span>{lang === "es" ? `Invertir Eje Y: ${gamepadInvertY ? "SÍ" : "NO"}` : `Invert Y: ${gamepadInvertY ? "ON" : "OFF"}`}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      resumeAudio();
+                      setSettingsSection("graphics");
+                    }}
+                    className="py-2 px-2.5 rounded-xl text-[10px] font-bold border border-emerald-500/40 bg-emerald-600/20 hover:bg-emerald-600/35 text-emerald-200 transition flex items-center justify-center gap-1.5"
+                  >
+                    <i className="fas fa-tv" />
+                    <span>{lang === "es" ? "Ajustar Tamaño TV →" : "Adjust TV Size →"}</span>
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 text-[9px] font-mono text-zinc-300 bg-zinc-950/70 p-2.5 rounded-xl border border-white/5">
+                  <div><span className="text-sky-300 font-black">L3 Stick</span> {lang === "es" ? "Mover" : "Move"}</div>
+                  <div><span className="text-sky-300 font-black">R3 Stick</span> {lang === "es" ? "Cámara" : "Look"}</div>
+                  <div><span className="text-emerald-300 font-black">✕</span> {lang === "es" ? "Saltar / Aceptar" : "Jump / OK"}</div>
+                  <div><span className="text-rose-300 font-black">R2</span> {lang === "es" ? "Romper / Atacar" : "Break / Hit"}</div>
+                  <div><span className="text-emerald-300 font-black">L2</span> {lang === "es" ? "Poner / Abrir" : "Place / Use"}</div>
+                  <div><span className="text-amber-300 font-black">L1 / R1</span> {lang === "es" ? "Cambiar Bloque" : "Hotbar"}</div>
+                  <div><span className="text-pink-300 font-black">△</span> {lang === "es" ? "Inventario" : "Inventory"}</div>
+                  <div><span className="text-violet-300 font-black">□</span> {lang === "es" ? "Brocha / Comer" : "Brush / Eat"}</div>
+                  <div><span className="text-amber-300 font-black">Options</span> {lang === "es" ? "Pausa" : "Pause"}</div>
+                </div>
+              </div>
             </div>
           )}
 
           {/* Tab 2: 🖼️ GRÁFICOS & RENDIMIENTO */}
           {settingsSection === "graphics" && (
             <div className="flex flex-col w-full gap-4 flex-1 min-h-0 overflow-y-auto pr-1">
+              {/* Tamaño de Televisión y Área Segura (Overscan TV / PS4) */}
+              <div className="bg-zinc-900/70 p-3.5 rounded-2xl border border-emerald-500/30 flex flex-col gap-3">
+                <div className="flex items-center justify-between gap-2">
+                  <label className="text-emerald-400 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5">
+                    <i className="fas fa-tv text-xs" />
+                    <span>{lang === "es" ? "Tamaño de Televisión y Área Segura" : "TV Display Size & Safe Area"}</span>
+                  </label>
+                  <span className="text-[9px] font-mono text-zinc-300 bg-zinc-800 px-2 py-0.5 rounded-lg border border-white/10">
+                    {screenSize.width}×{screenSize.height} {isTvModeActive ? "• TV" : ""}
+                  </span>
+                </div>
+
+                {/* Modo Pantalla / TV */}
+                <div className="grid grid-cols-3 gap-2">
+                  {([
+                    { id: "auto", es: "Automático", en: "Auto" },
+                    { id: "tv", es: "Modo TV", en: "TV Mode" },
+                    { id: "standard", es: "Estándar", en: "Standard" },
+                  ] as const).map((opt) => (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => {
+                        resumeAudio();
+                        setTvDisplayMode(opt.id);
+                        try {
+                          localStorage.setItem("minecraft_tv_mode", opt.id);
+                        } catch {}
+                        triggerTvBorderGuide();
+                      }}
+                      className={`py-2 px-2 rounded-xl text-[10px] font-bold border transition ${
+                        tvDisplayMode === opt.id
+                          ? "bg-emerald-500 border-transparent text-white shadow-md font-extrabold"
+                          : "bg-zinc-950/60 border-white/10 text-zinc-400 hover:text-white"
+                      }`}
+                    >
+                      {lang === "es" ? opt.es : opt.en}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Ajuste de Tamaño / Márgenes del Televisor (Overscan 85% - 100%) */}
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex justify-between items-center text-[10px]">
+                    <span className="text-zinc-300 font-bold">
+                      {lang === "es" ? "Ajuste de Bordes del Televisor (Overscan)" : "TV Screen Border Fit (Overscan)"}
+                    </span>
+                    <span className="text-emerald-300 font-mono font-black bg-zinc-800 px-2 py-0.5 rounded-lg border border-white/10">
+                      {effectiveTvOverscan}%{tvOverscanCustom === null ? " (Auto)" : ""}
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min="85"
+                    max="100"
+                    step="1"
+                    value={effectiveTvOverscan}
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value, 10);
+                      setTvOverscanCustom(val);
+                      try {
+                        localStorage.setItem("minecraft_tv_overscan", String(val));
+                      } catch {}
+                      triggerTvBorderGuide();
+                    }}
+                    className="w-full accent-emerald-400 h-2 bg-zinc-800 rounded-lg appearance-none cursor-pointer"
+                  />
+                  <div className="grid grid-cols-5 gap-1.5 mt-0.5">
+                    {[
+                      { val: null as number | null, label: "Auto" },
+                      { val: 100, label: "100%" },
+                      { val: 96, label: "96% TV" },
+                      { val: 92, label: "92% TV" },
+                      { val: 88, label: "88%" },
+                    ].map((preset) => {
+                      const isSel = preset.val === null ? tvOverscanCustom === null : tvOverscanCustom === preset.val;
+                      return (
+                        <button
+                          key={preset.label}
+                          type="button"
+                          onClick={() => {
+                            resumeAudio();
+                            setTvOverscanCustom(preset.val);
+                            try {
+                              if (preset.val === null) localStorage.removeItem("minecraft_tv_overscan");
+                              else localStorage.setItem("minecraft_tv_overscan", String(preset.val));
+                            } catch {}
+                            triggerTvBorderGuide();
+                          }}
+                          className={`py-1 rounded-lg text-[9px] font-bold border transition ${
+                            isSel
+                              ? "bg-emerald-600/40 border-emerald-400 text-white"
+                              : "bg-zinc-950/60 border-white/10 text-zinc-400 hover:text-white"
+                          }`}
+                        >
+                          {preset.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Escala de Interfaz para TV / Distancia */}
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex justify-between items-center text-[10px]">
+                    <span className="text-zinc-300 font-bold">
+                      {lang === "es" ? "Tamaño de Interfaz en Televisión" : "TV UI Scale"}
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-white font-mono font-black bg-zinc-800 px-2 py-0.5 rounded-lg border border-white/10">
+                        {Math.round(effectiveTvUiScale * 100)}%{tvUiScaleCustom === null ? " (Auto)" : ""}
+                      </span>
+                      {tvUiScaleCustom !== null && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setTvUiScaleCustom(null);
+                            try { localStorage.removeItem("minecraft_tv_ui_scale"); } catch {}
+                          }}
+                          className="text-[9px] bg-zinc-800 hover:bg-zinc-700 text-emerald-300 px-2 py-0.5 rounded-lg border border-white/10 font-bold"
+                        >
+                          Auto
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <input
+                    type="range"
+                    min="0.85"
+                    max="1.35"
+                    step="0.05"
+                    value={effectiveTvUiScale}
+                    onChange={(e) => {
+                      const val = parseFloat(e.target.value);
+                      setTvUiScaleCustom(val);
+                      try {
+                        localStorage.setItem("minecraft_tv_ui_scale", String(val));
+                      } catch {}
+                    }}
+                    className="w-full accent-emerald-400 h-2 bg-zinc-800 rounded-lg appearance-none cursor-pointer"
+                  />
+                </div>
+
+                {/* Botón Pantalla Completa en TV */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    resumeAudio();
+                    try {
+                      if (!document.fullscreenElement) {
+                        document.documentElement.requestFullscreen?.().catch(() => {});
+                      } else {
+                        document.exitFullscreen?.().catch(() => {});
+                      }
+                    } catch {}
+                  }}
+                  className="w-full py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-white/10 text-white text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition"
+                >
+                  <i className={`fas ${isFullscreen ? "fa-compress" : "fa-expand"} text-emerald-400`} />
+                  <span>
+                    {isFullscreen
+                      ? (lang === "es" ? "Salir de Pantalla Completa" : "Exit Fullscreen")
+                      : (lang === "es" ? "Pantalla Completa para TV" : "TV Fullscreen Mode")}
+                  </span>
+                </button>
+              </div>
+
               {/* Ultra Optimización */}
               <div className="bg-zinc-900/60 p-3.5 rounded-2xl border border-white/5 flex items-center justify-between">
                 <div className="flex flex-col">
@@ -10227,8 +10838,8 @@ const App: React.FC = () => {
                         setPlayerPos(farPos);
                         activePlayerPosRef.current = farPos;
                         setAppState("playing");
-                        setScreenshotToast(lang === "es" ? "👾 ¡Viajado a los FAR LANDS (X:1515, Z:1515)!" : "👾 Traveled to the FAR LANDS (X:1515, Z:1515)!");
-                        setTimeout(() => setScreenshotToast(null), 3000);
+                        setHudToast(lang === "es" ? "👾 ¡Viajado a los FAR LANDS (X:1515, Z:1515)!" : "👾 Traveled to the FAR LANDS (X:1515, Z:1515)!");
+                        setTimeout(() => setHudToast(null), 3000);
                       }}
                       className="col-span-2 bg-gradient-to-r from-amber-600 to-yellow-600 hover:from-amber-500 hover:to-yellow-500 py-2.5 rounded-xl text-white font-black text-xs uppercase flex items-center justify-center gap-2 transition active:scale-95 shadow-lg border border-yellow-400/30"
                     >
@@ -10355,8 +10966,8 @@ const App: React.FC = () => {
                       <button
                         onClick={() => {
                           navigator.clipboard?.writeText(currentWorld.id);
-                          setScreenshotToast(lang === "es" ? "🌍 Código del mundo copiado" : "🌍 World code copied");
-                          setTimeout(() => setScreenshotToast(null), 2500);
+                          setHudToast(lang === "es" ? "🌍 Código del mundo copiado" : "🌍 World code copied");
+                          setTimeout(() => setHudToast(null), 2500);
                         }}
                         className="bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-bold px-2.5 py-1 rounded-lg shrink-0 active:scale-95"
                       >
@@ -10375,8 +10986,8 @@ const App: React.FC = () => {
                   <button
                     onClick={() => {
                       navigator.clipboard?.writeText(currentUniqueId);
-                      setScreenshotToast(lang === "es" ? "📋 ID de jugador copiado al portapapeles" : "📋 Player ID copied to clipboard");
-                      setTimeout(() => setScreenshotToast(null), 2500);
+                      setHudToast(lang === "es" ? "📋 ID de jugador copiado al portapapeles" : "📋 Player ID copied to clipboard");
+                      setTimeout(() => setHudToast(null), 2500);
                     }}
                     className="bg-zinc-800 hover:bg-zinc-700 text-white text-[10px] font-bold px-2.5 py-1 rounded-lg shrink-0 border border-white/10 active:scale-95"
                   >
@@ -10428,8 +11039,8 @@ const App: React.FC = () => {
                               setPlayerPos(tpPos);
                               activePlayerPosRef.current = tpPos;
                               setAppState("playing");
-                              setScreenshotToast(`🌀 Teletransportado hacia ${p.name}`);
-                              setTimeout(() => setScreenshotToast(null), 2500);
+                              setHudToast(`🌀 Teletransportado hacia ${p.name}`);
+                              setTimeout(() => setHudToast(null), 2500);
                             }}
                             className="bg-sky-600 hover:bg-sky-500 text-white text-[9px] font-black px-2 py-1 rounded-lg uppercase active:scale-95"
                           >
@@ -11165,6 +11776,7 @@ const App: React.FC = () => {
       </div>
 
       <div className="fixed inset-0 z-20 pointer-events-none overflow-hidden select-none safe-area-inset">
+        <div className="relative w-full h-full">
         {/* Top-Left: Stats + Chat */}
         <div className={`absolute top-0 left-0 flex flex-col gap-1.5 items-start ${isPortrait ? "max-w-[calc(100%-72px)]" : "max-w-[230px] sm:max-w-[280px]"} pointer-events-none ${uiScaleConfig.containerPadding}`}>
           <div
@@ -11187,36 +11799,6 @@ const App: React.FC = () => {
               <br/>
               Chunks: {Object.keys(currentWorld?.edits || {}).length} | <FpsCounter />
             </p>
-
-            {/* REAL-TIME SCREEN RESOLUTION & PRESET HUD - CLICK TO CYCLE */}
-            <div 
-              onClick={(e) => {
-                e.stopPropagation();
-                resumeAudio();
-                const presets: ("auto" | "redmi" | "funtouch" | "galaxy")[] = ["auto", "redmi", "funtouch", "galaxy"];
-                const nextIndex = (presets.indexOf(devicePreset) + 1) % presets.length;
-                const nextPreset = presets[nextIndex];
-                setDevicePreset(nextPreset);
-                localStorage.setItem("minecraft_device_preset", nextPreset);
-              }}
-              className={`mt-2 px-2 py-1.5 rounded-lg text-[8px] font-mono leading-tight transition-all flex flex-col gap-0.5 pointer-events-auto cursor-pointer select-none hover:bg-white/5 active:scale-97 border ${uiScaleConfig.badge}`}
-              title="Toca para cambiar perfil de pantalla"
-            >
-              <div className="flex items-center justify-between gap-1 font-bold uppercase">
-                <div className="flex items-center gap-1">
-                  <i className="fas fa-tablet-screen-button text-[9px] animate-pulse" />
-                  <span>Soporte de Pantalla</span>
-                </div>
-                <span className="text-[7px] bg-white/20 px-1 rounded uppercase tracking-tighter">Tap 🔄</span>
-              </div>
-              <div>
-                Tam: {screenSize.width}x{screenSize.height} (R: {screenSize.aspectRatio.toFixed(2)})
-              </div>
-              <div className="text-[7.5px] opacity-90 border-t border-white/5 pt-0.5 mt-0.5 flex justify-between items-center">
-                <span>Perfil: <strong>{uiScaleConfig.name}</strong></span>
-                <span className="text-[6.5px] text-white/50 lowercase">({lang === "es" ? "tocar" : "cycle"})</span>
-              </div>
-            </div>
 
             {activeRealmId && (
               <div className="mt-2 flex items-center gap-1.5">
@@ -11692,32 +12274,9 @@ const App: React.FC = () => {
           )}
         </div>
 
-        {/* Top-Right: Utility Buttons + Companion Quick Panel */}
+        {/* Top-Right: Utility Buttons + Autonomous Gemini AI Panel */}
         <div className={`absolute top-0 right-0 flex flex-col items-end gap-1.5 pointer-events-none ${uiScaleConfig.containerPadding}`}>
           <div className={`${useCompactUI || isCompactHeight ? "grid grid-cols-2 gap-1.5" : "flex flex-col gap-1.5"} pointer-events-auto`}>
-            <button
-              onClick={handleGetBuildingSuggestion}
-              onPointerDown={(e) => e.stopPropagation()}
-              onTouchStart={(e) => e.stopPropagation()}
-              disabled={isLoadingSuggestion}
-              className={`bg-indigo-600/90 rounded-2xl shadow-xl active:scale-90 text-white flex items-center justify-center transition-all hover:bg-indigo-500 ${uiScaleConfig.btnSize}`}
-              title="Sugerencia de construcción"
-              id="wand-btn"
-            >
-              <i
-                className={`fas ${uiScaleConfig.btnIcon} ${isLoadingSuggestion ? "fa-spinner fa-spin" : "fa-wand-sparkles"}`}
-              />
-            </button>
-            <button
-              onClick={handleCaptureScreenshot}
-              onPointerDown={(e) => e.stopPropagation()}
-              onTouchStart={(e) => e.stopPropagation()}
-              className={`bg-teal-600/95 hover:bg-teal-500 rounded-2xl shadow-xl active:scale-90 text-white flex items-center justify-center transition-all ${uiScaleConfig.btnSize}`}
-              title="Capturar pantalla"
-              id="camera-btn"
-            >
-              <i className={`fas fa-camera ${uiScaleConfig.btnIcon}`} />
-            </button>
             <button
               onPointerDown={(e) => { e.stopPropagation(); setIsZooming(true); }}
               onPointerUp={(e) => { e.stopPropagation(); setIsZooming(false); }}
@@ -12021,6 +12580,47 @@ const App: React.FC = () => {
                 size={uiScaleConfig.joystickSize}
                 screenRotationDeg={virtualRotationDeg}
               />
+            </div>
+          ) : gamepadInfo.connected ? (
+            <div
+              className="pointer-events-auto flex flex-col gap-2 bg-black/80 p-3.5 sm:p-4 rounded-2xl border border-indigo-400/30 text-white select-none max-w-xs transition-all mb-2"
+              onPointerDown={(e) => e.stopPropagation()}
+              onTouchStart={(e) => e.stopPropagation()}
+            >
+              <h3 className="text-sky-300 text-[10px] uppercase font-bold tracking-wider mb-0.5 flex items-center gap-1.5 font-sans">
+                <i className="fab fa-playstation text-xs text-sky-400" />
+                <span>{gamepadInfo.isPlayStation ? "Controles PS4 (DualShock 4)" : "Controles Mando"}</span>
+              </h3>
+              <div className="grid grid-cols-2 gap-x-3.5 gap-y-1.5 text-[10px] text-zinc-300 font-mono">
+                <div className="flex items-center gap-1.5">
+                  <span className="bg-black/60 border border-white/15 px-1.5 py-0.5 rounded text-sky-200 font-extrabold">L3 / R3</span>
+                  <span>Mover/Ver</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="bg-black/60 border border-white/15 px-1.5 py-0.5 rounded text-emerald-300 font-extrabold">✕</span>
+                  <span>Saltar</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="bg-black/60 border border-white/15 px-1.5 py-0.5 rounded text-rose-300 font-extrabold">R2</span>
+                  <span>Romper</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="bg-black/60 border border-white/15 px-1.5 py-0.5 rounded text-emerald-300 font-extrabold">L2</span>
+                  <span>Poner/Abrir</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="bg-black/60 border border-white/15 px-1.5 py-0.5 rounded text-amber-300 font-extrabold">L1 / R1</span>
+                  <span>Bloques</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="bg-black/60 border border-white/15 px-1.5 py-0.5 rounded text-pink-300 font-extrabold">△ / □</span>
+                  <span>Inv / Brocha</span>
+                </div>
+                <div className="flex items-center gap-1.5 col-span-2 border-t border-white/5 pt-1">
+                  <span className="bg-black/60 border border-white/15 px-1.5 py-0.5 rounded text-white font-extrabold">Options</span>
+                  <span>Pausa • L3 Zoom • R3 Cámara</span>
+                </div>
+              </div>
             </div>
           ) : (
             <div
@@ -12370,6 +12970,7 @@ const App: React.FC = () => {
             <div className="w-10 sm:w-16 pointer-events-none" />
           )}
         </div>
+        </div>
       </div>
 
       {isInventoryOpen && (
@@ -12543,8 +13144,8 @@ const App: React.FC = () => {
                         e.stopPropagation();
                         resumeAudio();
                         if (!isAvailable) {
-                          setScreenshotToast(lang === "es" ? `Tienes 0 unidades de ${blockName}. Consíguelo o fabrícalo.` : `You have 0 of ${blockName}. Craft or gather it.`);
-                          setTimeout(() => setScreenshotToast(null), 2500);
+                          setHudToast(lang === "es" ? `Tienes 0 unidades de ${blockName}. Consíguelo o fabrícalo.` : `You have 0 of ${blockName}. Craft or gather it.`);
+                          setTimeout(() => setHudToast(null), 2500);
                           return;
                         }
                         setCurrentBlock(tVal);
@@ -12804,65 +13405,12 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {/* Gemini Suggestion Modal */}
-      {suggestion && (
-        <div className="fixed inset-0 z-[110] bg-indigo-950/85 flex flex-col items-center justify-start safe-area-inset p-2 sm:p-5 overflow-y-auto overscroll-contain">
-          <div className="bg-zinc-900 border-2 border-indigo-500/50 rounded-3xl w-full max-w-[min(28rem,calc(100vw-1rem))] p-4 sm:p-6 max-h-[calc(100dvh-1rem)] overflow-y-auto my-auto shadow-2xl animate-in fade-in zoom-in duration-300">
-            <div className="flex justify-between items-center mb-6">
-              <span className="bg-indigo-600/30 text-indigo-400 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider border border-indigo-500/20">
-                {t.suggestion_title}
-              </span>
-              <button
-                onClick={() => setSuggestion(null)}
-                className="text-white/40 hover:text-white transition-colors"
-              >
-                <i className="fas fa-times" />
-              </button>
-            </div>
-            <h2 className="text-white text-2xl font-bold mb-3 minecraft-font uppercase">
-              {suggestion.title}
-            </h2>
-            <p className="text-white/60 text-sm mb-6 leading-relaxed italic">
-              "{suggestion.description}"
-            </p>
-            <div className="space-y-3">
-              <p className="text-[10px] text-emerald-400 font-bold uppercase mb-2 flex items-center gap-2">
-                <i className="fas fa-list-check" /> {t.steps}
-              </p>
-              {suggestion.steps.map((step, i) => (
-                <div
-                  key={i}
-                  className="flex gap-3 text-sm text-white/90 bg-white/5 p-3 rounded-xl border border-white/5"
-                >
-                  <span className="text-emerald-500 font-bold">{i + 1}.</span>
-                  <span>{step}</span>
-                </div>
-              ))}
-            </div>
-            <button
-              onClick={() => setSuggestion(null)}
-              className="w-full mt-8 bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-4 rounded-2xl transition-all active:scale-95 shadow-lg shadow-indigo-500/20"
-            >
-              {t.great}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Camera shutter flash */}
-      {showCameraFlash && (
-        <div 
-          className="fixed inset-0 bg-white pointer-events-none z-[99999] transition-opacity duration-500 ease-out"
-          style={{ opacity: flashOpacity }}
-        />
-      )}
-
-      {/* Screenshot Toast Notification */}
-      {screenshotToast && (
+      {/* HUD Toast Notification */}
+      {hudToast && (
         <div className="fixed inset-x-0 top-6 px-4 flex justify-center z-[200] pointer-events-none">
-          <div className="max-w-[90vw] sm:max-w-md bg-black/85 text-white border border-teal-500/30 px-4 py-2.5 rounded-2xl shadow-2xl flex items-center gap-2.5 font-semibold text-xs sm:text-sm text-center break-words">
-            <i className="fas fa-camera text-teal-400 text-base animate-pulse shrink-0" />
-            <span>{screenshotToast}</span>
+          <div className="max-w-[90vw] sm:max-w-md bg-black/85 text-white border border-emerald-500/35 px-4 py-2.5 rounded-2xl shadow-2xl flex items-center gap-2.5 font-semibold text-xs sm:text-sm text-center break-words">
+            <i className="fas fa-circle-info text-emerald-400 text-base shrink-0" />
+            <span>{hudToast}</span>
           </div>
         </div>
       )}
@@ -13154,8 +13702,8 @@ const App: React.FC = () => {
                     <button
                       onClick={() => {
                         navigator.clipboard?.writeText(currentWorld.id);
-                        setScreenshotToast(lang === "es" ? "🌍 Código copiado" : "🌍 Code copied");
-                        setTimeout(() => setScreenshotToast(null), 2000);
+                        setHudToast(lang === "es" ? "🌍 Código copiado" : "🌍 Code copied");
+                        setTimeout(() => setHudToast(null), 2000);
                       }}
                       className="bg-emerald-600 hover:bg-emerald-500 text-white text-[9px] font-bold px-2 py-1 rounded shrink-0 active:scale-95"
                     >
@@ -13516,6 +14064,26 @@ const App: React.FC = () => {
       }
     >
       {renderAppScreen()}
+      {showTvBorderGuide && (
+        <div
+          className="fixed inset-0 z-[200000] pointer-events-none"
+          style={{
+            padding: "var(--tv-safe-y, 0px) var(--tv-safe-x, 0px)",
+          }}
+        >
+          <div className="relative w-full h-full border-2 border-dashed border-emerald-400/75 rounded-lg">
+            <div className="absolute -top-0.5 -left-0.5 w-8 h-8 border-t-4 border-l-4 border-emerald-400" />
+            <div className="absolute -top-0.5 -right-0.5 w-8 h-8 border-t-4 border-r-4 border-emerald-400" />
+            <div className="absolute -bottom-0.5 -left-0.5 w-8 h-8 border-b-4 border-l-4 border-emerald-400" />
+            <div className="absolute -bottom-0.5 -right-0.5 w-8 h-8 border-b-4 border-r-4 border-emerald-400" />
+            <div className="absolute top-2 left-1/2 -translate-x-1/2 bg-black/85 border border-emerald-400/60 text-emerald-300 font-mono text-xs font-bold px-3 py-1 rounded-lg shadow-xl">
+              {lang === "es"
+                ? `📺 Área Segura TV: ${effectiveTvOverscan}%`
+                : `📺 TV Safe Area: ${effectiveTvOverscan}%`}
+            </div>
+          </div>
+        </div>
+      )}
       <CatEasterEggs
         activeEgg={activeCatEasterEgg}
         lang={lang}

@@ -156,12 +156,6 @@ export interface GameState {
   chunks: Record<string, Uint8Array>;
 }
 
-export interface GeminiSuggestion {
-  title: string;
-  description: string;
-  steps: string[];
-}
-
 export interface NoiseConfig {
   simplex3DEnabled: boolean;
   simplex3DThreshold: number;

@@ -2907,23 +2907,6 @@ const recordAgentExperience = (memory, outcome, xpGain = 0) => {
     recentOutcomes: [...memory.recentOutcomes.slice(-15), outcome]
   };
 };
-const getBuildingSuggestion = async (biome, availableBlocks) => {
-  try {
-    const response = await fetch("/api/gemini/suggest-build", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ biome, availableBlocks })
-    });
-    if (!response.ok) {
-      const errBody = await response.json().catch(() => ({}));
-      throw new Error((errBody == null ? void 0 : errBody.error) || `HTTP ${response.status}`);
-    }
-    return await response.json();
-  } catch (error) {
-    console.error("Gemini suggestion error:", error);
-    return null;
-  }
-};
 const requestGeminiAgentStep = async (payload) => {
   var _a;
   const controller = new AbortController();
@@ -13469,17 +13452,27 @@ const VoxelWorld = ({
       className: "absolute inset-0 w-full h-full overflow-hidden",
       onContextMenu: (e) => e.preventDefault(),
       children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "absolute top-2 right-20 bg-black/50 text-white font-mono text-xs p-1 pointer-events-none z-50 rounded", children: [
-          "Chunks loaded: ",
-          Object.keys(chunks).length
-        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs(
+          "div",
+          {
+            className: "absolute bg-black/50 text-white font-mono text-xs p-1 pointer-events-none z-50 rounded",
+            style: {
+              top: "max(0.5rem, var(--tv-safe-y, 0px))",
+              right: "max(5rem, calc(var(--tv-safe-x, 0px) + 5rem))"
+            },
+            children: [
+              "Chunks loaded: ",
+              Object.keys(chunks).length
+            ]
+          }
+        ),
         /* @__PURE__ */ jsxRuntimeExports.jsxs(
           Canvas,
           {
             id: "voxel-canvas",
             resize: { offsetSize: true },
             style: { width: "100%", height: "100%", display: "block" },
-            dpr: isSoftwareGL || ultraOptimization ? 0.75 : (perfConfig == null ? void 0 : perfConfig.effectsQuality) === "high" ? [1, 1.25] : 1,
+            dpr: isSoftwareGL || ultraOptimization ? 0.75 : typeof navigator !== "undefined" && /PlayStation\s*4|\bPS4\b/i.test(navigator.userAgent || "") ? 1 : (perfConfig == null ? void 0 : perfConfig.effectsQuality) === "high" ? [1, 1.25] : 1,
             camera: {
               fov,
               near: 0.1,
@@ -13517,7 +13510,7 @@ const VoxelWorld = ({
               }
             },
             children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx(ScreenshotBridge, { virtualRotationDeg }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(ViewportResizeBridge, { virtualRotationDeg }),
               /* @__PURE__ */ jsxRuntimeExports.jsx(
                 TargetBlockHighlight,
                 {
@@ -13712,14 +13705,10 @@ const JukeboxEmitter = ({ playingJukeboxesRef, particlesRef }) => {
   });
   return null;
 };
-const ScreenshotBridge = ({ virtualRotationDeg = 0 }) => {
-  const { gl, scene, camera, setSize } = useThree();
+const ViewportResizeBridge = ({ virtualRotationDeg = 0 }) => {
+  const { gl, camera, setSize } = useThree();
   reactExports.useEffect(() => {
     var _a, _b, _c, _d;
-    window.__captureVoxelScreenshot = () => {
-      gl.render(scene, camera);
-      return gl.domElement.toDataURL("image/png");
-    };
     const syncViewportSize = () => {
       var _a2, _b2;
       const parent = gl.domElement.parentElement;
@@ -13772,11 +13761,8 @@ const ScreenshotBridge = ({ virtualRotationDeg = 0 }) => {
         (_d2 = (_c2 = (_b2 = window.screen) == null ? void 0 : _b2.orientation) == null ? void 0 : _c2.removeEventListener) == null ? void 0 : _d2.call(_c2, "change", handleOrientationSync);
       } catch {
       }
-      if (window.__captureVoxelScreenshot) {
-        delete window.__captureVoxelScreenshot;
-      }
     };
-  }, [gl, scene, camera, setSize, virtualRotationDeg]);
+  }, [gl, camera, setSize, virtualRotationDeg]);
   return null;
 };
 const WeatherSystem = ({ playerPosRef, weatherRef, ultraOptimization, effectsQuality = "low" }) => {
@@ -16437,6 +16423,182 @@ const CatEasterEggs = ({
     }
   );
 };
+function isPs4OrTvBrowser() {
+  if (typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent || "";
+  return /PlayStation\s*4|\bPS4\b|PlayStation|SmartTV|SMART-TV|Web0S|webOS|Tizen|BRAVIA|AFT[A-Z0-9]+|GoogleTV|Android TV|AppleTV|NetCast|Viera|Hisense|VIDAA/i.test(
+    ua
+  );
+}
+function isDualShockController(pad) {
+  if (!pad || !pad.id) return false;
+  return /dualshock|wireless controller|054c|09cc|05c4|0ce6|sony|ps4|ps5|playstation/i.test(
+    pad.id
+  );
+}
+function findConnectedGamepad() {
+  if (typeof navigator === "undefined" || typeof navigator.getGamepads !== "function") {
+    return { connected: false, isPlayStation: false, name: "", index: -1 };
+  }
+  try {
+    const pads = navigator.getGamepads();
+    let fallback = null;
+    for (let i = 0; i < pads.length; i++) {
+      const p = pads[i];
+      if (!p || !p.connected) continue;
+      if (isDualShockController(p)) {
+        return {
+          connected: true,
+          isPlayStation: true,
+          name: p.id || "DualShock 4",
+          index: p.index
+        };
+      }
+      if (!fallback) fallback = p;
+    }
+    if (fallback) {
+      return {
+        connected: true,
+        isPlayStation: false,
+        name: fallback.id || "Gamepad",
+        index: fallback.index
+      };
+    }
+  } catch {
+  }
+  return { connected: false, isPlayStation: false, name: "", index: -1 };
+}
+function applyTvSafeCssVars(overscanPercent, isTvActive, tvUiScale, gamepadActive) {
+  if (typeof document === "undefined") return;
+  const clampedOverscan = Math.max(85, Math.min(100, overscanPercent));
+  const halfMarginPct = (100 - clampedOverscan) / 2;
+  const rootStyle = document.documentElement.style;
+  rootStyle.setProperty("--tv-safe-x", `${halfMarginPct.toFixed(2)}vw`);
+  rootStyle.setProperty("--tv-safe-y", `${halfMarginPct.toFixed(2)}vh`);
+  rootStyle.setProperty("--tv-ui-scale", `${Math.max(0.85, Math.min(1.4, tvUiScale)).toFixed(3)}`);
+  document.documentElement.setAttribute("data-tv-mode", isTvActive ? "true" : "false");
+  document.documentElement.setAttribute("data-gamepad-active", gamepadActive ? "true" : "false");
+}
+function getTopmostInteractiveScope() {
+  const allFixed = Array.from(document.querySelectorAll("div.fixed, section.fixed"));
+  let bestEl = null;
+  let bestZ = -1;
+  for (const el of allFixed) {
+    const style = window.getComputedStyle(el);
+    if (style.display === "none" || style.visibility === "hidden" || style.pointerEvents === "none") {
+      continue;
+    }
+    const rect = el.getBoundingClientRect();
+    if (rect.width < 120 || rect.height < 120) continue;
+    const hasInteractive = el.querySelector("button:not(:disabled), input:not(:disabled), select:not(:disabled)");
+    if (!hasInteractive) continue;
+    const z = parseInt(style.zIndex || "0", 10);
+    const numericZ = Number.isNaN(z) ? 0 : z;
+    if (numericZ >= bestZ) {
+      bestZ = numericZ;
+      bestEl = el;
+    }
+  }
+  return bestEl || document;
+}
+function getFocusableCandidates() {
+  const scope = getTopmostInteractiveScope();
+  const raw = Array.from(
+    scope.querySelectorAll(
+      'button:not(:disabled), input:not(:disabled):not([type="hidden"]), select:not(:disabled), textarea:not(:disabled), a[href]'
+    )
+  );
+  return raw.filter((el) => {
+    const style = window.getComputedStyle(el);
+    if (style.display === "none" || style.visibility === "hidden" || parseFloat(style.opacity || "1") === 0) {
+      return false;
+    }
+    const rect = el.getBoundingClientRect();
+    return rect.width >= 10 && rect.height >= 10;
+  });
+}
+function navigateFocusSpatial(direction) {
+  var _a;
+  const candidates = getFocusableCandidates();
+  if (candidates.length === 0) return null;
+  const active = document.activeElement;
+  if (!active || !candidates.includes(active)) {
+    const first = candidates[0];
+    first.focus({ preventScroll: false });
+    first.scrollIntoView({ block: "nearest", inline: "nearest" });
+    return first;
+  }
+  if (active instanceof HTMLInputElement && active.type === "range" && (direction === "left" || direction === "right")) {
+    const min = parseFloat(active.min || "0");
+    const max = parseFloat(active.max || "100");
+    const step = parseFloat(active.step || "1") || 1;
+    const current = parseFloat(active.value || "0");
+    const next = Math.max(min, Math.min(max, current + (direction === "right" ? step : -step)));
+    const nativeSetter = (_a = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")) == null ? void 0 : _a.set;
+    if (nativeSetter) {
+      nativeSetter.call(active, String(next));
+      active.dispatchEvent(new Event("input", { bubbles: true }));
+      active.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    return active;
+  }
+  const aRect = active.getBoundingClientRect();
+  const ax = aRect.left + aRect.width / 2;
+  const ay = aRect.top + aRect.height / 2;
+  let best = null;
+  let bestScore = Infinity;
+  for (const el of candidates) {
+    if (el === active) continue;
+    const r = el.getBoundingClientRect();
+    const cx = r.left + r.width / 2;
+    const cy = r.top + r.height / 2;
+    const dx = cx - ax;
+    const dy = cy - ay;
+    let valid = false;
+    let primary = 0;
+    let secondary = 0;
+    if (direction === "right" && dx > 6) {
+      valid = true;
+      primary = dx;
+      secondary = Math.abs(dy);
+    } else if (direction === "left" && dx < -6) {
+      valid = true;
+      primary = -dx;
+      secondary = Math.abs(dy);
+    } else if (direction === "down" && dy > 6) {
+      valid = true;
+      primary = dy;
+      secondary = Math.abs(dx);
+    } else if (direction === "up" && dy < -6) {
+      valid = true;
+      primary = -dy;
+      secondary = Math.abs(dx);
+    }
+    if (!valid) continue;
+    const score = primary + secondary * 2.2;
+    if (score < bestScore) {
+      bestScore = score;
+      best = el;
+    }
+  }
+  if (best) {
+    best.focus({ preventScroll: false });
+    best.scrollIntoView({ block: "nearest", inline: "nearest" });
+    return best;
+  }
+  return active;
+}
+function activateFocusedElement() {
+  const candidates = getFocusableCandidates();
+  const active = document.activeElement;
+  const target = active && candidates.includes(active) ? active : candidates[0];
+  if (!target) return false;
+  if (target instanceof HTMLInputElement && target.type === "range") {
+    return false;
+  }
+  target.click();
+  return true;
+}
 const dict = {
   es: {
     menu_title: "ALPHA",
@@ -16448,11 +16610,6 @@ const dict = {
     inventory: "INVENTARIO",
     break: "QUITAR",
     place: "PONER",
-    suggestion_title: "Sugerencia AI",
-    great: "¡GENIAL!",
-    steps: "Pasos de construcción",
-    biome_high: "Superficie Elevada",
-    biome_low: "Valle Profundo",
     jump: "SALTAR",
     ultra_optimization: "Ultra Optimización",
     optimization_on: "ACTIVADO (Bajo DPR, alta fluidez)",
@@ -16495,8 +16652,7 @@ const dict = {
     world_type: "Tipo de mundo",
     world_type_normal: "Mundo normal",
     world_type_flat: "Plano infinito (optimizado)",
-    world_type_edge_farlands: "Edge Farlands (pasado de Far Lands)",
-    screenshot_saved: "¡Captura de pantalla guardada!"
+    world_type_edge_farlands: "Edge Farlands (pasado de Far Lands)"
   },
   en: {
     menu_title: "ALPHA",
@@ -16508,11 +16664,6 @@ const dict = {
     inventory: "INVENTORY",
     break: "BREAK",
     place: "PLACE",
-    suggestion_title: "AI Suggestion",
-    great: "GREAT!",
-    steps: "Building steps",
-    biome_high: "High Surface",
-    biome_low: "Deep Valley",
     jump: "JUMP",
     ultra_optimization: "Ultra Optimization",
     optimization_on: "ENABLED (Low DPR, high performance)",
@@ -16555,8 +16706,7 @@ const dict = {
     world_type: "World Type",
     world_type_normal: "Normal World",
     world_type_flat: "Infinite Flat (optimized)",
-    world_type_edge_farlands: "Edge Farlands (past Far Lands)",
-    screenshot_saved: "Screenshot saved!"
+    world_type_edge_farlands: "Edge Farlands (past Far Lands)"
   },
   fr: {
     menu_title: "ALPHA",
@@ -16568,11 +16718,6 @@ const dict = {
     inventory: "INVENTAIRE",
     break: "CASSER",
     place: "POSER",
-    suggestion_title: "Suggestion IA",
-    great: "GÉNIAL !",
-    steps: "Étapes de construction",
-    biome_high: "Surface Élevée",
-    biome_low: "Vallée Profonde",
     jump: "SAUTER",
     ultra_optimization: "Ultra Optimisation",
     optimization_on: "ACTIVÉ (DPR bas, haute fluidité)",
@@ -16615,8 +16760,7 @@ const dict = {
     world_type: "Type de monde",
     world_type_normal: "Monde normal",
     world_type_flat: "Plat infini (optimisé)",
-    world_type_edge_farlands: "Edge Farlands (au-delà des Far Lands)",
-    screenshot_saved: "Capture dʼécran sauvegardée !"
+    world_type_edge_farlands: "Edge Farlands (au-delà des Far Lands)"
   },
   pt: {
     menu_title: "ALPHA",
@@ -16628,11 +16772,6 @@ const dict = {
     inventory: "INVENTÁRIO",
     break: "QUEBRAR",
     place: "COLOCAR",
-    suggestion_title: "Sugestão IA",
-    great: "INCRÍVEL!",
-    steps: "Passos de construção",
-    biome_high: "Superfície Elevada",
-    biome_low: "Vale Profundo",
     jump: "PULAR",
     ultra_optimization: "Ultra Otimização",
     optimization_on: "ATIVADO (DPR baixo, alta fluidez)",
@@ -16675,8 +16814,7 @@ const dict = {
     world_type: "Tipo de mundo",
     world_type_normal: "Mundo normal",
     world_type_flat: "Plano infinito (otimizado)",
-    world_type_edge_farlands: "Edge Farlands (passando as Far Lands)",
-    screenshot_saved: "Captura de tela salva!"
+    world_type_edge_farlands: "Edge Farlands (passando as Far Lands)"
   },
   de: {
     menu_title: "ALPHA",
@@ -16688,11 +16826,6 @@ const dict = {
     inventory: "INVENTAR",
     break: "ABBAUEN",
     place: "PLATZIEREN",
-    suggestion_title: "KI Vorschlag",
-    great: "SUPER!",
-    steps: "Bauschritte",
-    biome_high: "Hohe Oberfläche",
-    biome_low: "Tiefes Tal",
     jump: "SPRINGEN",
     ultra_optimization: "Ultra-Optimierung",
     optimization_on: "AKTIVIERT (Niedriges DPR, flüssig)",
@@ -16735,8 +16868,7 @@ const dict = {
     world_type: "Welttyp",
     world_type_normal: "Normale Welt",
     world_type_flat: "Flache Welt (optimiert)",
-    world_type_edge_farlands: "Edge Farlands (hinter den Far Lands)",
-    screenshot_saved: "Screenshot gespeichert!"
+    world_type_edge_farlands: "Edge Farlands (hinter den Far Lands)"
   }
 };
 const PROFILES_KEY = "infdev_profiles_v1";
@@ -18028,8 +18160,6 @@ const App = () => {
     "place"
   );
   const [buildBrush, setBuildBrush] = reactExports.useState("single");
-  const [isLoadingSuggestion, setIsLoadingSuggestion] = reactExports.useState(false);
-  const [suggestion, setSuggestion] = reactExports.useState(null);
   const [appState, setAppState] = reactExports.useState(
     getActiveSession() ? "menu" : "login-prompt"
   );
@@ -18181,9 +18311,7 @@ const App = () => {
     }
     return false;
   });
-  const [showCameraFlash, setShowCameraFlash] = reactExports.useState(false);
-  const [flashOpacity, setFlashOpacity] = reactExports.useState(0);
-  const [screenshotToast, setScreenshotToast] = reactExports.useState(null);
+  const [hudToast, setHudToast] = reactExports.useState(null);
   const [firestoreQuotaPaused, setFirestoreQuotaPaused] = reactExports.useState(() => isFirestoreWritePaused());
   const [quotaBannerDismissed, setQuotaBannerDismissed] = reactExports.useState(false);
   const otherPlayersCountRef = reactExports.useRef(0);
@@ -18191,6 +18319,11 @@ const App = () => {
   const blockPatchTimerRef = reactExports.useRef(null);
   const lastAutoSaveSignatureRef = reactExports.useRef("");
   reactExports.useEffect(() => {
+    try {
+      localStorage.removeItem("minecraft_device_preset");
+      localStorage.removeItem("voxel_ai_companion");
+    } catch {
+    }
     const unsub = onFirestoreQuotaChange((paused) => {
       setFirestoreQuotaPaused(paused);
       if (paused) {
@@ -18199,15 +18332,6 @@ const App = () => {
     });
     return unsub;
   }, []);
-  const [devicePreset, setDevicePreset] = reactExports.useState(() => {
-    if (typeof window !== "undefined") {
-      const saved = localStorage.getItem("minecraft_device_preset");
-      if (saved === "auto" || saved === "redmi" || saved === "funtouch" || saved === "galaxy") {
-        return saved;
-      }
-    }
-    return "auto";
-  });
   const [webAutoRotateMode, setWebAutoRotateMode] = reactExports.useState(() => {
     if (typeof window !== "undefined") {
       const saved = localStorage.getItem("minecraft_web_autorotate");
@@ -18668,6 +18792,59 @@ const App = () => {
   const [isTouchDevice, setIsTouchDevice] = reactExports.useState(false);
   const [isSmallScreen, setIsSmallScreen] = reactExports.useState(false);
   const [touchControlsMode, setTouchControlsMode] = reactExports.useState("auto");
+  const [gamepadInfo, setGamepadInfo] = reactExports.useState(() => findConnectedGamepad());
+  const [gamepadSensitivity, setGamepadSensitivity] = reactExports.useState(() => {
+    if (typeof window !== "undefined") {
+      const val = parseFloat(localStorage.getItem("minecraft_gamepad_sens") || "1");
+      if (!Number.isNaN(val) && val >= 0.4 && val <= 2.5) return val;
+    }
+    return 1;
+  });
+  const [gamepadInvertY, setGamepadInvertY] = reactExports.useState(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("minecraft_gamepad_invert_y") === "true";
+    }
+    return false;
+  });
+  const [tvDisplayMode, setTvDisplayMode] = reactExports.useState(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("minecraft_tv_mode");
+      if (saved === "auto" || saved === "tv" || saved === "standard") return saved;
+    }
+    return "auto";
+  });
+  const [tvOverscanCustom, setTvOverscanCustom] = reactExports.useState(() => {
+    if (typeof window !== "undefined") {
+      const raw = localStorage.getItem("minecraft_tv_overscan");
+      if (raw !== null && raw !== "" && raw !== "auto") {
+        const val = parseInt(raw, 10);
+        if (!Number.isNaN(val) && val >= 85 && val <= 100) return val;
+      }
+    }
+    return null;
+  });
+  const [tvUiScaleCustom, setTvUiScaleCustom] = reactExports.useState(() => {
+    if (typeof window !== "undefined") {
+      const raw = localStorage.getItem("minecraft_tv_ui_scale");
+      if (raw !== null && raw !== "" && raw !== "auto") {
+        const val = parseFloat(raw);
+        if (!Number.isNaN(val) && val >= 0.85 && val <= 1.35) return val;
+      }
+    }
+    return null;
+  });
+  const [showTvBorderGuide, setShowTvBorderGuide] = reactExports.useState(false);
+  const tvBorderGuideTimerRef = reactExports.useRef(null);
+  const triggerTvBorderGuide = reactExports.useCallback(() => {
+    setShowTvBorderGuide(true);
+    if (tvBorderGuideTimerRef.current) clearTimeout(tvBorderGuideTimerRef.current);
+    tvBorderGuideTimerRef.current = setTimeout(() => {
+      setShowTvBorderGuide(false);
+    }, 3e3);
+  }, []);
+  const [isFullscreen, setIsFullscreen] = reactExports.useState(
+    () => typeof document !== "undefined" ? Boolean(document.fullscreenElement) : false
+  );
   const MENU_SPLASHES = reactExports.useMemo(() => [
     "¡60 FPS Ultra Optimizado!",
     "¡Panorámica 3D en tiempo real!",
@@ -18725,7 +18902,8 @@ const App = () => {
       setActiveCatEasterEgg("crying");
     }
   }, [MENU_SPLASHES.length]);
-  const showTouchControls = touchControlsMode === "yes" ? true : touchControlsMode === "no" ? false : isTouchDevice || isSmallScreen;
+  const isPs4ConsoleBrowser = reactExports.useMemo(() => isPs4OrTvBrowser(), []);
+  const showTouchControls = touchControlsMode === "yes" ? true : touchControlsMode === "no" ? false : !gamepadInfo.connected && !isPs4ConsoleBrowser && (isTouchDevice || isSmallScreen);
   const physIsLandscape = physicalViewport.width > physicalViewport.height;
   const virtualRotationDeg = (() => {
     if (webAutoRotateMode === "landscape") {
@@ -18749,107 +18927,59 @@ const App = () => {
       aspectRatio: effW / (effH || 1)
     };
   })();
-  const activeDevice = (() => {
-    if (devicePreset !== "auto") return devicePreset;
-    const ratio = screenSize.aspectRatio;
-    if (ratio >= 1.55 && ratio <= 1.75 || ratio >= 0.55 && ratio <= 0.65) {
-      return "redmi";
-    }
-    if (ratio >= 1.2 && ratio < 1.55 || ratio >= 0.64 && ratio <= 0.83) {
-      return "funtouch";
-    }
-    if (ratio >= 1.95 || ratio <= 0.52) {
-      return "galaxy";
-    }
-    return "auto";
-  })();
   const isPortrait = screenSize.height > screenSize.width && screenSize.width < 900;
   const isCompactHeight = screenSize.height < 640;
   const isVeryCompactHeight = screenSize.height < 460;
   const isCompactWidth = screenSize.width < 820;
   const useCompactUI = isCompactHeight || isCompactWidth;
+  const isUltraWide = screenSize.aspectRatio >= 1.92 || screenSize.aspectRatio <= 0.52;
   const autoMinDim = Math.min(screenSize.width, screenSize.height);
-  const autoJoystickPx = Math.round(Math.max(72, Math.min(144, autoMinDim * (isPortrait ? 0.21 : 0.22))));
-  const autoHotbarScaleClass = isPortrait ? screenSize.width < 370 ? "scale-[0.82] origin-bottom" : "scale-[0.90] origin-bottom" : isVeryCompactHeight ? "scale-[0.76] origin-bottom" : useCompactUI ? "scale-[0.84] origin-bottom" : "scale-100 origin-bottom";
-  const uiScaleConfig = (() => {
-    switch (activeDevice) {
-      case "redmi":
-        return {
-          name: "Redmi Pad SE 8.7 (5:3)",
-          joystickSize: isPortrait ? 84 : useCompactUI ? screenSize.height < 450 ? 88 : 100 : 135,
-          jumpButtonSize: isPortrait ? "w-10 h-10" : useCompactUI ? screenSize.height < 450 ? "w-10 h-10" : "w-11 h-11" : "w-16 h-16",
-          hotbarScale: isPortrait ? "scale-[0.92] origin-bottom" : useCompactUI ? "scale-[0.82] origin-bottom" : "scale-[1.08] origin-bottom",
-          controlPadding: isPortrait ? "px-2 pb-2 pt-0.5" : useCompactUI ? "px-2.5 pb-1.5 pt-0.5" : "px-6 pb-4 pt-2",
-          marginClass: useCompactUI ? "mb-1 mx-2 px-1" : "mb-3 mx-4 px-2",
-          gapClass: useCompactUI ? "gap-1.5" : "gap-4",
-          fontSize: "text-[10px]",
-          badge: "bg-orange-500/20 text-orange-400 border border-orange-500/30",
-          desc: "Redmi Pad SE 8.7 (Pantalla compacta 5:3 / 1.67)",
-          containerPadding: useCompactUI ? "p-2" : "p-4 md:p-6",
-          statsPadding: useCompactUI ? "p-2" : "p-3.5",
-          statsTitle: useCompactUI ? "text-xs sm:text-sm" : "text-lg",
-          statsText: useCompactUI ? "text-[8px]" : "text-[9px]",
-          btnSize: useCompactUI ? "w-8 h-8 sm:w-9 sm:h-9" : "w-11 h-11",
-          btnIcon: useCompactUI ? "text-xs" : "text-base"
-        };
-      case "funtouch":
-        return {
-          name: "Funtouch OS 15 (3:2)",
-          joystickSize: isPortrait ? 88 : useCompactUI ? screenSize.height < 450 ? 92 : 108 : 150,
-          jumpButtonSize: isPortrait ? "w-10 h-10" : useCompactUI ? "w-11 h-11" : "w-16 h-16",
-          hotbarScale: isPortrait ? "scale-[0.94] origin-bottom" : useCompactUI ? "scale-[0.85] origin-bottom" : "scale-[1.12] origin-bottom",
-          controlPadding: isPortrait ? "px-2.5 pb-2 pt-0.5" : useCompactUI ? "px-3 pb-2 pt-0.5" : "px-8 pb-5 pt-2",
-          marginClass: useCompactUI ? "mb-1.5 mx-3 px-1.5" : "mb-4 mx-6 px-3",
-          gapClass: useCompactUI ? "gap-2" : "gap-5",
-          fontSize: "text-xs",
-          badge: "bg-cyan-500/20 text-cyan-400 border border-cyan-500/30",
-          desc: "Funtouch OS 15 Tablet (Pantalla grande 3:2 / 1.50)",
-          containerPadding: useCompactUI ? "p-2" : "p-4 md:p-6",
-          statsPadding: useCompactUI ? "p-2.5" : "p-3.5",
-          statsTitle: useCompactUI ? "text-sm sm:text-base" : "text-lg",
-          statsText: useCompactUI ? "text-[8.5px]" : "text-xs",
-          btnSize: useCompactUI ? "w-9 h-9 sm:w-10 sm:h-10" : "w-11 h-11",
-          btnIcon: useCompactUI ? "text-sm" : "text-base"
-        };
-      case "galaxy":
-        return {
-          name: "Galaxy A23 (20:9)",
-          joystickSize: isPortrait ? 80 : useCompactUI ? 86 : 120,
-          jumpButtonSize: isPortrait ? "w-9.5 h-9.5" : useCompactUI ? "w-9.5 h-9.5 sm:w-10 sm:h-10" : "w-14 h-14",
-          hotbarScale: isPortrait ? "scale-[0.88] origin-bottom" : useCompactUI ? "scale-[0.78] origin-bottom" : "scale-[0.92] origin-bottom",
-          controlPadding: isPortrait ? "px-2 pb-2 pt-0.5" : useCompactUI ? "px-2.5 pb-1.5 pt-0.5" : "px-10 pb-4 pt-1",
-          marginClass: useCompactUI ? "mb-0.5 mx-2 px-0.5" : "mb-2 mx-6 px-1",
-          gapClass: useCompactUI ? "gap-1.5" : "gap-3",
-          fontSize: "text-[9px]",
-          badge: "bg-fuchsia-500/20 text-fuchsia-400 border border-fuchsia-500/30",
-          desc: "Galaxy A23 (Ultra panorámico 20:9 / 2.22)",
-          containerPadding: useCompactUI ? "p-1.5 sm:p-2" : "p-4 md:p-6",
-          statsPadding: useCompactUI ? "p-2" : "p-3.5",
-          statsTitle: useCompactUI ? "text-xs" : "text-base",
-          statsText: useCompactUI ? "text-[8px]" : "text-[9px]",
-          btnSize: useCompactUI ? "w-8 h-8" : "w-11 h-11",
-          btnIcon: useCompactUI ? "text-[11px]" : "text-base"
-        };
-      default:
-        return {
-          name: "Adaptable Auto",
-          joystickSize: autoJoystickPx,
-          jumpButtonSize: isPortrait || isVeryCompactHeight ? "w-10 h-10" : useCompactUI ? "w-11 h-11" : "w-14 h-14",
-          hotbarScale: autoHotbarScaleClass,
-          controlPadding: isPortrait ? "px-2 pb-2 pt-0.5" : useCompactUI ? "px-2.5 pb-1.5 pt-0.5" : "px-6 pb-4 pt-2",
-          marginClass: useCompactUI ? "mb-1 mx-2 px-1" : "mb-3 mx-4 px-2",
-          gapClass: useCompactUI ? "gap-1.5" : "gap-4",
-          fontSize: "text-[10px]",
-          badge: "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30",
-          desc: "Estándar auto-adaptable fluido a cualquier pantalla",
-          containerPadding: useCompactUI ? "p-1.5 sm:p-2" : "p-4 md:p-6",
-          statsPadding: isVeryCompactHeight ? "p-1.5" : useCompactUI ? "p-2" : "p-3.5",
-          statsTitle: useCompactUI ? "text-xs sm:text-sm" : "text-lg",
-          statsText: useCompactUI ? "text-[8px]" : "text-[9px]",
-          btnSize: isVeryCompactHeight ? "w-8 h-8" : useCompactUI ? "w-8 h-8 sm:w-9 sm:h-9" : "w-11 h-11",
-          btnIcon: useCompactUI ? "text-xs" : "text-base"
-        };
+  const autoJoystickPx = Math.round(
+    Math.max(76, Math.min(146, autoMinDim * (isPortrait ? 0.215 : 0.225)))
+  );
+  const isTvEnvironment = isPs4ConsoleBrowser || !isTouchDevice && gamepadInfo.connected && screenSize.width >= 960 && screenSize.height >= 540;
+  const isTvModeActive = tvDisplayMode === "tv" ? true : tvDisplayMode === "standard" ? false : isTvEnvironment;
+  const effectiveTvOverscan = tvOverscanCustom !== null ? tvOverscanCustom : isTvModeActive ? 94 : 100;
+  const autoTvUiScale = (() => {
+    if (!isTvModeActive) {
+      if (screenSize.width >= 2200 && screenSize.height >= 1200) return 1.1;
+      return 1;
     }
+    if (screenSize.height >= 1800 || screenSize.width >= 3200) return 1.24;
+    if (screenSize.height >= 1e3 || screenSize.width >= 1800) return 1.14;
+    if (screenSize.height >= 680 || screenSize.width >= 1200) return 1.04;
+    return 0.96;
+  })();
+  const effectiveTvUiScale = tvUiScaleCustom !== null ? tvUiScaleCustom : autoTvUiScale;
+  reactExports.useEffect(() => {
+    applyTvSafeCssVars(effectiveTvOverscan, isTvModeActive, effectiveTvUiScale, gamepadInfo.connected);
+  }, [effectiveTvOverscan, isTvModeActive, effectiveTvUiScale, gamepadInfo.connected]);
+  reactExports.useEffect(() => {
+    const syncFs = () => setIsFullscreen(Boolean(document.fullscreenElement));
+    document.addEventListener("fullscreenchange", syncFs);
+    return () => {
+      document.removeEventListener("fullscreenchange", syncFs);
+      if (tvBorderGuideTimerRef.current) clearTimeout(tvBorderGuideTimerRef.current);
+    };
+  }, []);
+  const uiScaleConfig = (() => {
+    const isLargeScreen = autoMinDim >= 720 && screenSize.width >= 960;
+    const isFourKTv = isTvModeActive && (screenSize.width >= 2500 || screenSize.height >= 1400);
+    const hotbarScale = isPortrait ? screenSize.width < 365 ? "scale-[0.80] origin-bottom" : screenSize.width < 430 ? "scale-[0.88] origin-bottom" : "scale-[0.94] origin-bottom" : isVeryCompactHeight ? "scale-[0.76] origin-bottom" : useCompactUI ? "scale-[0.85] origin-bottom" : isFourKTv ? "scale-[1.18] origin-bottom" : isTvModeActive || isLargeScreen ? "scale-[1.08] origin-bottom" : "scale-100 origin-bottom";
+    const controlPadding = isPortrait ? "px-2.5 pb-2 pt-0.5" : isUltraWide ? useCompactUI ? "px-4 pb-1.5 pt-0.5" : "px-8 pb-4 pt-1.5" : useCompactUI ? "px-3 pb-1.5 pt-0.5" : isTvModeActive ? "px-8 pb-5 pt-2" : "px-6 pb-4 pt-2";
+    return {
+      joystickSize: autoJoystickPx,
+      jumpButtonSize: isPortrait || isVeryCompactHeight ? autoMinDim < 360 ? "w-9.5 h-9.5" : "w-10.5 h-10.5" : useCompactUI ? "w-11 h-11" : isLargeScreen ? "w-16 h-16" : "w-14 h-14",
+      hotbarScale,
+      controlPadding,
+      gapClass: isPortrait ? "gap-1.5" : useCompactUI ? "gap-2" : "gap-4",
+      containerPadding: useCompactUI ? "p-1.5 sm:p-2.5" : isTvModeActive ? "p-5 md:p-6" : "p-4 md:p-5",
+      statsPadding: isVeryCompactHeight ? "p-1.5" : useCompactUI ? "p-2" : isTvModeActive ? "p-3.5" : "p-3",
+      statsTitle: useCompactUI ? "text-xs sm:text-sm" : isTvModeActive ? "text-lg sm:text-xl" : "text-base sm:text-lg",
+      statsText: useCompactUI ? "text-[8px]" : isTvModeActive ? "text-[10.5px]" : "text-[9px]",
+      btnSize: isVeryCompactHeight ? "w-8 h-8" : useCompactUI ? "w-8.5 h-8.5 sm:w-9.5 sm:h-9.5" : isTvModeActive ? "w-12 h-12" : "w-11 h-11",
+      btnIcon: useCompactUI ? "text-xs" : isTvModeActive ? "text-lg" : "text-base"
+    };
   })();
   reactExports.useEffect(() => {
     var _a2, _b2, _c2, _d;
@@ -20588,10 +20718,10 @@ const App = () => {
       });
     }
     setCurrentWorld(updatedWorld);
-    setScreenshotToast(
+    setHudToast(
       isFirestoreWritePaused() ? lang === "es" ? "¡Guardado localmente (cuota en nube pausada)!" : "Saved locally (cloud quota paused)!" : lang === "es" ? "¡Mundo guardado con éxito!" : "World saved successfully!"
     );
-    setTimeout(() => setScreenshotToast(null), 2500);
+    setTimeout(() => setHudToast(null), 2500);
   };
   const handleExportWorld = () => {
     if (!currentWorld) return;
@@ -20607,8 +20737,8 @@ const App = () => {
     document.body.appendChild(downloadAnchor);
     downloadAnchor.click();
     downloadAnchor.remove();
-    setScreenshotToast(lang === "es" ? "¡Mundo exportado como JSON!" : "World exported as JSON!");
-    setTimeout(() => setScreenshotToast(null), 2500);
+    setHudToast(lang === "es" ? "¡Mundo exportado como JSON!" : "World exported as JSON!");
+    setTimeout(() => setHudToast(null), 2500);
   };
   const handleImportWorld = (e) => {
     var _a2;
@@ -20638,11 +20768,11 @@ const App = () => {
             return next;
           });
         }
-        setScreenshotToast(lang === "es" ? "¡Mundo importado correctamente!" : "World imported successfully!");
-        setTimeout(() => setScreenshotToast(null), 2500);
+        setHudToast(lang === "es" ? "¡Mundo importado correctamente!" : "World imported successfully!");
+        setTimeout(() => setHudToast(null), 2500);
       } catch (err) {
-        setScreenshotToast(lang === "es" ? "Error al importar el archivo" : "Error importing file");
-        setTimeout(() => setScreenshotToast(null), 2500);
+        setHudToast(lang === "es" ? "Error al importar el archivo" : "Error importing file");
+        setTimeout(() => setHudToast(null), 2500);
       }
     };
     reader.readAsText(file);
@@ -20904,6 +21034,358 @@ const App = () => {
       window.removeEventListener("blur", handleBlur);
     };
   }, [appState]);
+  const gamepadLiveRef = reactExports.useRef({
+    appState,
+    lang,
+    currentBlock,
+    buildBrush,
+    isInventoryOpen,
+    isGameMenuOpen,
+    isChatOpen,
+    isFurnaceOpen,
+    isChestOpen,
+    isCartographyOpen,
+    isMapOpen,
+    isRealmsOpen,
+    isLeaderboardOpen,
+    isFriendsOpen,
+    isShopOpen,
+    hasCurrentWorld: Boolean(currentWorld),
+    gamepadSensitivity,
+    gamepadInvertY,
+    handleAttack,
+    startContinuousPlace,
+    stopContinuousPlace
+  });
+  gamepadLiveRef.current = {
+    appState,
+    lang,
+    currentBlock,
+    buildBrush,
+    isInventoryOpen,
+    isGameMenuOpen,
+    isChatOpen,
+    isFurnaceOpen,
+    isChestOpen,
+    isCartographyOpen,
+    isMapOpen,
+    isRealmsOpen,
+    isLeaderboardOpen,
+    isFriendsOpen,
+    isShopOpen,
+    hasCurrentWorld: Boolean(currentWorld),
+    gamepadSensitivity,
+    gamepadInvertY,
+    handleAttack,
+    startContinuousPlace,
+    stopContinuousPlace
+  };
+  reactExports.useEffect(() => {
+    const syncGamepadConnection = (announce) => {
+      const next = findConnectedGamepad();
+      setGamepadInfo((prev) => {
+        if (prev.connected === next.connected && prev.index === next.index && prev.isPlayStation === next.isPlayStation && prev.name === next.name) {
+          return prev;
+        }
+        if (announce && next.connected && !prev.connected) {
+          const msg = next.isPlayStation ? gamepadLiveRef.current.lang === "es" ? "🎮 Mando PS4 DualShock 4 conectado" : "🎮 PS4 DualShock 4 connected" : gamepadLiveRef.current.lang === "es" ? "🎮 Mando conectado" : "🎮 Controller connected";
+          setHudToast(msg);
+          setTimeout(() => setHudToast(null), 2600);
+        }
+        return next;
+      });
+    };
+    const onConnect = () => syncGamepadConnection(true);
+    const onDisconnect = () => syncGamepadConnection(false);
+    window.addEventListener("gamepadconnected", onConnect);
+    window.addEventListener("gamepaddisconnected", onDisconnect);
+    syncGamepadConnection(false);
+    const pollInterval = setInterval(() => {
+      syncGamepadConnection(true);
+    }, 1500);
+    return () => {
+      window.removeEventListener("gamepadconnected", onConnect);
+      window.removeEventListener("gamepaddisconnected", onDisconnect);
+      clearInterval(pollInterval);
+    };
+  }, []);
+  reactExports.useEffect(() => {
+    if (!gamepadInfo.connected) return;
+    let rafId = 0;
+    let lastTime = performance.now();
+    const prevButtons = [];
+    let wasStickMoved = false;
+    let wasJumpHeld = false;
+    let wasZoomHeld = false;
+    let wasL2Held = false;
+    let lastR2AttackAt = 0;
+    let navDirHeld = null;
+    let navNextRepeatAt = 0;
+    const btnDown = (pad, idx) => {
+      const b = pad.buttons[idx];
+      if (!b) return false;
+      return Boolean(b.pressed || b.value > 0.35);
+    };
+    const cycleHotbarSlot = (delta) => {
+      const items = inventoryItemsRef.current;
+      if (!items || items.length === 0) return;
+      const curIdx = items.indexOf(gamepadLiveRef.current.currentBlock);
+      const baseIdx = curIdx >= 0 ? curIdx : 0;
+      const nextIdx = (baseIdx + delta + items.length) % items.length;
+      setCurrentBlock(items[nextIdx]);
+      setInteractionMode("place");
+    };
+    const closeTopModalOrBack = () => {
+      const s = gamepadLiveRef.current;
+      if (s.isShopOpen) {
+        setIsShopOpen(false);
+        return true;
+      }
+      if (s.isFriendsOpen) {
+        setIsFriendsOpen(false);
+        return true;
+      }
+      if (s.isLeaderboardOpen) {
+        setIsLeaderboardOpen(false);
+        return true;
+      }
+      if (s.isRealmsOpen) {
+        setIsRealmsOpen(false);
+        return true;
+      }
+      if (s.isChatOpen) {
+        setIsChatOpen(false);
+        return true;
+      }
+      if (s.isFurnaceOpen) {
+        setIsFurnaceOpen(false);
+        return true;
+      }
+      if (s.isChestOpen) {
+        setIsChestOpen(false);
+        return true;
+      }
+      if (s.isCartographyOpen) {
+        setIsCartographyOpen(false);
+        return true;
+      }
+      if (s.isMapOpen) {
+        setIsMapOpen(false);
+        return true;
+      }
+      if (s.isInventoryOpen) {
+        setIsInventoryOpen(false);
+        setIsCraftingTableActive(false);
+        return true;
+      }
+      if (s.isGameMenuOpen) {
+        setIsGameMenuOpen(false);
+        return true;
+      }
+      if (s.appState === "settings") {
+        setAppState(s.hasCurrentWorld ? "playing" : "menu");
+        return true;
+      }
+      return false;
+    };
+    const tick = (now) => {
+      var _a2;
+      const dt = Math.min(0.05, Math.max(4e-3, (now - lastTime) / 1e3));
+      lastTime = now;
+      const pads = (_a2 = navigator.getGamepads) == null ? void 0 : _a2.call(navigator);
+      let pad = (pads == null ? void 0 : pads[gamepadInfo.index]) || null;
+      if (!pad || !pad.connected) {
+        const refound = findConnectedGamepad();
+        if (refound.connected) pad = (pads == null ? void 0 : pads[refound.index]) || null;
+      }
+      if (pad && pad.connected) {
+        const s = gamepadLiveRef.current;
+        const pressedNow = pad.buttons.map((_, idx) => btnDown(pad, idx));
+        const justPressed = (idx) => Boolean(pressedNow[idx] && !prevButtons[idx]);
+        const justReleased = (idx) => Boolean(!pressedNow[idx] && prevButtons[idx]);
+        const hasModalOpen = s.appState !== "playing" || s.isGameMenuOpen || s.isInventoryOpen || s.isChatOpen || s.isFurnaceOpen || s.isChestOpen || s.isCartographyOpen || s.isMapOpen || s.isRealmsOpen || s.isLeaderboardOpen || s.isFriendsOpen || s.isShopOpen;
+        if (justPressed(9) && s.appState === "playing") {
+          resumeAudio();
+          if (s.isInventoryOpen || s.isChatOpen || s.isFurnaceOpen || s.isChestOpen || s.isCartographyOpen || s.isMapOpen) {
+            closeTopModalOrBack();
+          } else {
+            setIsGameMenuOpen((prev) => !prev);
+          }
+        }
+        if ((justPressed(8) || justPressed(17)) && s.appState === "playing" && !s.isGameMenuOpen && !s.isInventoryOpen) {
+          resumeAudio();
+          setIsChatOpen((prev) => !prev);
+        }
+        if (hasModalOpen) {
+          if (wasStickMoved) {
+            moveVectorRef.current.x = 0;
+            moveVectorRef.current.y = 0;
+            wasStickMoved = false;
+          }
+          if (wasJumpHeld && !activeKeys.current[" "]) {
+            setIsJumping(false);
+            wasJumpHeld = false;
+          }
+          if (wasZoomHeld && !activeKeys.current["c"] && !activeKeys.current["z"]) {
+            setIsZooming(false);
+            wasZoomHeld = false;
+          }
+          if (wasL2Held) {
+            s.stopContinuousPlace();
+            wasL2Held = false;
+          }
+          const ax = pad.axes[0] ?? 0;
+          const ay = pad.axes[1] ?? 0;
+          let dir = null;
+          if (pressedNow[12] || ay < -0.58) dir = "up";
+          else if (pressedNow[13] || ay > 0.58) dir = "down";
+          else if (pressedNow[14] || ax < -0.58) dir = "left";
+          else if (pressedNow[15] || ax > 0.58) dir = "right";
+          if (dir) {
+            if (dir !== navDirHeld || now >= navNextRepeatAt) {
+              navigateFocusSpatial(dir);
+              navNextRepeatAt = now + (dir !== navDirHeld ? 290 : 140);
+              navDirHeld = dir;
+            }
+          } else {
+            navDirHeld = null;
+          }
+          if (justPressed(0)) {
+            resumeAudio();
+            activateFocusedElement();
+          }
+          if (justPressed(1)) {
+            resumeAudio();
+            closeTopModalOrBack();
+          }
+          if ((justPressed(4) || justPressed(5)) && s.appState === "settings") {
+            const tabs = ["game", "graphics", "audio", "world", "multiplayer"];
+            const delta = justPressed(5) ? 1 : -1;
+            setSettingsSection((prev) => {
+              const i = tabs.indexOf(prev);
+              return tabs[(i + delta + tabs.length) % tabs.length];
+            });
+          } else if ((justPressed(4) || justPressed(5)) && s.isInventoryOpen) {
+            setInventoryTab((prev) => prev === "items" ? "crafting" : "items");
+          }
+        } else {
+          const rawLx = pad.axes[0] ?? 0;
+          const rawLy = pad.axes[1] ?? 0;
+          const lMag = Math.hypot(rawLx, rawLy);
+          const lDead = 0.16;
+          const kbMoveActive = activeKeys.current["w"] || activeKeys.current["s"] || activeKeys.current["a"] || activeKeys.current["d"] || activeKeys.current["arrowup"] || activeKeys.current["arrowdown"] || activeKeys.current["arrowleft"] || activeKeys.current["arrowright"];
+          if (!kbMoveActive) {
+            if (lMag > lDead) {
+              const norm = Math.min(1, (lMag - lDead) / (1 - lDead));
+              const scale = norm / lMag;
+              moveVectorRef.current.x = rawLx * scale;
+              moveVectorRef.current.y = -rawLy * scale;
+              wasStickMoved = true;
+            } else if (wasStickMoved) {
+              moveVectorRef.current.x = 0;
+              moveVectorRef.current.y = 0;
+              wasStickMoved = false;
+            }
+          }
+          const rawRx = pad.axes[2] ?? 0;
+          const rawRy = pad.axes[3] ?? 0;
+          const rMag = Math.hypot(rawRx, rawRy);
+          const rDead = 0.15;
+          if (rMag > rDead) {
+            const norm = Math.min(1, (rMag - rDead) / (1 - rDead));
+            const curve = Math.pow(norm, 1.55);
+            const speed = 15 * s.gamepadSensitivity * (dt * 60);
+            const lookDx = rawRx / rMag * curve * speed;
+            const lookDy = rawRy / rMag * curve * speed * (s.gamepadInvertY ? -1 : 1);
+            lookOffsetRef.current.x += lookDx;
+            lookOffsetRef.current.y += lookDy;
+          }
+          if (pressedNow[0]) {
+            if (!wasJumpHeld) {
+              setIsJumping(true);
+              wasJumpHeld = true;
+            }
+          } else if (wasJumpHeld) {
+            if (!activeKeys.current[" "]) {
+              setIsJumping(false);
+            }
+            wasJumpHeld = false;
+          }
+          if (justPressed(10)) {
+            setIsZooming((prev) => !prev);
+          }
+          if (pressedNow[1] && !wasZoomHeld) {
+            setIsZooming(true);
+            wasZoomHeld = true;
+          } else if (!pressedNow[1] && wasZoomHeld) {
+            if (!activeKeys.current["c"] && !activeKeys.current["z"]) {
+              setIsZooming(false);
+            }
+            wasZoomHeld = false;
+          }
+          if (justPressed(7) || pressedNow[7] && now - lastR2AttackAt >= 215) {
+            lastR2AttackAt = now;
+            s.handleAttack();
+          }
+          if (justPressed(6)) {
+            wasL2Held = true;
+            s.startContinuousPlace();
+          } else if (justReleased(6) && wasL2Held) {
+            wasL2Held = false;
+            s.stopContinuousPlace();
+          }
+          if (justPressed(4) || justPressed(14)) {
+            resumeAudio();
+            cycleHotbarSlot(-1);
+          }
+          if (justPressed(5) || justPressed(15)) {
+            resumeAudio();
+            cycleHotbarSlot(1);
+          }
+          if (justPressed(3)) {
+            resumeAudio();
+            setIsInventoryOpen(true);
+          }
+          if (justPressed(2)) {
+            resumeAudio();
+            if (s.currentBlock === BlockType.MUSHROOM_RED || s.currentBlock === BlockType.MUSHROOM_BROWN) {
+              gameState.eat(4);
+            } else {
+              const order = ["single", "line3", "wall3x2"];
+              const nextBrush = order[(order.indexOf(s.buildBrush) + 1) % order.length];
+              setBuildBrush(nextBrush);
+              const label = nextBrush === "single" ? "1x1" : nextBrush === "line3" ? s.lang === "es" ? "Fila x3" : "Row x3" : s.lang === "es" ? "Pared 3x2" : "Wall 3x2";
+              setHudToast(`🧱 ${label}`);
+              setTimeout(() => setHudToast(null), 1400);
+            }
+          }
+          if (justPressed(11) || justPressed(12)) {
+            resumeAudio();
+            setPerspective((prev) => prev === "first" ? "third" : prev === "third" ? "second" : "first");
+          }
+          if (justPressed(13)) {
+            resumeAudio();
+            setInteractionMode((prev) => prev === "place" ? "break" : "place");
+          }
+        }
+        for (let i = 0; i < pressedNow.length; i++) {
+          prevButtons[i] = pressedNow[i];
+        }
+      }
+      rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+    return () => {
+      cancelAnimationFrame(rafId);
+      if (wasStickMoved) {
+        moveVectorRef.current.x = 0;
+        moveVectorRef.current.y = 0;
+      }
+      if (wasL2Held) {
+        gamepadLiveRef.current.stopContinuousPlace();
+      }
+    };
+  }, [gamepadInfo.connected, gamepadInfo.index]);
   const lastChunkReactRef = reactExports.useRef({ cx: NaN, cz: NaN, farZone: 0 });
   const handlePosChange = reactExports.useCallback((newPos) => {
     activePlayerPosRef.current = newPos;
@@ -20999,17 +21481,6 @@ const App = () => {
       lastTouchPos.current = null;
     }
   };
-  const handleGetBuildingSuggestion = async () => {
-    resumeAudio();
-    setIsLoadingSuggestion(true);
-    const availableBlocks = inventoryItems.map((item) => BLOCK_NAMES[item]);
-    const biome = activePlayerPosRef.current.y - 55 > 10 ? dict[lang].biome_high : dict[lang].biome_low;
-    const res = await getBuildingSuggestion(biome, availableBlocks);
-    if (res) {
-      setSuggestion(res);
-    }
-    setIsLoadingSuggestion(false);
-  };
   const handleOpenCraftingTable = reactExports.useCallback(() => {
     setIsCraftingTableActive(true);
     setInventoryTab("crafting");
@@ -21019,37 +21490,6 @@ const App = () => {
   const handleOpenCartographyTable = reactExports.useCallback(() => setIsCartographyOpen(true), []);
   const handleOpenChest = reactExports.useCallback(() => setIsChestOpen(true), []);
   const handleUseMap = reactExports.useCallback(() => setIsMapOpen(true), []);
-  const handleCaptureScreenshot = () => {
-    resumeAudio();
-    const captureBridge = window.__captureVoxelScreenshot;
-    const container = document.getElementById("voxel-canvas");
-    const canvas = (container == null ? void 0 : container.tagName) === "CANVAS" ? container : (container == null ? void 0 : container.querySelector("canvas")) || document.querySelector("canvas");
-    if (captureBridge || canvas) {
-      try {
-        setShowCameraFlash(true);
-        setFlashOpacity(1);
-        setTimeout(() => {
-          setFlashOpacity(0);
-        }, 50);
-        setTimeout(() => {
-          setShowCameraFlash(false);
-        }, 550);
-        const dataUrl = captureBridge ? captureBridge() : canvas.toDataURL("image/png");
-        const link = document.createElement("a");
-        link.download = `voxelworld-${Date.now()}.png`;
-        link.href = dataUrl;
-        link.click();
-        setScreenshotToast(t.screenshot_saved);
-        setTimeout(() => {
-          setScreenshotToast(null);
-        }, 3e3);
-      } catch (err) {
-        console.error("Error capturing frame:", err);
-      }
-    } else {
-      console.error("Voxel world canvas element not found");
-    }
-  };
   const t = dict[lang];
   const renderAppScreen = () => {
     var _a2, _b2;
@@ -25619,33 +26059,6 @@ const App = () => {
                   }) })
                 ] }),
                 /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "bg-zinc-900/60 p-3.5 rounded-2xl border border-white/5 flex flex-col gap-2", children: [
-                  /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "text-emerald-400 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5", children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("i", { className: "fas fa-tablet-screen-button text-xs" }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: lang === "es" ? "Ajuste de Pantalla y Tablet" : "Tablet & Screen Profile" })
-                  ] }),
-                  /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "grid grid-cols-2 gap-2", children: [
-                    { code: "auto", name: lang === "es" ? "Auto-Detectar" : "Auto-Detect" },
-                    { code: "redmi", name: "Redmi Pad 8.7" },
-                    { code: "funtouch", name: "Funtouch OS 15" },
-                    { code: "galaxy", name: "Galaxy A23 (20:9)" }
-                  ].map((preset) => {
-                    const isActive = devicePreset === preset.code;
-                    return /* @__PURE__ */ jsxRuntimeExports.jsx(
-                      "button",
-                      {
-                        onClick: () => {
-                          resumeAudio();
-                          setDevicePreset(preset.code);
-                          localStorage.setItem("minecraft_device_preset", preset.code);
-                        },
-                        className: `text-[10px] sm:text-xs py-2 px-2 rounded-xl font-bold border transition-all ${isActive ? "bg-emerald-500 border-transparent text-white shadow-md font-black" : "bg-zinc-850 border-white/5 text-zinc-400 hover:text-white"}`,
-                        children: preset.name
-                      },
-                      preset.code
-                    );
-                  }) })
-                ] }),
-                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "bg-zinc-900/60 p-3.5 rounded-2xl border border-white/5 flex flex-col gap-2", children: [
                   /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center justify-between", children: [
                     /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "text-emerald-400 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5", children: [
                       /* @__PURE__ */ jsxRuntimeExports.jsx("i", { className: "fas fa-rotate text-xs" }),
@@ -25684,9 +26097,302 @@ const App = () => {
                       children: lang === "es" ? "Activar Sensor de Giro en iPhone/Web" : "Enable Gyroscope Sensor"
                     }
                   )
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "bg-zinc-900/60 p-3.5 rounded-2xl border border-indigo-500/25 flex flex-col gap-3", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center justify-between gap-2", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "text-indigo-300 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5", children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("i", { className: "fab fa-playstation text-sm text-sky-400" }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: lang === "es" ? "Soporte PS4 / DualShock 4" : "PS4 / DualShock 4 Support" })
+                    ] }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "span",
+                      {
+                        className: `text-[9px] font-mono font-black px-2 py-0.5 rounded-full border ${gamepadInfo.connected ? "bg-emerald-500/20 border-emerald-400/50 text-emerald-300" : "bg-zinc-800 border-white/10 text-zinc-400"}`,
+                        children: gamepadInfo.connected ? gamepadInfo.isPlayStation ? "DualShock PS4 ✓" : "Gamepad ✓" : lang === "es" ? "Esperando mando..." : "Waiting..."
+                      }
+                    )
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex flex-col gap-1", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex justify-between items-center text-[10px]", children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-zinc-300 font-bold", children: lang === "es" ? "Sensibilidad Cámara (Stick R3)" : "Right Stick Sensitivity" }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "text-white font-mono font-black bg-zinc-800 px-2 py-0.5 rounded-lg border border-white/10", children: [
+                        gamepadSensitivity.toFixed(1),
+                        "x"
+                      ] })
+                    ] }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "input",
+                      {
+                        type: "range",
+                        min: "0.4",
+                        max: "2.4",
+                        step: "0.1",
+                        value: gamepadSensitivity,
+                        onChange: (e) => {
+                          const val = parseFloat(e.target.value);
+                          setGamepadSensitivity(val);
+                          try {
+                            localStorage.setItem("minecraft_gamepad_sens", String(val));
+                          } catch {
+                          }
+                        },
+                        className: "w-full accent-sky-400 h-2 bg-zinc-800 rounded-lg appearance-none cursor-pointer"
+                      }
+                    )
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "grid grid-cols-2 gap-2", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                      "button",
+                      {
+                        type: "button",
+                        onClick: () => {
+                          resumeAudio();
+                          const next = !gamepadInvertY;
+                          setGamepadInvertY(next);
+                          try {
+                            localStorage.setItem("minecraft_gamepad_invert_y", String(next));
+                          } catch {
+                          }
+                        },
+                        className: `py-2 px-2.5 rounded-xl text-[10px] font-bold border transition flex items-center justify-center gap-1.5 ${gamepadInvertY ? "bg-sky-600/35 border-sky-400 text-sky-200" : "bg-zinc-950/60 border-white/10 text-zinc-300 hover:text-white"}`,
+                        children: [
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("i", { className: "fas fa-arrows-up-down" }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: lang === "es" ? `Invertir Eje Y: ${gamepadInvertY ? "SÍ" : "NO"}` : `Invert Y: ${gamepadInvertY ? "ON" : "OFF"}` })
+                        ]
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                      "button",
+                      {
+                        type: "button",
+                        onClick: () => {
+                          resumeAudio();
+                          setSettingsSection("graphics");
+                        },
+                        className: "py-2 px-2.5 rounded-xl text-[10px] font-bold border border-emerald-500/40 bg-emerald-600/20 hover:bg-emerald-600/35 text-emerald-200 transition flex items-center justify-center gap-1.5",
+                        children: [
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("i", { className: "fas fa-tv" }),
+                          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: lang === "es" ? "Ajustar Tamaño TV →" : "Adjust TV Size →" })
+                        ]
+                      }
+                    )
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "grid grid-cols-2 sm:grid-cols-3 gap-1.5 text-[9px] font-mono text-zinc-300 bg-zinc-950/70 p-2.5 rounded-xl border border-white/5", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-sky-300 font-black", children: "L3 Stick" }),
+                      " ",
+                      lang === "es" ? "Mover" : "Move"
+                    ] }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-sky-300 font-black", children: "R3 Stick" }),
+                      " ",
+                      lang === "es" ? "Cámara" : "Look"
+                    ] }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-emerald-300 font-black", children: "✕" }),
+                      " ",
+                      lang === "es" ? "Saltar / Aceptar" : "Jump / OK"
+                    ] }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-rose-300 font-black", children: "R2" }),
+                      " ",
+                      lang === "es" ? "Romper / Atacar" : "Break / Hit"
+                    ] }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-emerald-300 font-black", children: "L2" }),
+                      " ",
+                      lang === "es" ? "Poner / Abrir" : "Place / Use"
+                    ] }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-amber-300 font-black", children: "L1 / R1" }),
+                      " ",
+                      lang === "es" ? "Cambiar Bloque" : "Hotbar"
+                    ] }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-pink-300 font-black", children: "△" }),
+                      " ",
+                      lang === "es" ? "Inventario" : "Inventory"
+                    ] }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-violet-300 font-black", children: "□" }),
+                      " ",
+                      lang === "es" ? "Brocha / Comer" : "Brush / Eat"
+                    ] }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-amber-300 font-black", children: "Options" }),
+                      " ",
+                      lang === "es" ? "Pausa" : "Pause"
+                    ] })
+                  ] })
                 ] })
               ] }),
               settingsSection === "graphics" && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex flex-col w-full gap-4 flex-1 min-h-0 overflow-y-auto pr-1", children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "bg-zinc-900/70 p-3.5 rounded-2xl border border-emerald-500/30 flex flex-col gap-3", children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center justify-between gap-2", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { className: "text-emerald-400 text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5", children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("i", { className: "fas fa-tv text-xs" }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: lang === "es" ? "Tamaño de Televisión y Área Segura" : "TV Display Size & Safe Area" })
+                    ] }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "text-[9px] font-mono text-zinc-300 bg-zinc-800 px-2 py-0.5 rounded-lg border border-white/10", children: [
+                      screenSize.width,
+                      "×",
+                      screenSize.height,
+                      " ",
+                      isTvModeActive ? "• TV" : ""
+                    ] })
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "grid grid-cols-3 gap-2", children: [
+                    { id: "auto", es: "Automático", en: "Auto" },
+                    { id: "tv", es: "Modo TV", en: "TV Mode" },
+                    { id: "standard", es: "Estándar", en: "Standard" }
+                  ].map((opt) => /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "button",
+                    {
+                      type: "button",
+                      onClick: () => {
+                        resumeAudio();
+                        setTvDisplayMode(opt.id);
+                        try {
+                          localStorage.setItem("minecraft_tv_mode", opt.id);
+                        } catch {
+                        }
+                        triggerTvBorderGuide();
+                      },
+                      className: `py-2 px-2 rounded-xl text-[10px] font-bold border transition ${tvDisplayMode === opt.id ? "bg-emerald-500 border-transparent text-white shadow-md font-extrabold" : "bg-zinc-950/60 border-white/10 text-zinc-400 hover:text-white"}`,
+                      children: lang === "es" ? opt.es : opt.en
+                    },
+                    opt.id
+                  )) }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex flex-col gap-1.5", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex justify-between items-center text-[10px]", children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-zinc-300 font-bold", children: lang === "es" ? "Ajuste de Bordes del Televisor (Overscan)" : "TV Screen Border Fit (Overscan)" }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "text-emerald-300 font-mono font-black bg-zinc-800 px-2 py-0.5 rounded-lg border border-white/10", children: [
+                        effectiveTvOverscan,
+                        "%",
+                        tvOverscanCustom === null ? " (Auto)" : ""
+                      ] })
+                    ] }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "input",
+                      {
+                        type: "range",
+                        min: "85",
+                        max: "100",
+                        step: "1",
+                        value: effectiveTvOverscan,
+                        onChange: (e) => {
+                          const val = parseInt(e.target.value, 10);
+                          setTvOverscanCustom(val);
+                          try {
+                            localStorage.setItem("minecraft_tv_overscan", String(val));
+                          } catch {
+                          }
+                          triggerTvBorderGuide();
+                        },
+                        className: "w-full accent-emerald-400 h-2 bg-zinc-800 rounded-lg appearance-none cursor-pointer"
+                      }
+                    ),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "grid grid-cols-5 gap-1.5 mt-0.5", children: [
+                      { val: null, label: "Auto" },
+                      { val: 100, label: "100%" },
+                      { val: 96, label: "96% TV" },
+                      { val: 92, label: "92% TV" },
+                      { val: 88, label: "88%" }
+                    ].map((preset) => {
+                      const isSel = preset.val === null ? tvOverscanCustom === null : tvOverscanCustom === preset.val;
+                      return /* @__PURE__ */ jsxRuntimeExports.jsx(
+                        "button",
+                        {
+                          type: "button",
+                          onClick: () => {
+                            resumeAudio();
+                            setTvOverscanCustom(preset.val);
+                            try {
+                              if (preset.val === null) localStorage.removeItem("minecraft_tv_overscan");
+                              else localStorage.setItem("minecraft_tv_overscan", String(preset.val));
+                            } catch {
+                            }
+                            triggerTvBorderGuide();
+                          },
+                          className: `py-1 rounded-lg text-[9px] font-bold border transition ${isSel ? "bg-emerald-600/40 border-emerald-400 text-white" : "bg-zinc-950/60 border-white/10 text-zinc-400 hover:text-white"}`,
+                          children: preset.label
+                        },
+                        preset.label
+                      );
+                    }) })
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex flex-col gap-1.5", children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex justify-between items-center text-[10px]", children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-zinc-300 font-bold", children: lang === "es" ? "Tamaño de Interfaz en Televisión" : "TV UI Scale" }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center gap-1.5", children: [
+                        /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "text-white font-mono font-black bg-zinc-800 px-2 py-0.5 rounded-lg border border-white/10", children: [
+                          Math.round(effectiveTvUiScale * 100),
+                          "%",
+                          tvUiScaleCustom === null ? " (Auto)" : ""
+                        ] }),
+                        tvUiScaleCustom !== null && /* @__PURE__ */ jsxRuntimeExports.jsx(
+                          "button",
+                          {
+                            type: "button",
+                            onClick: () => {
+                              setTvUiScaleCustom(null);
+                              try {
+                                localStorage.removeItem("minecraft_tv_ui_scale");
+                              } catch {
+                              }
+                            },
+                            className: "text-[9px] bg-zinc-800 hover:bg-zinc-700 text-emerald-300 px-2 py-0.5 rounded-lg border border-white/10 font-bold",
+                            children: "Auto"
+                          }
+                        )
+                      ] })
+                    ] }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsx(
+                      "input",
+                      {
+                        type: "range",
+                        min: "0.85",
+                        max: "1.35",
+                        step: "0.05",
+                        value: effectiveTvUiScale,
+                        onChange: (e) => {
+                          const val = parseFloat(e.target.value);
+                          setTvUiScaleCustom(val);
+                          try {
+                            localStorage.setItem("minecraft_tv_ui_scale", String(val));
+                          } catch {
+                          }
+                        },
+                        className: "w-full accent-emerald-400 h-2 bg-zinc-800 rounded-lg appearance-none cursor-pointer"
+                      }
+                    )
+                  ] }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                    "button",
+                    {
+                      type: "button",
+                      onClick: () => {
+                        var _a3, _b3, _c2;
+                        resumeAudio();
+                        try {
+                          if (!document.fullscreenElement) {
+                            (_b3 = (_a3 = document.documentElement).requestFullscreen) == null ? void 0 : _b3.call(_a3).catch(() => {
+                            });
+                          } else {
+                            (_c2 = document.exitFullscreen) == null ? void 0 : _c2.call(document).catch(() => {
+                            });
+                          }
+                        } catch {
+                        }
+                      },
+                      className: "w-full py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 border border-white/10 text-white text-[10px] font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition",
+                      children: [
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("i", { className: `fas ${isFullscreen ? "fa-compress" : "fa-expand"} text-emerald-400` }),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: isFullscreen ? lang === "es" ? "Salir de Pantalla Completa" : "Exit Fullscreen" : lang === "es" ? "Pantalla Completa para TV" : "TV Fullscreen Mode" })
+                      ]
+                    }
+                  )
+                ] }),
                 /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "bg-zinc-900/60 p-3.5 rounded-2xl border border-white/5 flex items-center justify-between", children: [
                   /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex flex-col", children: [
                     /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "text-white font-bold text-xs flex items-center gap-2", children: [
@@ -26080,8 +26786,8 @@ const App = () => {
                           setPlayerPos(farPos);
                           activePlayerPosRef.current = farPos;
                           setAppState("playing");
-                          setScreenshotToast(lang === "es" ? "👾 ¡Viajado a los FAR LANDS (X:1515, Z:1515)!" : "👾 Traveled to the FAR LANDS (X:1515, Z:1515)!");
-                          setTimeout(() => setScreenshotToast(null), 3e3);
+                          setHudToast(lang === "es" ? "👾 ¡Viajado a los FAR LANDS (X:1515, Z:1515)!" : "👾 Traveled to the FAR LANDS (X:1515, Z:1515)!");
+                          setTimeout(() => setHudToast(null), 3e3);
                         },
                         className: "col-span-2 bg-gradient-to-r from-amber-600 to-yellow-600 hover:from-amber-500 hover:to-yellow-500 py-2.5 rounded-xl text-white font-black text-xs uppercase flex items-center justify-center gap-2 transition active:scale-95 shadow-lg border border-yellow-400/30",
                         children: [
@@ -26193,8 +26899,8 @@ const App = () => {
                           onClick: () => {
                             var _a3;
                             (_a3 = navigator.clipboard) == null ? void 0 : _a3.writeText(currentWorld.id);
-                            setScreenshotToast(lang === "es" ? "🌍 Código del mundo copiado" : "🌍 World code copied");
-                            setTimeout(() => setScreenshotToast(null), 2500);
+                            setHudToast(lang === "es" ? "🌍 Código del mundo copiado" : "🌍 World code copied");
+                            setTimeout(() => setHudToast(null), 2500);
                           },
                           className: "bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-bold px-2.5 py-1 rounded-lg shrink-0 active:scale-95",
                           children: [
@@ -26214,8 +26920,8 @@ const App = () => {
                         onClick: () => {
                           var _a3;
                           (_a3 = navigator.clipboard) == null ? void 0 : _a3.writeText(currentUniqueId);
-                          setScreenshotToast(lang === "es" ? "📋 ID de jugador copiado al portapapeles" : "📋 Player ID copied to clipboard");
-                          setTimeout(() => setScreenshotToast(null), 2500);
+                          setHudToast(lang === "es" ? "📋 ID de jugador copiado al portapapeles" : "📋 Player ID copied to clipboard");
+                          setTimeout(() => setHudToast(null), 2500);
                         },
                         className: "bg-zinc-800 hover:bg-zinc-700 text-white text-[10px] font-bold px-2.5 py-1 rounded-lg shrink-0 border border-white/10 active:scale-95",
                         children: [
@@ -26283,8 +26989,8 @@ const App = () => {
                                 setPlayerPos(tpPos);
                                 activePlayerPosRef.current = tpPos;
                                 setAppState("playing");
-                                setScreenshotToast(`🌀 Teletransportado hacia ${p.name}`);
-                                setTimeout(() => setScreenshotToast(null), 2500);
+                                setHudToast(`🌀 Teletransportado hacia ${p.name}`);
+                                setTimeout(() => setHudToast(null), 2500);
                               },
                               className: "bg-sky-600 hover:bg-sky-500 text-white text-[9px] font-black px-2 py-1 rounded-lg uppercase active:scale-95",
                               children: "TP"
@@ -26522,7 +27228,7 @@ const App = () => {
             ((currentWorld == null ? void 0 : currentWorld.id) || "temp") + "_" + dimension
           ),
           /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none opacity-30", children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "w-5 h-5 border border-white/50 rounded-full flex items-center justify-center", children: /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "w-0.5 h-0.5 bg-white" }) }) }),
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "fixed inset-0 z-20 pointer-events-none overflow-hidden select-none safe-area-inset", children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "fixed inset-0 z-20 pointer-events-none overflow-hidden select-none safe-area-inset", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "relative w-full h-full", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: `absolute top-0 left-0 flex flex-col gap-1.5 items-start ${isPortrait ? "max-w-[calc(100%-72px)]" : "max-w-[230px] sm:max-w-[280px]"} pointer-events-none ${uiScaleConfig.containerPadding}`, children: [
               /* @__PURE__ */ jsxRuntimeExports.jsxs(
                 "div",
@@ -26551,51 +27257,6 @@ const App = () => {
                       " | ",
                       /* @__PURE__ */ jsxRuntimeExports.jsx(FpsCounter, {})
                     ] }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsxs(
-                      "div",
-                      {
-                        onClick: (e) => {
-                          e.stopPropagation();
-                          resumeAudio();
-                          const presets = ["auto", "redmi", "funtouch", "galaxy"];
-                          const nextIndex = (presets.indexOf(devicePreset) + 1) % presets.length;
-                          const nextPreset = presets[nextIndex];
-                          setDevicePreset(nextPreset);
-                          localStorage.setItem("minecraft_device_preset", nextPreset);
-                        },
-                        className: `mt-2 px-2 py-1.5 rounded-lg text-[8px] font-mono leading-tight transition-all flex flex-col gap-0.5 pointer-events-auto cursor-pointer select-none hover:bg-white/5 active:scale-97 border ${uiScaleConfig.badge}`,
-                        title: "Toca para cambiar perfil de pantalla",
-                        children: [
-                          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center justify-between gap-1 font-bold uppercase", children: [
-                            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center gap-1", children: [
-                              /* @__PURE__ */ jsxRuntimeExports.jsx("i", { className: "fas fa-tablet-screen-button text-[9px] animate-pulse" }),
-                              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "Soporte de Pantalla" })
-                            ] }),
-                            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "text-[7px] bg-white/20 px-1 rounded uppercase tracking-tighter", children: "Tap 🔄" })
-                          ] }),
-                          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
-                            "Tam: ",
-                            screenSize.width,
-                            "x",
-                            screenSize.height,
-                            " (R: ",
-                            screenSize.aspectRatio.toFixed(2),
-                            ")"
-                          ] }),
-                          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "text-[7.5px] opacity-90 border-t border-white/5 pt-0.5 mt-0.5 flex justify-between items-center", children: [
-                            /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { children: [
-                              "Perfil: ",
-                              /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { children: uiScaleConfig.name })
-                            ] }),
-                            /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "text-[6.5px] text-white/50 lowercase", children: [
-                              "(",
-                              lang === "es" ? "tocar" : "cycle",
-                              ")"
-                            ] })
-                          ] })
-                        ]
-                      }
-                    ),
                     activeRealmId && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "mt-2 flex items-center gap-1.5", children: [
                       /* @__PURE__ */ jsxRuntimeExports.jsxs(
                         "button",
@@ -26997,36 +27658,6 @@ const App = () => {
                 /* @__PURE__ */ jsxRuntimeExports.jsx(
                   "button",
                   {
-                    onClick: handleGetBuildingSuggestion,
-                    onPointerDown: (e) => e.stopPropagation(),
-                    onTouchStart: (e) => e.stopPropagation(),
-                    disabled: isLoadingSuggestion,
-                    className: `bg-indigo-600/90 rounded-2xl shadow-xl active:scale-90 text-white flex items-center justify-center transition-all hover:bg-indigo-500 ${uiScaleConfig.btnSize}`,
-                    title: "Sugerencia de construcción",
-                    id: "wand-btn",
-                    children: /* @__PURE__ */ jsxRuntimeExports.jsx(
-                      "i",
-                      {
-                        className: `fas ${uiScaleConfig.btnIcon} ${isLoadingSuggestion ? "fa-spinner fa-spin" : "fa-wand-sparkles"}`
-                      }
-                    )
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "button",
-                  {
-                    onClick: handleCaptureScreenshot,
-                    onPointerDown: (e) => e.stopPropagation(),
-                    onTouchStart: (e) => e.stopPropagation(),
-                    className: `bg-teal-600/95 hover:bg-teal-500 rounded-2xl shadow-xl active:scale-90 text-white flex items-center justify-center transition-all ${uiScaleConfig.btnSize}`,
-                    title: "Capturar pantalla",
-                    id: "camera-btn",
-                    children: /* @__PURE__ */ jsxRuntimeExports.jsx("i", { className: `fas fa-camera ${uiScaleConfig.btnIcon}` })
-                  }
-                ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(
-                  "button",
-                  {
                     onPointerDown: (e) => {
                       e.stopPropagation();
                       setIsZooming(true);
@@ -27340,6 +27971,49 @@ const App = () => {
                       screenRotationDeg: virtualRotationDeg
                     }
                   )
+                }
+              ) : gamepadInfo.connected ? /* @__PURE__ */ jsxRuntimeExports.jsxs(
+                "div",
+                {
+                  className: "pointer-events-auto flex flex-col gap-2 bg-black/80 p-3.5 sm:p-4 rounded-2xl border border-indigo-400/30 text-white select-none max-w-xs transition-all mb-2",
+                  onPointerDown: (e) => e.stopPropagation(),
+                  onTouchStart: (e) => e.stopPropagation(),
+                  children: [
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("h3", { className: "text-sky-300 text-[10px] uppercase font-bold tracking-wider mb-0.5 flex items-center gap-1.5 font-sans", children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("i", { className: "fab fa-playstation text-xs text-sky-400" }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: gamepadInfo.isPlayStation ? "Controles PS4 (DualShock 4)" : "Controles Mando" })
+                    ] }),
+                    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "grid grid-cols-2 gap-x-3.5 gap-y-1.5 text-[10px] text-zinc-300 font-mono", children: [
+                      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center gap-1.5", children: [
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "bg-black/60 border border-white/15 px-1.5 py-0.5 rounded text-sky-200 font-extrabold", children: "L3 / R3" }),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "Mover/Ver" })
+                      ] }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center gap-1.5", children: [
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "bg-black/60 border border-white/15 px-1.5 py-0.5 rounded text-emerald-300 font-extrabold", children: "✕" }),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "Saltar" })
+                      ] }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center gap-1.5", children: [
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "bg-black/60 border border-white/15 px-1.5 py-0.5 rounded text-rose-300 font-extrabold", children: "R2" }),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "Romper" })
+                      ] }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center gap-1.5", children: [
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "bg-black/60 border border-white/15 px-1.5 py-0.5 rounded text-emerald-300 font-extrabold", children: "L2" }),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "Poner/Abrir" })
+                      ] }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center gap-1.5", children: [
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "bg-black/60 border border-white/15 px-1.5 py-0.5 rounded text-amber-300 font-extrabold", children: "L1 / R1" }),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "Bloques" })
+                      ] }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center gap-1.5", children: [
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "bg-black/60 border border-white/15 px-1.5 py-0.5 rounded text-pink-300 font-extrabold", children: "△ / □" }),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "Inv / Brocha" })
+                      ] }),
+                      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-center gap-1.5 col-span-2 border-t border-white/5 pt-1", children: [
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "bg-black/60 border border-white/15 px-1.5 py-0.5 rounded text-white font-extrabold", children: "Options" }),
+                        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: "Pausa • L3 Zoom • R3 Cámara" })
+                      ] })
+                    ] })
+                  ]
                 }
               ) : /* @__PURE__ */ jsxRuntimeExports.jsxs(
                 "div",
@@ -27674,7 +28348,7 @@ const App = () => {
                 }
               ) : /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "w-10 sm:w-16 pointer-events-none" })
             ] })
-          ] }),
+          ] }) }),
           isInventoryOpen && /* @__PURE__ */ jsxRuntimeExports.jsxs(
             "div",
             {
@@ -27810,8 +28484,8 @@ const App = () => {
                           e.stopPropagation();
                           resumeAudio();
                           if (!isAvailable) {
-                            setScreenshotToast(lang === "es" ? `Tienes 0 unidades de ${blockName}. Consíguelo o fabrícalo.` : `You have 0 of ${blockName}. Craft or gather it.`);
-                            setTimeout(() => setScreenshotToast(null), 2500);
+                            setHudToast(lang === "es" ? `Tienes 0 unidades de ${blockName}. Consíguelo o fabrícalo.` : `You have 0 of ${blockName}. Craft or gather it.`);
+                            setTimeout(() => setHudToast(null), 2500);
                             return;
                           }
                           setCurrentBlock(tVal);
@@ -27992,64 +28666,9 @@ const App = () => {
               ]
             }
           ),
-          suggestion && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "fixed inset-0 z-[110] bg-indigo-950/85 flex flex-col items-center justify-start safe-area-inset p-2 sm:p-5 overflow-y-auto overscroll-contain", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "bg-zinc-900 border-2 border-indigo-500/50 rounded-3xl w-full max-w-[min(28rem,calc(100vw-1rem))] p-4 sm:p-6 max-h-[calc(100dvh-1rem)] overflow-y-auto my-auto shadow-2xl animate-in fade-in zoom-in duration-300", children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex justify-between items-center mb-6", children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "bg-indigo-600/30 text-indigo-400 px-3 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider border border-indigo-500/20", children: t.suggestion_title }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx(
-                "button",
-                {
-                  onClick: () => setSuggestion(null),
-                  className: "text-white/40 hover:text-white transition-colors",
-                  children: /* @__PURE__ */ jsxRuntimeExports.jsx("i", { className: "fas fa-times" })
-                }
-              )
-            ] }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("h2", { className: "text-white text-2xl font-bold mb-3 minecraft-font uppercase", children: suggestion.title }),
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("p", { className: "text-white/60 text-sm mb-6 leading-relaxed italic", children: [
-              '"',
-              suggestion.description,
-              '"'
-            ] }),
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "space-y-3", children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("p", { className: "text-[10px] text-emerald-400 font-bold uppercase mb-2 flex items-center gap-2", children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("i", { className: "fas fa-list-check" }),
-                " ",
-                t.steps
-              ] }),
-              suggestion.steps.map((step, i) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
-                "div",
-                {
-                  className: "flex gap-3 text-sm text-white/90 bg-white/5 p-3 rounded-xl border border-white/5",
-                  children: [
-                    /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { className: "text-emerald-500 font-bold", children: [
-                      i + 1,
-                      "."
-                    ] }),
-                    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: step })
-                  ]
-                },
-                i
-              ))
-            ] }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx(
-              "button",
-              {
-                onClick: () => setSuggestion(null),
-                className: "w-full mt-8 bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-4 rounded-2xl transition-all active:scale-95 shadow-lg shadow-indigo-500/20",
-                children: t.great
-              }
-            )
-          ] }) }),
-          showCameraFlash && /* @__PURE__ */ jsxRuntimeExports.jsx(
-            "div",
-            {
-              className: "fixed inset-0 bg-white pointer-events-none z-[99999] transition-opacity duration-500 ease-out",
-              style: { opacity: flashOpacity }
-            }
-          ),
-          screenshotToast && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "fixed inset-x-0 top-6 px-4 flex justify-center z-[200] pointer-events-none", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "max-w-[90vw] sm:max-w-md bg-black/85 text-white border border-teal-500/30 px-4 py-2.5 rounded-2xl shadow-2xl flex items-center gap-2.5 font-semibold text-xs sm:text-sm text-center break-words", children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsx("i", { className: "fas fa-camera text-teal-400 text-base animate-pulse shrink-0" }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: screenshotToast })
+          hudToast && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "fixed inset-x-0 top-6 px-4 flex justify-center z-[200] pointer-events-none", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "max-w-[90vw] sm:max-w-md bg-black/85 text-white border border-emerald-500/35 px-4 py-2.5 rounded-2xl shadow-2xl flex items-center gap-2.5 font-semibold text-xs sm:text-sm text-center break-words", children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("i", { className: "fas fa-circle-info text-emerald-400 text-base shrink-0" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { children: hudToast })
           ] }) }),
           firestoreQuotaPaused && !quotaBannerDismissed && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "fixed inset-x-0 bottom-4 px-3 sm:px-4 flex justify-center z-[210] pointer-events-none", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "pointer-events-auto max-w-lg w-full bg-zinc-950/95 text-white border border-amber-500/50 px-3.5 py-2.5 rounded-xl shadow-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs", children: [
             /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "flex items-start gap-2", children: [
@@ -28313,8 +28932,8 @@ const App = () => {
                           onClick: () => {
                             var _a3;
                             (_a3 = navigator.clipboard) == null ? void 0 : _a3.writeText(currentWorld.id);
-                            setScreenshotToast(lang === "es" ? "🌍 Código copiado" : "🌍 Code copied");
-                            setTimeout(() => setScreenshotToast(null), 2e3);
+                            setHudToast(lang === "es" ? "🌍 Código copiado" : "🌍 Code copied");
+                            setTimeout(() => setHudToast(null), 2e3);
                           },
                           className: "bg-emerald-600 hover:bg-emerald-500 text-white text-[9px] font-bold px-2 py-1 rounded shrink-0 active:scale-95",
                           children: [
@@ -28640,6 +29259,22 @@ const App = () => {
       className: virtualRotationDeg !== 0 ? "fixed top-1/2 left-1/2 origin-center overflow-hidden bg-[#09090b]" : "fixed inset-0 w-full h-full overflow-hidden bg-[#09090b]",
       children: [
         renderAppScreen(),
+        showTvBorderGuide && /* @__PURE__ */ jsxRuntimeExports.jsx(
+          "div",
+          {
+            className: "fixed inset-0 z-[200000] pointer-events-none",
+            style: {
+              padding: "var(--tv-safe-y, 0px) var(--tv-safe-x, 0px)"
+            },
+            children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "relative w-full h-full border-2 border-dashed border-emerald-400/75 rounded-lg", children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "absolute -top-0.5 -left-0.5 w-8 h-8 border-t-4 border-l-4 border-emerald-400" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "absolute -top-0.5 -right-0.5 w-8 h-8 border-t-4 border-r-4 border-emerald-400" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "absolute -bottom-0.5 -left-0.5 w-8 h-8 border-b-4 border-l-4 border-emerald-400" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "absolute -bottom-0.5 -right-0.5 w-8 h-8 border-b-4 border-r-4 border-emerald-400" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "absolute top-2 left-1/2 -translate-x-1/2 bg-black/85 border border-emerald-400/60 text-emerald-300 font-mono text-xs font-bold px-3 py-1 rounded-lg shadow-xl", children: lang === "es" ? `📺 Área Segura TV: ${effectiveTvOverscan}%` : `📺 TV Safe Area: ${effectiveTvOverscan}%` })
+            ] })
+          }
+        ),
         /* @__PURE__ */ jsxRuntimeExports.jsx(
           CatEasterEggs,
           {

@@ -63,53 +63,6 @@ async function startServer() {
     });
   });
 
-  app.post("/api/gemini/suggest-build", async (req, res) => {
-    const ai = createGeminiClient();
-    if (!ai) {
-      return res.status(503).json({
-        error: "GEMINI_API_KEY no está configurada en el servidor (Settings > Secrets).",
-      });
-    }
-
-    try {
-      const biome = String(req.body?.biome || "plains");
-      const availableBlocks = Array.isArray(req.body?.availableBlocks)
-        ? req.body.availableBlocks.slice(0, 20).map(String)
-        : ["WOOD", "STONE", "GLASS"];
-
-      const response = await ai.models.generateContent({
-        model: ACTIVE_GEMINI_FLASH_MODEL,
-        contents: `Suggest a creative Minecraft Infdev structure to build in a ${biome} biome using blocks like ${availableBlocks.join(", ")}. Answer in Spanish.`,
-        config: {
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              title: { type: Type.STRING },
-              description: { type: Type.STRING },
-              steps: {
-                type: Type.ARRAY,
-                items: { type: Type.STRING },
-              },
-            },
-            required: ["title", "description", "steps"],
-          },
-        },
-      });
-
-      const text = response.text;
-      if (!text) {
-        return res.status(502).json({ error: "Empty response from Gemini." });
-      }
-      return res.json(JSON.parse(text));
-    } catch (error) {
-      const mapped = classifyGeminiError(error);
-      console.error("[/api/gemini/suggest-build] Error:", mapped.message);
-      return res.status(mapped.status).json({ error: mapped.message });
-    }
-  });
-
   app.post("/api/gemini/agent-step", async (req, res) => {
     const ai = createGeminiClient();
     if (!ai) {
@@ -239,8 +192,11 @@ async function startServer() {
   } else {
     const distPath = path.join(__dirname, "dist");
     app.use(express.static(distPath));
-    app.get("*", (_req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
+    app.get("/{*splat}", (req, res) => {
+      if (req.path.startsWith("/api/")) {
+        return res.status(404).json({ error: "Not found" });
+      }
+      return res.sendFile(path.join(distPath, "index.html"));
     });
   }
 
