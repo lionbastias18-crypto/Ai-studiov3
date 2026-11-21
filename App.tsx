@@ -3,12 +3,12 @@ import VoxelWorld, { DEFAULT_NOISE_CONFIG } from "./components/VoxelWorld";
 import Joystick from "./components/Joystick";
 import { FpsCounter } from "./components/FpsCounter";
 import { MenuPanorama3D } from "./components/MenuPanorama3D";
-import { BlockType, ToolType, Vector3D, GeminiSuggestion, NoiseConfig, PerformanceConfig, CharacterSkinId, CustomCharacterConfig, ActivePlayerInfo, AICompanionConfig, AICompanionMode, RealmData, RealmPlanTier, RealmWorldMeta, RealmEditorTool, RealmEditorConfig, RealmBatchEditPayload } from "./types";
+import { BlockType, ToolType, Vector3D, GeminiSuggestion, NoiseConfig, PerformanceConfig, CharacterSkinId, CustomCharacterConfig, ActivePlayerInfo, GeminiAgentConfig, GeminiAgentTelemetry, RealmData, RealmPlanTier, RealmWorldMeta, RealmEditorTool, RealmEditorConfig, RealmBatchEditPayload } from "./types";
 import { CharacterModel, CHARACTER_SKINS, DEFAULT_CUSTOM_SKIN } from "./components/CharacterModel";
 import { CharacterPreviewCard } from "./components/CharacterPreviewCard";
 import { CatEasterEggs, CatEasterEggType } from "./components/CatEasterEggs";
 import { BLOCK_NAMES, BLOCK_COLORS } from "./constants";
-import { getBuildingSuggestion, askAICompanion, AICompanionChatAction } from "./services/geminiService";
+import { getBuildingSuggestion, loadGeminiAgentMemory, resetGeminiAgentMemory } from "./services/geminiService";
 import {
   resumeAudio,
   setUseProceduralMusic,
@@ -903,32 +903,35 @@ const App: React.FC = () => {
     moveVectorRef.current.x = 0;
     moveVectorRef.current.y = 0;
   }, []);
-  const [aiCompanionConfig, setAiCompanionConfig] = useState<AICompanionConfig>(() => {
+  const [geminiAgentConfig, setGeminiAgentConfig] = useState<GeminiAgentConfig>(() => {
     try {
-      const saved = localStorage.getItem("voxel_ai_companion");
+      const saved = localStorage.getItem("voxel_gemini_agent_v1");
       if (saved) {
         const parsed = JSON.parse(saved);
         return {
           enabled: !!parsed.enabled,
-          name: parsed.name || "Alex IA",
-          skinId: parsed.skinId || "explorer",
-          mode: parsed.mode || "follow",
+          name: parsed.name || "Gemini IA",
+          skinId: parsed.skinId || "cyber",
+          autonomyStyle: parsed.autonomyStyle || "balanced",
         };
       }
     } catch {}
-    return { enabled: false, name: "Alex IA", skinId: "explorer", mode: "follow" };
+    return { enabled: false, name: "Gemini IA", skinId: "cyber", autonomyStyle: "balanced" };
   });
-  const [isCompanionPanelOpen, setIsCompanionPanelOpen] = useState(false);
-  const [aiCompanionTpTrigger, setAiCompanionTpTrigger] = useState(0);
-  const aiCompanionPosRef = useRef<Vector3D>({ x: 0, y: 80, z: 0 });
-  const aiCompanionBagRef = useRef<Record<number, number>>({});
-  const aiCompanionConfigRef = useRef(aiCompanionConfig);
-  aiCompanionConfigRef.current = aiCompanionConfig;
+  const [isGeminiAgentPanelOpen, setIsGeminiAgentPanelOpen] = useState(false);
+  const [geminiAgentMemoryResetTrigger, setGeminiAgentMemoryResetTrigger] = useState(0);
+  const [geminiAgentChatPrompt, setGeminiAgentChatPrompt] = useState<{ id: number; text: string } | null>(null);
+  const [geminiHudPromptInput, setGeminiHudPromptInput] = useState("");
+  const [geminiAgentTelemetry, setGeminiAgentTelemetry] = useState<GeminiAgentTelemetry | null>(null);
+  const geminiAgentPosRef = useRef<Vector3D>({ x: 0, y: 80, z: 0 });
+  const geminiAgentBagRef = useRef<Record<number, number>>({});
+  const geminiAgentConfigRef = useRef(geminiAgentConfig);
+  geminiAgentConfigRef.current = geminiAgentConfig;
   useEffect(() => {
     try {
-      localStorage.setItem("voxel_ai_companion", JSON.stringify(aiCompanionConfig));
+      localStorage.setItem("voxel_gemini_agent_v1", JSON.stringify(geminiAgentConfig));
     } catch {}
-  }, [aiCompanionConfig]);
+  }, [geminiAgentConfig]);
   const [isInventoryOpen, setIsInventoryOpen] = useState(false);
   const [interactionMode, setInteractionMode] = useState<"break" | "place">(
     "place",
@@ -1466,6 +1469,19 @@ const App: React.FC = () => {
           setPlayerPos(targetPos);
           activePlayerPosRef.current = targetPos;
           setChatMessages((prev) => [...prev, "🌀 [Sistema] Teletransportado a Edge Farlands (X: 1530, Y: 110, Z: 1530)."]);
+        } else if (dest === "ia" || dest === "gemini") {
+          if (!geminiAgentConfigRef.current.enabled) {
+            setChatMessages((prev) => [...prev, "❌ Activa primero la IA Autónoma de Gemini para ir a verla."]);
+          } else {
+            const ap = geminiAgentPosRef.current;
+            const targetPos = { x: ap.x + 2, y: Math.max(4, ap.y), z: ap.z + 2 };
+            setPlayerPos(targetPos);
+            activePlayerPosRef.current = targetPos;
+            setChatMessages((prev) => [
+              ...prev,
+              `📍 [Sistema] Teletransportado junto a ${geminiAgentConfigRef.current.name} (X:${Math.round(ap.x)} Y:${Math.round(ap.y)} Z:${Math.round(ap.z)}).`,
+            ]);
+          }
         } else {
           // Check if destination matches an online player name first
           const targetQuery = (parts.slice(1).join(" ") || "").trim().toLowerCase();
@@ -1497,55 +1513,54 @@ const App: React.FC = () => {
             } else {
               setChatMessages((prev) => [
                 ...prev,
-                "❌ Sintaxis: /tp edge_farlands | /tp [Jugador] | /tp [X] [Y] [Z]"
+                "❌ Sintaxis: /tp ia | /tp edge_farlands | /tp [Jugador] | /tp [X] [Y] [Z]"
               ]);
             }
           }
         }
-      } else if (
-        cmd === "ai" ||
-        cmd === "amigo" ||
-        cmd === "companion" ||
-        cmd === "bot"
-      ) {
+      } else if (cmd === "ia" || cmd === "gemini" || cmd === "ai" || cmd === "bot") {
         const sub = (parts[1] || "").toLowerCase();
-        if (!sub || sub === "on" || sub === "invocar" || sub === "activar") {
-          setAiCompanionConfig((prev) => ({ ...prev, enabled: true }));
-          setChatMessages((prev) => [...prev, `🤖 [${aiCompanionConfigRef.current.name}] ¡Aquí estoy! Listo para jugar contigo.`]);
-        } else if (sub === "off" || sub === "quitar" || sub === "desactivar") {
-          setAiCompanionConfig((prev) => ({ ...prev, enabled: false }));
-          setChatMessages((prev) => [...prev, `🤖 [${aiCompanionConfigRef.current.name}] ¡Nos vemos pronto!`]);
-        } else if (sub === "follow" || sub === "seguir") {
-          setAiCompanionConfig((prev) => ({ ...prev, enabled: true, mode: "follow" }));
-          setChatMessages((prev) => [...prev, `🤖 [${aiCompanionConfigRef.current.name}] Te sigo de cerca.`]);
-        } else if (sub === "gather" || sub === "mine" || sub === "minar" || sub === "talar") {
-          setAiCompanionConfig((prev) => ({ ...prev, enabled: true, mode: "gather" }));
-          setChatMessages((prev) => [...prev, `🤖 [${aiCompanionConfigRef.current.name}] ⛏️ ¡Voy a minar y talar recursos!`]);
-        } else if (sub === "build" || sub === "construir" || sub === "casa") {
-          setAiCompanionConfig((prev) => ({ ...prev, enabled: true, mode: "build" }));
-          setChatMessages((prev) => [...prev, `🤖 [${aiCompanionConfigRef.current.name}] 🏠 ¡Construyendo un refugio cercano!`]);
-        } else if (sub === "guard" || sub === "proteger" || sub === "atacar") {
-          setAiCompanionConfig((prev) => ({ ...prev, enabled: true, mode: "guard" }));
-          setChatMessages((prev) => [...prev, `🤖 [${aiCompanionConfigRef.current.name}] ⚔️ ¡Espada lista para protegerte!`]);
-        } else if (sub === "explore" || sub === "explorar") {
-          setAiCompanionConfig((prev) => ({ ...prev, enabled: true, mode: "explore" }));
-          setChatMessages((prev) => [...prev, `🤖 [${aiCompanionConfigRef.current.name}] 🧭 ¡A explorar los alrededores!`]);
-        } else if (sub === "stay" || sub === "esperar") {
-          setAiCompanionConfig((prev) => ({ ...prev, enabled: true, mode: "stay" }));
-          setChatMessages((prev) => [...prev, `🤖 [${aiCompanionConfigRef.current.name}] 🛑 Me quedo aquí.`]);
-        } else if (sub === "tp" || sub === "ven") {
-          setAiCompanionConfig((prev) => ({ ...prev, enabled: true }));
-          setAiCompanionTpTrigger((t) => t + 1);
-          setChatMessages((prev) => [...prev, `🤖 [${aiCompanionConfigRef.current.name}] ¡Voy hacia ti!`]);
-        } else if (sub === "dar" || sub === "share" || sub === "bloques") {
-          handleShareCompanionBag();
+        if (!sub || sub === "on" || sub === "activar") {
+          setGeminiAgentConfig((prev) => ({ ...prev, enabled: true }));
+          setChatMessages((prev) => [...prev, `✨ [${geminiAgentConfigRef.current.name}] Activada. ¡Explorando y aprendiendo por mi cuenta!`]);
+        } else if (sub === "off" || sub === "desactivar" || sub === "quitar") {
+          setGeminiAgentConfig((prev) => ({ ...prev, enabled: false }));
+          setChatMessages((prev) => [...prev, `✨ [${geminiAgentConfigRef.current.name}] Desactivada.`]);
+        } else if (sub === "miner" || sub === "minar" || sub === "minero") {
+          setGeminiAgentConfig((prev) => ({ ...prev, enabled: true, autonomyStyle: "miner" }));
+          setChatMessages((prev) => [...prev, `✨ [${geminiAgentConfigRef.current.name}] ⛏️ Prioridad cambiada a Minería Autónoma.`]);
+        } else if (sub === "explorer" || sub === "explorar" || sub === "explorador") {
+          setGeminiAgentConfig((prev) => ({ ...prev, enabled: true, autonomyStyle: "explorer" }));
+          setChatMessages((prev) => [...prev, `✨ [${geminiAgentConfigRef.current.name}] 🧭 Prioridad cambiada a Exploración Libre.`]);
+        } else if (sub === "builder" || sub === "construir" || sub === "constructor") {
+          setGeminiAgentConfig((prev) => ({ ...prev, enabled: true, autonomyStyle: "builder" }));
+          setChatMessages((prev) => [...prev, `✨ [${geminiAgentConfigRef.current.name}] 🏠 Prioridad cambiada a Construcción.`]);
+        } else if (sub === "balanced" || sub === "equilibrado") {
+          setGeminiAgentConfig((prev) => ({ ...prev, enabled: true, autonomyStyle: "balanced" }));
+          setChatMessages((prev) => [...prev, `✨ [${geminiAgentConfigRef.current.name}] 🧠 Modo Equilibrado activado.`]);
+        } else if (sub === "ver" || sub === "ir" || sub === "tp") {
+          if (!geminiAgentConfigRef.current.enabled) {
+            setChatMessages((prev) => [...prev, "❌ Activa primero a Gemini IA con /ia on."]);
+          } else {
+            const ap = geminiAgentPosRef.current;
+            const targetPos = { x: ap.x + 2, y: Math.max(4, ap.y), z: ap.z + 2 };
+            setPlayerPos(targetPos);
+            activePlayerPosRef.current = targetPos;
+            setChatMessages((prev) => [...prev, `📍 [Sistema] Viajaste hasta ${geminiAgentConfigRef.current.name} (X:${Math.round(ap.x)} Y:${Math.round(ap.y)} Z:${Math.round(ap.z)}).`]);
+          }
+        } else if (sub === "reset" || sub === "reiniciar") {
+          resetGeminiAgentMemory();
+          setGeminiAgentMemoryResetTrigger((n) => n + 1);
+          setChatMessages((prev) => [...prev, `🧠 [${geminiAgentConfigRef.current.name}] Memoria de aprendizaje reiniciada a Nivel 1.`]);
         } else {
-          triggerCompanionReply(parts.slice(1).join(" "));
+          const promptText = parts.slice(1).join(" ");
+          setGeminiAgentConfig((prev) => ({ ...prev, enabled: true }));
+          setGeminiAgentChatPrompt({ id: Date.now(), text: promptText });
         }
       } else {
         setChatMessages((prev) => [
           ...prev,
-          `❌ Comando desconocido "/${cmd}". Intenta: /day, /night, /heal, /gamemode creative, /ai`
+          `❌ Comando desconocido "/${cmd}". Intenta: /day, /night, /heal, /tp ia, /ia on`
         ]);
       }
     } else {
@@ -1568,82 +1583,42 @@ const App: React.FC = () => {
           }
         });
       }
-      if (aiCompanionConfigRef.current.enabled) {
-        triggerCompanionReply(trimmed);
+      if (geminiAgentConfigRef.current.enabled && /(^|\s)(@?ia|gemini)\b/i.test(trimmed)) {
+        setGeminiAgentChatPrompt({ id: Date.now(), text: trimmed });
       } else if (activePlayers.length === 0) {
-        setChatMessages((prev) => [...prev, "💬 [Chat] Mensaje guardado en el chat del mundo. ¡Comparte el Código del Mundo o activa a tu Amigo IA!"]);
+        setChatMessages((prev) => [...prev, "💬 [Chat] Mensaje guardado en el chat del mundo. Usa /ia <pregunta> para hablar con Gemini IA."]);
       }
     }
   };
 
-  const handleShareCompanionBag = useCallback(() => {
-    const bag = aiCompanionBagRef.current;
-    const entries = Object.entries(bag).filter(([, qty]) => qty > 0);
-    if (entries.length === 0) {
-      setChatMessages((prev) => [
-        ...prev,
-        `🤖 [${aiCompanionConfigRef.current.name}] 🎒 Aún no tengo bloques en mi mochila. ¡Ponme en modo Minar para recolectar!`,
-      ]);
-      return;
-    }
-    setSurvivalInventory((prev) => {
-      const next = { ...prev };
-      for (const [blkStr, qty] of entries) {
-        const blkId = Number(blkStr);
-        next[blkId] = (next[blkId] || 0) + qty;
-      }
-      return next;
-    });
-    const summary = entries
-      .slice(0, 5)
-      .map(([blkStr, qty]) => `${qty}x ${BLOCK_NAMES[Number(blkStr)] || "Bloque"}`)
-      .join(", ");
-    aiCompanionBagRef.current = {};
+  const handleTeleportToGeminiAgent = useCallback(() => {
+    if (!geminiAgentConfigRef.current.enabled) return;
+    const ap = geminiAgentPosRef.current;
+    const targetPos = { x: ap.x + 2, y: Math.max(4, ap.y), z: ap.z + 2 };
+    setPlayerPos(targetPos);
+    activePlayerPosRef.current = targetPos;
     setChatMessages((prev) => [
       ...prev,
-      `🎁 [${aiCompanionConfigRef.current.name}] ¡Toma lo que conseguí!: ${summary}`,
+      `📍 [Sistema] Teletransportado junto a ${geminiAgentConfigRef.current.name} (X:${Math.round(ap.x)} Y:${Math.round(ap.y)} Z:${Math.round(ap.z)}).`,
     ]);
   }, []);
 
-  const applyCompanionAction = useCallback((action: AICompanionChatAction) => {
-    if (action === "none") return;
-    if (action === "share") {
-      handleShareCompanionBag();
-      return;
-    }
-    if (action === "tp_to_player") {
-      setAiCompanionConfig((prev) => ({ ...prev, enabled: true }));
-      setAiCompanionTpTrigger((t) => t + 1);
-      return;
-    }
-    setAiCompanionConfig((prev) => ({ ...prev, enabled: true, mode: action }));
-  }, [handleShareCompanionBag]);
-
-  const triggerCompanionReply = useCallback(async (message: string) => {
-    const cfg = aiCompanionConfigRef.current;
-    const bag = aiCompanionBagRef.current;
-    const gatheredTotal = Object.values(bag).reduce((acc, v) => acc + (v || 0), 0);
-    const res = await askAICompanion(message, {
-      companionName: cfg.name || "Alex IA",
-      mode: cfg.mode,
-      gatheredTotal,
-      isNight: false,
-      altitude: activePlayerPosRef.current.y,
-      nearbyHostiles: 0,
-      lang: lang === "en" ? "en" : "es",
-    });
-    applyCompanionAction(res.action);
-    if (res.action !== "share") {
-      setChatMessages((prev) => [...prev, `🤖 [${cfg.name || "Alex IA"}] ${res.reply}`]);
-    }
-  }, [lang, applyCompanionAction]);
-
-  const handleCompanionBuildComplete = useCallback(() => {
-    setAiCompanionConfig((prev) => (prev.mode === "build" ? { ...prev, mode: "follow" } : prev));
+  const handleResetGeminiMemory = useCallback(() => {
+    const fresh = resetGeminiAgentMemory();
+    setGeminiAgentMemoryResetTrigger((n) => n + 1);
+    setGeminiAgentTelemetry((prev) => (prev ? { ...prev, memory: fresh } : prev));
+    setChatMessages((prev) => [
+      ...prev,
+      `🧠 [${geminiAgentConfigRef.current.name || "Gemini IA"}] Aprendizaje por refuerzo reiniciado a Nivel 1.`,
+    ]);
   }, []);
 
-  const handleCompanionSpeak = useCallback((msg: string) => {
-    setChatMessages((prev) => [...prev, `🤖 [${aiCompanionConfigRef.current.name || "Alex IA"}] ${msg}`]);
+  const handleGeminiAgentSpeak = useCallback((msg: string) => {
+    setChatMessages((prev) => [...prev, `✨ [${geminiAgentConfigRef.current.name || "Gemini IA"}] ${msg}`]);
+  }, []);
+
+  const handleGeminiAgentTelemetry = useCallback((telemetry: GeminiAgentTelemetry) => {
+    setGeminiAgentTelemetry(telemetry);
   }, []);
   const [isCraftingTableActive, setIsCraftingTableActive] = useState<boolean>(false);
   const [isFurnaceOpen, setIsFurnaceOpen] = useState<boolean>(false);
@@ -4921,21 +4896,21 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {/* Amigo IA Companion Section */}
-          <div className="bg-gradient-to-br from-cyan-950/70 via-zinc-950/90 to-indigo-950/70 border border-cyan-500/40 rounded-xl p-3.5 flex flex-col gap-2.5">
+          {/* Autonomous Self-Learning Gemini AI Player Section */}
+          <div className="bg-gradient-to-br from-violet-950/75 via-zinc-950/90 to-emerald-950/70 border border-violet-500/45 rounded-xl p-3.5 flex flex-col gap-2.5">
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2.5">
-                <div className="w-9 h-9 rounded-lg bg-cyan-500/20 border border-cyan-400/40 flex items-center justify-center text-base">
-                  🤖
+                <div className="w-9 h-9 rounded-lg bg-violet-500/20 border border-violet-400/40 flex items-center justify-center text-base">
+                  🧠
                 </div>
                 <div>
-                  <h3 className="text-xs font-black uppercase tracking-wider text-cyan-300">
-                    {lang === "es" ? "Amigo IA (Juega como un Jugador)" : "AI Friend (Plays Like a Player)"}
+                  <h3 className="text-xs font-black uppercase tracking-wider text-violet-300">
+                    {lang === "es" ? "IA Autónoma Gemini Flash" : "Autonomous Gemini Flash AI"}
                   </h3>
                   <p className="text-[10px] text-zinc-400">
                     {lang === "es"
-                      ? "Camina, nada, mina, tala, construye refugios, combate mobs y conversa contigo."
-                      : "Walks, swims, mines, chops, builds shelters, fights mobs & chats with you."}
+                      ? "Juega 100% sola sin límite de distancia: explora, excava minas reales, construye bases y aprende jugando."
+                      : "Plays 100% independently with unlimited range: explores, strip-mines, builds bases & self-learns."}
                   </p>
                 </div>
               </div>
@@ -4943,17 +4918,17 @@ const App: React.FC = () => {
                 type="button"
                 onClick={() => {
                   resumeAudio();
-                  setAiCompanionConfig((prev) => ({ ...prev, enabled: !prev.enabled }));
+                  setGeminiAgentConfig((prev) => ({ ...prev, enabled: !prev.enabled }));
                 }}
                 className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition active:scale-95 shrink-0 ${
-                  aiCompanionConfig.enabled
+                  geminiAgentConfig.enabled
                     ? "bg-rose-600 hover:bg-rose-500 text-white"
-                    : "bg-cyan-600 hover:bg-cyan-500 text-white"
+                    : "bg-violet-600 hover:bg-violet-500 text-white"
                 }`}
               >
-                {aiCompanionConfig.enabled
-                  ? (lang === "es" ? "Desactivar" : "Dismiss")
-                  : (lang === "es" ? "Invocar Amigo IA" : "Summon AI Friend")}
+                {geminiAgentConfig.enabled
+                  ? (lang === "es" ? "Desactivar" : "Disable")
+                  : (lang === "es" ? "Activar IA Autónoma" : "Enable Autonomous AI")}
               </button>
             </div>
 
@@ -4965,22 +4940,22 @@ const App: React.FC = () => {
                 <input
                   type="text"
                   maxLength={18}
-                  value={aiCompanionConfig.name}
-                  onChange={(e) => setAiCompanionConfig((prev) => ({ ...prev, name: e.target.value }))}
+                  value={geminiAgentConfig.name}
+                  onChange={(e) => setGeminiAgentConfig((prev) => ({ ...prev, name: e.target.value }))}
                   className="flex-1 bg-transparent text-white text-xs font-bold focus:outline-none"
-                  placeholder="Alex IA"
+                  placeholder="Gemini IA"
                 />
               </div>
 
               <div className="flex items-center gap-1 overflow-x-auto bg-zinc-900/80 border border-white/10 rounded-lg px-2 py-1">
-                {(["explorer", "cyber", "knight", "mage", "classic", "dragon"] as CharacterSkinId[]).map((sid) => (
+                {(["cyber", "explorer", "knight", "mage", "dragon", "shadow"] as CharacterSkinId[]).map((sid) => (
                   <button
                     key={sid}
                     type="button"
-                    onClick={() => setAiCompanionConfig((prev) => ({ ...prev, skinId: sid }))}
+                    onClick={() => setGeminiAgentConfig((prev) => ({ ...prev, skinId: sid }))}
                     className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase shrink-0 transition ${
-                      aiCompanionConfig.skinId === sid
-                        ? "bg-cyan-600 text-white"
+                      geminiAgentConfig.skinId === sid
+                        ? "bg-violet-600 text-white"
                         : "bg-zinc-800 text-zinc-400 hover:text-white"
                     }`}
                   >
@@ -4990,28 +4965,35 @@ const App: React.FC = () => {
               </div>
             </div>
 
-            <div className="flex flex-wrap gap-1.5">
-              {([
-                { id: "follow", label: lang === "es" ? "🤝 Seguir" : "🤝 Follow" },
-                { id: "gather", label: lang === "es" ? "⛏️ Minar/Talar" : "⛏️ Gather" },
-                { id: "build", label: lang === "es" ? "🏠 Construir" : "🏠 Build" },
-                { id: "guard", label: lang === "es" ? "⚔️ Proteger" : "⚔️ Guard" },
-                { id: "explore", label: lang === "es" ? "🧭 Explorar" : "🧭 Explore" },
-                { id: "stay", label: lang === "es" ? "🛑 Esperar" : "🛑 Stay" },
-              ] as { id: AICompanionMode; label: string }[]).map((m) => (
-                <button
-                  key={m.id}
-                  type="button"
-                  onClick={() => setAiCompanionConfig((prev) => ({ ...prev, enabled: true, mode: m.id }))}
-                  className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition active:scale-95 ${
-                    aiCompanionConfig.enabled && aiCompanionConfig.mode === m.id
-                      ? "bg-emerald-600 text-white border border-emerald-400/50"
-                      : "bg-zinc-900/90 text-zinc-300 border border-white/10 hover:bg-zinc-800"
-                  }`}
-                >
-                  {m.label}
-                </button>
-              ))}
+            <div className="flex flex-wrap gap-1.5 items-center justify-between">
+              <div className="flex flex-wrap gap-1.5">
+                {([
+                  { id: "balanced", label: lang === "es" ? "🧠 Equilibrada" : "🧠 Balanced" },
+                  { id: "miner", label: lang === "es" ? "⛏️ Minera Pro" : "⛏️ Pro Miner" },
+                  { id: "explorer", label: lang === "es" ? "🧭 Exploradora" : "🧭 Explorer" },
+                  { id: "builder", label: lang === "es" ? "🏠 Constructora" : "🏠 Builder" },
+                ] as { id: GeminiAgentConfig["autonomyStyle"]; label: string }[]).map((st) => (
+                  <button
+                    key={st.id}
+                    type="button"
+                    onClick={() => setGeminiAgentConfig((prev) => ({ ...prev, enabled: true, autonomyStyle: st.id }))}
+                    className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition active:scale-95 ${
+                      geminiAgentConfig.autonomyStyle === st.id
+                        ? "bg-emerald-600 text-white border border-emerald-400/50"
+                        : "bg-zinc-900/90 text-zinc-300 border border-white/10 hover:bg-zinc-800"
+                    }`}
+                  >
+                    {st.label}
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                onClick={handleResetGeminiMemory}
+                className="px-2.5 py-1 rounded-lg text-[10px] font-bold bg-zinc-900 hover:bg-zinc-800 text-amber-300 border border-amber-500/30 transition active:scale-95"
+              >
+                🔄 {lang === "es" ? "Reiniciar RL" : "Reset RL"}
+              </button>
             </div>
           </div>
 
@@ -11160,12 +11142,14 @@ const App: React.FC = () => {
         characterSkin={characterSkin}
         customSkin={characterSkin === "custom" ? customSkin : undefined}
         playerPoseRef={activePlayerPoseRef}
-        aiCompanionConfig={aiCompanionConfig}
-        aiCompanionTpTrigger={aiCompanionTpTrigger}
-        aiCompanionPosRef={aiCompanionPosRef}
-        aiCompanionBagRef={aiCompanionBagRef}
-        onAICompanionBuildComplete={handleCompanionBuildComplete}
-        onAICompanionSpeak={handleCompanionSpeak}
+        geminiAgentConfig={geminiAgentConfig}
+        geminiAgentPosRef={geminiAgentPosRef}
+        geminiAgentBagRef={geminiAgentBagRef}
+        geminiAgentMemoryResetTrigger={geminiAgentMemoryResetTrigger}
+        geminiAgentChatPrompt={geminiAgentChatPrompt}
+        onGeminiAgentSpeak={handleGeminiAgentSpeak}
+        onGeminiAgentTelemetry={handleGeminiAgentTelemetry}
+        lang={lang === "en" ? "en" : "es"}
         initialBlockColors={dimensionBlockColors}
         onBatchWorldEdit={handleBatchWorldEdit}
         virtualRotationDeg={virtualRotationDeg}
@@ -11751,19 +11735,19 @@ const App: React.FC = () => {
             <button
               onClick={() => {
                 resumeAudio();
-                setIsCompanionPanelOpen((prev) => !prev);
+                setIsGeminiAgentPanelOpen((prev) => !prev);
               }}
               onPointerDown={(e) => e.stopPropagation()}
               onTouchStart={(e) => e.stopPropagation()}
               className={`${
-                aiCompanionConfig.enabled
-                  ? "bg-cyan-600/95 hover:bg-cyan-500 border-cyan-300/60"
+                geminiAgentConfig.enabled
+                  ? "bg-violet-600/95 hover:bg-violet-500 border-violet-300/60"
                   : "bg-zinc-800/95 hover:bg-zinc-700 border-white/10"
               } rounded-2xl shadow-xl active:scale-90 text-white flex items-center justify-center transition-all border ${uiScaleConfig.btnSize}`}
-              title={lang === "es" ? "Amigo IA" : "AI Friend"}
-              id="hud-ai-companion-btn"
+              title={lang === "es" ? "IA Autónoma Gemini" : "Autonomous Gemini AI"}
+              id="hud-gemini-agent-btn"
             >
-              <i className={`fas fa-robot ${aiCompanionConfig.enabled ? "text-cyan-100" : "text-cyan-400"} ${uiScaleConfig.btnIcon}`} />
+              <i className={`fas fa-brain ${geminiAgentConfig.enabled ? "text-violet-100 animate-pulse" : "text-violet-300"} ${uiScaleConfig.btnIcon}`} />
             </button>
             <button
               onClick={() => {
@@ -11826,89 +11810,194 @@ const App: React.FC = () => {
             </button>
           </div>
 
-          {/* Compact AI Companion Quick Panel */}
-          {isCompanionPanelOpen && (
-            <div
-              onPointerDown={(e) => e.stopPropagation()}
-              onPointerMove={(e) => e.stopPropagation()}
-              onPointerUp={(e) => e.stopPropagation()}
-              onTouchStart={(e) => e.stopPropagation()}
-              onTouchMove={(e) => e.stopPropagation()}
-              onTouchEnd={(e) => e.stopPropagation()}
-              className="fixed right-2 sm:right-4 top-12 sm:top-16 z-40 pointer-events-auto bg-zinc-950/96 border border-cyan-500/40 rounded-2xl p-3 w-[min(18rem,calc(100vw-1rem))] max-h-[calc(100dvh-4.5rem)] overflow-y-auto overscroll-contain shadow-2xl text-white flex flex-col gap-2"
-            >
-              <div className="flex items-center justify-between border-b border-white/10 pb-1.5">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm">🤖</span>
-                  <span className="text-xs font-black uppercase tracking-wider text-cyan-300 truncate max-w-[130px]">
-                    {aiCompanionConfig.name || "Alex IA"}
+          {/* Autonomous Self-Learning Gemini AI Telemetry & Control Drawer */}
+          {isGeminiAgentPanelOpen && (() => {
+            const mem = geminiAgentTelemetry?.memory || loadGeminiAgentMemory();
+            const isConn = geminiAgentTelemetry?.geminiConnected ?? false;
+            return (
+              <div
+                onPointerDown={(e) => e.stopPropagation()}
+                onPointerMove={(e) => e.stopPropagation()}
+                onPointerUp={(e) => e.stopPropagation()}
+                onTouchStart={(e) => e.stopPropagation()}
+                onTouchMove={(e) => e.stopPropagation()}
+                onTouchEnd={(e) => e.stopPropagation()}
+                className="fixed right-2 sm:right-4 top-12 sm:top-16 z-40 pointer-events-auto bg-zinc-950/96 border border-violet-500/45 rounded-2xl p-3 w-[min(20.5rem,calc(100vw-1rem))] max-h-[calc(100dvh-4.5rem)] overflow-y-auto overscroll-contain shadow-2xl text-white flex flex-col gap-2"
+              >
+                <div className="flex items-center justify-between border-b border-white/10 pb-1.5">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="text-sm">🧠</span>
+                    <span className="text-xs font-black uppercase tracking-wider text-violet-300 truncate">
+                      {geminiAgentConfig.name || "Gemini IA"}
+                    </span>
+                    <span className="text-[9px] font-mono bg-violet-500/20 border border-violet-400/30 text-violet-200 px-1.5 py-0.5 rounded shrink-0">
+                      Nv.{mem.level}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setGeminiAgentConfig((prev) => ({ ...prev, enabled: !prev.enabled }))}
+                      className={`px-2 py-0.5 rounded text-[9px] font-black uppercase transition ${
+                        geminiAgentConfig.enabled ? "bg-rose-600 text-white" : "bg-violet-600 text-white"
+                      }`}
+                    >
+                      {geminiAgentConfig.enabled ? "OFF" : "ON"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsGeminiAgentPanelOpen(false)}
+                      className="text-zinc-400 hover:text-white px-1 text-xs"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                </div>
+
+                {/* Model & Connection Status */}
+                <div className="flex items-center justify-between gap-2 bg-zinc-900/90 border border-white/10 rounded-lg px-2 py-1 text-[9.5px]">
+                  <span className={`font-bold ${isConn ? "text-emerald-300" : "text-amber-300"}`}>
+                    {isConn ? "✨ Gemini Flash Conectado" : "🧠 Aprendizaje RL Autónomo"}
+                  </span>
+                  <span className="font-mono text-zinc-400 truncate max-w-[125px]">
+                    {geminiAgentTelemetry?.modelName || mem.lastModel || "gemini-4-hydrogen"}
                   </span>
                 </div>
-                <div className="flex items-center gap-1.5">
+
+                {geminiAgentTelemetry?.geminiError && (
+                  <div className="bg-rose-950/60 border border-rose-500/40 rounded-lg px-2 py-1 text-[9px] text-rose-200">
+                    ⚠️ {geminiAgentTelemetry.geminiError}
+                  </div>
+                )}
+
+                {/* Style Selector */}
+                <div className="grid grid-cols-4 gap-1">
+                  {([
+                    { id: "balanced", label: "🧠 Libre" },
+                    { id: "miner", label: "⛏️ Mina" },
+                    { id: "explorer", label: "🧭 Viaja" },
+                    { id: "builder", label: "🏠 Base" },
+                  ] as { id: GeminiAgentConfig["autonomyStyle"]; label: string }[]).map((st) => (
+                    <button
+                      key={st.id}
+                      type="button"
+                      onClick={() => setGeminiAgentConfig((prev) => ({ ...prev, enabled: true, autonomyStyle: st.id }))}
+                      className={`px-1 py-1 rounded-lg text-[9.5px] font-bold transition active:scale-95 ${
+                        geminiAgentConfig.autonomyStyle === st.id
+                          ? "bg-emerald-600 text-white border border-emerald-400/50"
+                          : "bg-zinc-900 text-zinc-300 border border-white/10 hover:bg-zinc-800"
+                      }`}
+                    >
+                      {st.label}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Live Telemetry */}
+                {geminiAgentConfig.enabled && geminiAgentTelemetry && (
+                  <div className="bg-zinc-900/80 border border-white/10 rounded-xl p-2 flex flex-col gap-1 text-[10px]">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-cyan-300 truncate">{geminiAgentTelemetry.statusLabel}</span>
+                      <span className="font-mono text-emerald-300 shrink-0">
+                        ❤️ {geminiAgentTelemetry.hp}/{geminiAgentTelemetry.maxHp}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between text-zinc-400 font-mono text-[9px]">
+                      <span>
+                        X:{Math.round(geminiAgentTelemetry.pos.x)} Y:{Math.round(geminiAgentTelemetry.pos.y)} Z:{Math.round(geminiAgentTelemetry.pos.z)}
+                      </span>
+                      <span className="text-violet-300 font-bold">
+                        Dist: {geminiAgentTelemetry.distanceFromPlayer}m (∞)
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-4 gap-1 pt-1 border-t border-white/5 text-center font-mono text-[9px]">
+                      <div className="bg-zinc-950/70 rounded py-0.5">
+                        <div className="text-zinc-400">XP</div>
+                        <div className="text-amber-300 font-bold">{mem.xp}</div>
+                      </div>
+                      <div className="bg-zinc-950/70 rounded py-0.5">
+                        <div className="text-zinc-400">Minas</div>
+                        <div className="text-sky-300 font-bold">{mem.blocksMined}</div>
+                      </div>
+                      <div className="bg-zinc-950/70 rounded py-0.5">
+                        <div className="text-zinc-400">Menas</div>
+                        <div className="text-emerald-300 font-bold">{mem.oresFound}</div>
+                      </div>
+                      <div className="bg-zinc-950/70 rounded py-0.5">
+                        <div className="text-zinc-400">Bases</div>
+                        <div className="text-violet-300 font-bold">{mem.campsBuilt}</div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Thought & Learned Lessons */}
+                <div className="bg-zinc-900/70 border border-violet-500/25 rounded-xl p-2 flex flex-col gap-1">
+                  <div className="text-[9px] font-black uppercase text-violet-300">
+                    💭 Pensamiento / Experiencia aprendida
+                  </div>
+                  <p className="text-[9.5px] text-zinc-200 leading-snug">
+                    {mem.lastThought}
+                  </p>
+                  {mem.learnedLessons.length > 0 && (
+                    <div className="border-t border-white/10 pt-1 mt-0.5 flex flex-col gap-0.5">
+                      {mem.learnedLessons.slice(-2).map((lesson, i) => (
+                        <div key={i} className="text-[8.5px] text-emerald-300/90 leading-tight">
+                          • {lesson}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Ask Gemini IA */}
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    const q = geminiHudPromptInput.trim();
+                    if (!q) return;
+                    setGeminiAgentConfig((prev) => ({ ...prev, enabled: true }));
+                    setGeminiAgentChatPrompt({ id: Date.now(), text: q });
+                    setGeminiHudPromptInput("");
+                  }}
+                  className="flex gap-1"
+                >
+                  <input
+                    type="text"
+                    value={geminiHudPromptInput}
+                    onChange={(e) => setGeminiHudPromptInput(e.target.value)}
+                    placeholder={lang === "es" ? "Preguntar a Gemini IA..." : "Ask Gemini AI..."}
+                    className="flex-1 min-w-0 bg-zinc-900 border border-white/15 rounded-lg px-2 py-1 text-[10px] text-white focus:outline-none focus:border-violet-400"
+                  />
+                  <button
+                    type="submit"
+                    className="px-2.5 py-1 rounded-lg bg-violet-600 hover:bg-violet-500 text-[10px] font-bold text-white shrink-0"
+                  >
+                    Enviar
+                  </button>
+                </form>
+
+                {/* Actions */}
+                <div className="flex gap-1.5">
                   <button
                     type="button"
-                    onClick={() => setAiCompanionConfig((prev) => ({ ...prev, enabled: !prev.enabled }))}
-                    className={`px-2 py-0.5 rounded text-[9px] font-black uppercase transition ${
-                      aiCompanionConfig.enabled ? "bg-rose-600 text-white" : "bg-cyan-600 text-white"
-                    }`}
+                    disabled={!geminiAgentConfig.enabled}
+                    onClick={handleTeleportToGeminiAgent}
+                    className="flex-1 bg-sky-600 hover:bg-sky-500 disabled:opacity-40 text-white text-[10px] font-bold py-1.5 rounded-lg transition active:scale-95"
                   >
-                    {aiCompanionConfig.enabled ? "OFF" : "ON"}
+                    📍 Ir a ver a la IA
                   </button>
                   <button
                     type="button"
-                    onClick={() => setIsCompanionPanelOpen(false)}
-                    className="text-zinc-400 hover:text-white px-1 text-xs"
+                    onClick={handleResetGeminiMemory}
+                    className="flex-1 bg-amber-600 hover:bg-amber-500 text-white text-[10px] font-bold py-1.5 rounded-lg transition active:scale-95"
                   >
-                    ✕
+                    🔄 Reiniciar RL
                   </button>
                 </div>
               </div>
-
-              <div className="grid grid-cols-3 gap-1">
-                {([
-                  { id: "follow", label: "🤝 Seguir" },
-                  { id: "gather", label: "⛏️ Minar" },
-                  { id: "build", label: "🏠 Casa" },
-                  { id: "guard", label: "⚔️ Defensa" },
-                  { id: "explore", label: "🧭 Explorar" },
-                  { id: "stay", label: "🛑 Esperar" },
-                ] as { id: AICompanionMode; label: string }[]).map((m) => (
-                  <button
-                    key={m.id}
-                    type="button"
-                    onClick={() => setAiCompanionConfig((prev) => ({ ...prev, enabled: true, mode: m.id }))}
-                    className={`px-1.5 py-1.5 rounded-lg text-[10px] font-bold transition active:scale-95 ${
-                      aiCompanionConfig.enabled && aiCompanionConfig.mode === m.id
-                        ? "bg-emerald-600 text-white border border-emerald-400/50"
-                        : "bg-zinc-900 text-zinc-300 border border-white/10 hover:bg-zinc-800"
-                    }`}
-                  >
-                    {m.label}
-                  </button>
-                ))}
-              </div>
-
-              <div className="flex gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAiCompanionConfig((prev) => ({ ...prev, enabled: true }));
-                    setAiCompanionTpTrigger((t) => t + 1);
-                  }}
-                  className="flex-1 bg-sky-600 hover:bg-sky-500 text-white text-[10px] font-bold py-1.5 rounded-lg transition active:scale-95"
-                >
-                  📍 Venir aquí
-                </button>
-                <button
-                  type="button"
-                  onClick={handleShareCompanionBag}
-                  className="flex-1 bg-amber-600 hover:bg-amber-500 text-white text-[10px] font-bold py-1.5 rounded-lg transition active:scale-95"
-                >
-                  🎁 Dar bloques
-                </button>
-              </div>
-            </div>
-          )}
+            );
+          })()}
         </div>
 
         {/* Bottom Bar: Joystick + Center Hotbar + Action Cluster (wraps cleanly in Portrait) */}

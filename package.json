@@ -4,9 +4,10 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "tsx server.ts",
     "build": "vite build",
-    "preview": "vite preview",
+    "start": "NODE_ENV=production tsx server.ts",
+    "preview": "NODE_ENV=production tsx server.ts",
     "lint": "tsc --noEmit",
     "android:sync": "vite build && npx cap sync",
     "android:build": "vite build && npx cap sync && cd android && ./gradlew assembleDebug"
@@ -14,16 +15,19 @@
   "dependencies": {
     "@capacitor/core": "^8.4.0",
     "@fortawesome/fontawesome-free": "^7.3.1",
-    "@google/genai": "^1.38.0",
+    "@google/genai": "^3.6.1",
     "@react-three/drei": "^10.7.7",
     "@react-three/fiber": "^9.5.0",
     "@tailwindcss/vite": "^4.3.5",
+    "@types/express": "^5.0.6",
+    "express": "^5.3.0",
     "firebase": "^12.14.0",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
     "simplex-noise": "^4.0.3",
     "tailwindcss": "^4.3.5",
-    "three": "^0.182.0"
+    "three": "^0.182.0",
+    "tsx": "^4.23.15"
   },
   "devDependencies": {
     "@capacitor/android": "^8.4.0",

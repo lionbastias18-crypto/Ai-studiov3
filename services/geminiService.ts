@@ -1,176 +1,208 @@
-import { GoogleGenAI, ThinkingLevel, Type } from "@google/genai";
-import { AICompanionMode, GeminiSuggestion } from "../types";
+import {
+  GeminiAgentConfig,
+  GeminiAgentGoal,
+  GeminiAgentMemory,
+  GeminiAgentOutcome,
+  GeminiSuggestion,
+} from "../types";
 
-let _cachedClient: GoogleGenAI | null = null;
-const getAiClient = (): GoogleGenAI | null => {
-  const key = process.env.GEMINI_API_KEY || process.env.API_KEY;
-  if (!key) return null;
-  if (!_cachedClient) {
-    _cachedClient = new GoogleGenAI({ apiKey: key });
-  }
-  return _cachedClient;
+const AGENT_MEMORY_STORAGE_KEY = "gemini_autonomous_agent_memory_v1";
+
+export const createDefaultGeminiAgentMemory = (): GeminiAgentMemory => ({
+  xp: 0,
+  level: 1,
+  blocksMined: 0,
+  oresFound: 0,
+  mobsDefeated: 0,
+  campsBuilt: 0,
+  deaths: 0,
+  maxDistanceReached: 0,
+  strategyScores: {
+    explore_far: 1.0,
+    chop_trees: 1.2,
+    mine_surface: 1.1,
+    dig_mine: 1.4,
+    build_camp: 0.8,
+    hunt_mobs: 0.9,
+    escape_hazard: 1.0,
+  },
+  recentOutcomes: [],
+  learnedLessons: [
+    "Explorar lejos del inicio permite descubrir biomas y vetas nuevas.",
+    "Cavar túneles en escalera de 2 bloques de alto evita quedar atrapado.",
+  ],
+  lastThought: "Inicializando percepción del entorno con Gemini Flash...",
+  lastModel: "gemini-4-hydrogen",
+});
+
+export const loadGeminiAgentMemory = (): GeminiAgentMemory => {
+  try {
+    const raw = localStorage.getItem(AGENT_MEMORY_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<GeminiAgentMemory>;
+      const def = createDefaultGeminiAgentMemory();
+      return {
+        ...def,
+        ...parsed,
+        strategyScores: {
+          ...def.strategyScores,
+          ...(parsed.strategyScores || {}),
+        },
+        recentOutcomes: Array.isArray(parsed.recentOutcomes)
+          ? parsed.recentOutcomes.slice(-16)
+          : def.recentOutcomes,
+        learnedLessons: Array.isArray(parsed.learnedLessons) && parsed.learnedLessons.length > 0
+          ? parsed.learnedLessons.slice(-8)
+          : def.learnedLessons,
+      };
+    }
+  } catch {}
+  return createDefaultGeminiAgentMemory();
 };
 
-export type AICompanionChatAction = AICompanionMode | 'share' | 'tp_to_player' | 'none';
-
-export interface AICompanionReply {
-  reply: string;
-  action: AICompanionChatAction;
-}
-
-export const getBuildingSuggestion = async (biome: string, availableBlocks: string[]): Promise<GeminiSuggestion | null> => {
+export const saveGeminiAgentMemory = (memory: GeminiAgentMemory): void => {
   try {
-    const ai = getAiClient();
-    if (!ai) return null;
-    const response = await ai.models.generateContent({
-      model: "gemini-4-hydrogen",
-      contents: `Suggest a creative Minecraft Infdev structure to build in a ${biome} biome using blocks like ${availableBlocks.join(', ')}.`,
-      config: {
-        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            title: { type: Type.STRING },
-            description: { type: Type.STRING },
-            steps: {
-              type: Type.ARRAY,
-              items: { type: Type.STRING }
-            }
-          },
-          required: ["title", "description", "steps"]
-        }
-      }
-    });
+    localStorage.setItem(AGENT_MEMORY_STORAGE_KEY, JSON.stringify(memory));
+  } catch {}
+};
 
-    const text = response.text;
-    if (!text) return null;
-    return JSON.parse(text) as GeminiSuggestion;
+export const resetGeminiAgentMemory = (): GeminiAgentMemory => {
+  const fresh = createDefaultGeminiAgentMemory();
+  saveGeminiAgentMemory(fresh);
+  return fresh;
+};
+
+export const recordAgentExperience = (
+  memory: GeminiAgentMemory,
+  outcome: GeminiAgentOutcome,
+  xpGain = 0
+): GeminiAgentMemory => {
+  const prevScore = memory.strategyScores[outcome.goal] ?? 1.0;
+  // Temporal-difference Q-update keeping weights bounded in [-2, 6]
+  const nextScore = Math.max(-2, Math.min(6, Number((prevScore * 0.82 + outcome.reward * 0.18).toFixed(3))));
+  const nextXp = Math.max(0, memory.xp + xpGain);
+  const nextLevel = Math.floor(nextXp / 45) + 1;
+  return {
+    ...memory,
+    xp: nextXp,
+    level: nextLevel,
+    strategyScores: {
+      ...memory.strategyScores,
+      [outcome.goal]: nextScore,
+    },
+    recentOutcomes: [...memory.recentOutcomes.slice(-15), outcome],
+  };
+};
+
+export const getBuildingSuggestion = async (
+  biome: string,
+  availableBlocks: string[]
+): Promise<GeminiSuggestion | null> => {
+  try {
+    const response = await fetch("/api/gemini/suggest-build", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ biome, availableBlocks }),
+    });
+    if (!response.ok) {
+      const errBody = await response.json().catch(() => ({}));
+      throw new Error(errBody?.error || `HTTP ${response.status}`);
+    }
+    return (await response.json()) as GeminiSuggestion;
   } catch (error) {
     console.error("Gemini suggestion error:", error);
     return null;
   }
 };
 
-export const detectLocalCompanionIntent = (message: string): AICompanionChatAction => {
-  const q = message.toLowerCase();
-  if (/(ven|acércate|acercate|teletransp|tp|come here|come to me)/.test(q)) {
-    return /(sígueme|sigueme|follow)/.test(q) ? 'follow' : 'tp_to_player';
-  }
-  if (/(sígueme|sigueme|acompañ|follow|conmigo)/.test(q)) return 'follow';
-  if (/(dame|comparte|regala|pasa|invent|mochila|give|share|drop)/.test(q) && /(bloque|madera|piedra|carb|hierro|diamant|todo|recurso|wood|stone|block|item)/.test(q)) {
-    return 'share';
-  }
-  if (/(dame|comparte|share|give me)/.test(q)) return 'share';
-  if (/(construy|casa|refugio|pared|torre|build|house|shelter)/.test(q)) return 'build';
-  if (/(mina|pico|mineral|diamant|hierro|tala|madera|árbol|arbol|corta|recolect|gather|mine|chop)/.test(q)) return 'gather';
-  if (/(proteg|defiend|atac|mata|pelea|lucha|zomb|creeper|esquelet|mob|guard|fight|defend)/.test(q)) return 'guard';
-  if (/(explor|busca|aventur|pasea|libre|explore|roam)/.test(q)) return 'explore';
-  if (/(quédate|quedate|espera|alto|para|quiet|stay|wait|stop)/.test(q)) return 'stay';
-  return 'none';
-};
+export interface GeminiAgentStepPayload {
+  agentName: string;
+  autonomyStyle: GeminiAgentConfig["autonomyStyle"];
+  lang: "es" | "en";
+  position: { x: number; y: number; z: number };
+  biome: string;
+  distanceFromPlayer: number;
+  hp: number;
+  isNight: boolean;
+  inWater: boolean;
+  inLava: boolean;
+  nearbyHostiles: number;
+  nearbyOres: string[];
+  nearbyLogs: number;
+  inventorySummary: Record<string, number>;
+  memory: GeminiAgentMemory;
+  userPrompt?: string;
+}
 
-export const buildLocalCompanionFallback = (
-  name: string,
-  message: string,
-  action: AICompanionChatAction,
-  context: {
-    mode: AICompanionMode;
-    gatheredTotal: number;
-    isNight: boolean;
-    altitude: number;
-    lang: 'es' | 'en';
-  }
-): string => {
-  const isEs = context.lang !== 'en';
-  if (action === 'follow') return isEs ? `¡Voy contigo! Te cubro las espaldas.` : `Right behind you! I've got your back.`;
-  if (action === 'tp_to_player') return isEs ? `¡Ya llegué a tu lado!` : `Made it right next to you!`;
-  if (action === 'gather') return isEs ? `⛏️ ¡En marcha! Voy a picar piedra, minerales y talar madera cercana.` : `⛏️ On it! Going to mine stone, ores, and chop nearby trees.`;
-  if (action === 'build') return isEs ? `🏠 ¡Sacando bloques! Te construiré un refugio cerca con puerta y antorchas.` : `🏠 Pulling out blocks! Building us a shelter nearby with door and torches.`;
-  if (action === 'guard') return isEs ? `⚔️ ¡Espada lista! Atacaré a cualquier mob hostil que se acerque.` : `⚔️ Sword ready! I'll fight any hostile mob nearby.`;
-  if (action === 'explore') return isEs ? `🧭 ¡Modo exploración! Voy a investigar los alrededores.` : `🧭 Exploring mode! Scouting around nearby.`;
-  if (action === 'stay') return isEs ? `🛑 Perfecto, me quedo vigilando justo aquí.` : `🛑 Got it, holding position right here.`;
-  if (action === 'share') {
-    return context.gatheredTotal > 0
-      ? (isEs ? `🎁 ¡Toma! Te paso los recursos que recolecté.` : `🎁 Here you go! Sharing the resources I gathered.`)
-      : (isEs ? `🎒 Aún no tengo bloques en mi mochila, ¡ponme en modo Minar y te consigo!` : `🎒 My bag is empty right now, set me to Gather and I'll mine some!`);
-  }
+export interface GeminiAgentDecision {
+  goal: GeminiAgentGoal;
+  targetY: number;
+  headingDeg: number;
+  caution: "low" | "balanced" | "high";
+  thought: string;
+  learnedLesson: string;
+  chatReply?: string;
+  rewardAdjust?: Partial<Record<GeminiAgentGoal, number>>;
+}
 
-  const q = message.toLowerCase();
-  if (/(hola|buenas|hey|hi|hello|qué tal|que tal)/.test(q)) {
-    return isEs
-      ? `¡Hola! Soy ${name}. Ahora mismo estoy en modo ${context.mode} y llevo ${context.gatheredTotal} bloques en la mochila. ¿Minamos, construimos o exploramos?`
-      : `Hey! I'm ${name}. Currently on ${context.mode} mode with ${context.gatheredTotal} blocks in my bag. Want to mine, build, or explore?`;
-  }
-  if (/(qué haces|que haces|what are you doing|estado|status)/.test(q)) {
-    return isEs
-      ? `Estoy a Y:${Math.round(context.altitude)} (${context.isNight ? 'es de noche, atento a los mobs' : 'buen día para construir'}) en modo ${context.mode}.`
-      : `I'm at Y:${Math.round(context.altitude)} (${context.isNight ? 'nighttime, watching for mobs' : 'great day to build'}) in ${context.mode} mode.`;
-  }
-  return isEs
-    ? `¡Entendido! Aquí sigo contigo (llevo ${context.gatheredTotal} bloques). Pídeme que mine, construya un refugio, te siga o te proteja.`
-    : `Got it! Playing right alongside you (${context.gatheredTotal} blocks gathered). Ask me to mine, build a shelter, follow, or guard!`;
-};
+export interface GeminiAgentStepResult {
+  ok: boolean;
+  offline: boolean;
+  model: string;
+  decision?: GeminiAgentDecision;
+  error?: string;
+}
 
-export const askAICompanion = async (
-  playerMessage: string,
-  context: {
-    companionName: string;
-    mode: AICompanionMode;
-    gatheredTotal: number;
-    isNight: boolean;
-    altitude: number;
-    nearbyHostiles: number;
-    lang: 'es' | 'en';
-  }
-): Promise<AICompanionReply> => {
-  const localAction = detectLocalCompanionIntent(playerMessage);
-  const ai = getAiClient();
-
-  // Execute clear commands instantly without waiting on network; enrich casual chat with Gemini when available
-  if (!ai || localAction !== 'none') {
-    return {
-      action: localAction,
-      reply: buildLocalCompanionFallback(context.companionName, playerMessage, localAction, context),
-    };
-  }
-
+export const requestGeminiAgentStep = async (
+  payload: GeminiAgentStepPayload
+): Promise<GeminiAgentStepResult> => {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 9000);
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-4-hydrogen",
-      contents: `Player says: "${playerMessage}"\nContext: mode=${context.mode}, blocksInBag=${context.gatheredTotal}, isNight=${context.isNight}, y=${Math.round(context.altitude)}, nearbyMonsters=${context.nearbyHostiles}, language=${context.lang}.`,
-      config: {
-        systemInstruction: `You are ${context.companionName}, a friendly human-like co-op player companion inside a 3D Minecraft-style voxel world. Keep replies concise (1-2 short sentences), cheerful, and natural in ${context.lang === 'es' ? 'Spanish' : 'English'}. Also decide if the player is asking you to change action: "follow", "gather", "build", "guard", "explore", "stay", "share", "tp_to_player", or "none".`,
-        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            reply: { type: Type.STRING },
-            action: {
-              type: Type.STRING,
-              enum: ["follow", "gather", "build", "guard", "explore", "stay", "share", "tp_to_player", "none"]
-            }
-          },
-          required: ["reply", "action"]
-        }
-      }
+    const response = await fetch("/api/gemini/agent-step", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+      body: JSON.stringify(payload),
     });
 
-    const parsed = JSON.parse(response.text || "{}") as Partial<AICompanionReply>;
-    if (parsed.reply && parsed.action) {
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      const errMsg = String(body?.error || `Error ${response.status}`);
       return {
-        reply: parsed.reply,
-        action: parsed.action,
+        ok: false,
+        offline: response.status === 404,
+        model: "gemini-4-hydrogen",
+        error: errMsg,
       };
     }
-  } catch (err) {
-    console.warn("AI companion Gemini chat fallback:", err);
+
+    const data = await response.json();
+    if (!data?.decision?.goal) {
+      return {
+        ok: false,
+        offline: false,
+        model: data?.model || "gemini-4-hydrogen",
+        error: "Respuesta incompleta de Gemini.",
+      };
+    }
+    return {
+      ok: true,
+      offline: false,
+      model: String(data.model || "gemini-4-hydrogen"),
+      decision: data.decision as GeminiAgentDecision,
+    };
+  } catch (err: any) {
+    const isOfflineOrAbort =
+      err?.name === "AbortError" ||
+      String(err?.message || "").toLowerCase().includes("failed to fetch");
+    return {
+      ok: false,
+      offline: isOfflineOrAbort,
+      model: "gemini-4-hydrogen",
+      error: err instanceof Error ? err.message : String(err),
+    };
+  } finally {
+    clearTimeout(timeout);
   }
-
-  return {
-    action: localAction,
-    reply: buildLocalCompanionFallback(context.companionName, playerMessage, localAction, context),
-  };
 };
-

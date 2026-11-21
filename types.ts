@@ -237,13 +237,62 @@ export interface ActivePlayerInfo {
   dimension: string;
 }
 
-export type AICompanionMode = 'follow' | 'gather' | 'build' | 'guard' | 'explore' | 'stay';
+export type GeminiAgentGoal =
+  | 'explore_far'
+  | 'chop_trees'
+  | 'mine_surface'
+  | 'dig_mine'
+  | 'build_camp'
+  | 'hunt_mobs'
+  | 'escape_hazard';
 
-export interface AICompanionConfig {
+export interface GeminiAgentConfig {
   enabled: boolean;
   name: string;
   skinId: CharacterSkinId;
-  mode: AICompanionMode;
+  autonomyStyle: 'balanced' | 'miner' | 'explorer' | 'builder';
+}
+
+export interface GeminiAgentOutcome {
+  goal: GeminiAgentGoal;
+  action: string;
+  reward: number;
+  y: number;
+  biome: string;
+  timestamp: number;
+}
+
+export interface GeminiAgentMemory {
+  xp: number;
+  level: number;
+  blocksMined: number;
+  oresFound: number;
+  mobsDefeated: number;
+  campsBuilt: number;
+  deaths: number;
+  maxDistanceReached: number;
+  strategyScores: Record<GeminiAgentGoal, number>;
+  recentOutcomes: GeminiAgentOutcome[];
+  learnedLessons: string[];
+  lastThought: string;
+  lastModel: string;
+}
+
+export interface GeminiAgentTelemetry {
+  pos: Vector3D;
+  distanceFromPlayer: number;
+  hp: number;
+  maxHp: number;
+  alive: boolean;
+  goal: GeminiAgentGoal;
+  targetY: number;
+  statusLabel: string;
+  biome: string;
+  geminiConnected: boolean;
+  geminiError: string | null;
+  modelName: string;
+  bagSummary: Record<number, number>;
+  memory: GeminiAgentMemory;
 }
 
 export type RealmPlanTier = 'none' | 'basic' | 'plus';

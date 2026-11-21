@@ -4,10 +4,10 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { Stars, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { CHUNK_SIZE, WORLD_HEIGHT, BLOCK_COLORS, VIEW_DISTANCE, BLOCK_NAMES } from '../constants';
-import { BlockType, EntityType, EntityData, Vector3D, NoiseConfig, PerformanceConfig, CharacterSkinId, CustomCharacterConfig, ActivePlayerInfo, AICompanionConfig, RealmEditorConfig, RealmBatchEditPayload } from '../types';
+import { BlockType, EntityType, EntityData, Vector3D, NoiseConfig, PerformanceConfig, CharacterSkinId, CustomCharacterConfig, ActivePlayerInfo, GeminiAgentConfig, GeminiAgentTelemetry, RealmEditorConfig, RealmBatchEditPayload } from '../types';
 import { playPlaceSound, playBreakSound, playStepSound, resumeAudio, playSleepSound, playHurtSound, playZombieSound, playCreeperSizzle, playExplosionSound, playBowShootSound, updateAmbientEnvironment, playJukeboxMusic, stopJukeboxMusic, stopAllJukeboxMusic, playCatSound, playAttackSwingSound } from '../services/audioService';
 import { CharacterModel, FirstPersonHand, CHARACTER_SKINS, resolveCharacterSkin } from './CharacterModel';
-import AICompanion, { AICompanionCombatState, HitEntityOptions } from './AICompanion';
+import GeminiAutonomousAgent, { AutonomousAgentCombatState, HitEntityOptions } from './GeminiAutonomousAgent';
 import { gameState } from '../store';
 import { createNoise2D, createNoise3D } from 'simplex-noise';
 
@@ -631,12 +631,14 @@ interface VoxelWorldProps {
   customSkin?: CustomCharacterConfig;
   playerPoseRef?: React.MutableRefObject<{ yaw: number; pitch: number }>;
   externalMoveVectorRef?: React.MutableRefObject<{ x: number; y: number }>;
-  aiCompanionConfig?: AICompanionConfig;
-  aiCompanionTpTrigger?: number;
-  aiCompanionPosRef?: React.MutableRefObject<Vector3D>;
-  aiCompanionBagRef?: React.MutableRefObject<Record<number, number>>;
-  onAICompanionBuildComplete?: () => void;
-  onAICompanionSpeak?: (msg: string) => void;
+  geminiAgentConfig?: GeminiAgentConfig;
+  geminiAgentPosRef?: React.MutableRefObject<Vector3D>;
+  geminiAgentBagRef?: React.MutableRefObject<Record<number, number>>;
+  geminiAgentMemoryResetTrigger?: number;
+  geminiAgentChatPrompt?: { id: number; text: string } | null;
+  onGeminiAgentSpeak?: (msg: string) => void;
+  onGeminiAgentTelemetry?: (telemetry: GeminiAgentTelemetry) => void;
+  lang?: 'es' | 'en';
   initialBlockColors?: Record<string, string>;
   onBatchWorldEdit?: (payload: RealmBatchEditPayload) => void;
   realmEditorConfig?: RealmEditorConfig;
@@ -774,7 +776,7 @@ const Animal = React.memo<{
   onBlockEditRef?: React.MutableRefObject<any>;
   entitiesRef?: React.MutableRefObject<any>;
   weatherRef?: React.MutableRefObject<'clear' | 'rain' | 'snow' | 'thunderstorm' | 'snow_rain'>;
-  companionCombatRef?: React.MutableRefObject<AICompanionCombatState>;
+  companionCombatRef?: React.MutableRefObject<AutonomousAgentCombatState>;
 }>(({ data, checkSolid, playerPosRef, removeEntity, spawnArrow, chunksRef, setChunks, editsRef, particlesRef, gameTimeRef, currentBlockRef, perfConfig, onBlockEditRef, entitiesRef, weatherRef, companionCombatRef }) => {
   const meshRef = useRef<THREE.Group>(null);
   const velocityY = useRef(0);
@@ -5759,12 +5761,14 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
     customSkin,
     playerPoseRef,
     externalMoveVectorRef,
-    aiCompanionConfig,
-    aiCompanionTpTrigger = 0,
-    aiCompanionPosRef,
-    aiCompanionBagRef,
-    onAICompanionBuildComplete,
-    onAICompanionSpeak,
+    geminiAgentConfig,
+    geminiAgentPosRef,
+    geminiAgentBagRef,
+    geminiAgentMemoryResetTrigger = 0,
+    geminiAgentChatPrompt = null,
+    onGeminiAgentSpeak,
+    onGeminiAgentTelemetry,
+    lang = 'es',
     initialBlockColors,
     onBatchWorldEdit,
     realmEditorConfig,
@@ -5869,9 +5873,9 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
   const [chunks, setChunks] = useState<Record<string, Uint8Array>>({});
   const chunksRef = useRef(chunks);
   chunksRef.current = chunks;
-  const fallbackCompanionPosRef = useRef<Vector3D>({ x: 0, y: 80, z: 0 });
-  const fallbackCompanionBagRef = useRef<Record<number, number>>({});
-  const aiCompanionCombatRef = useRef<AICompanionCombatState>({
+  const fallbackAgentPosRef = useRef<Vector3D>({ x: 0, y: 80, z: 0 });
+  const fallbackAgentBagRef = useRef<Record<number, number>>({});
+  const autonomousAgentCombatRef = useRef<AutonomousAgentCombatState>({
     alive: false,
     pos: { x: 0, y: 80, z: 0 },
     hp: 20,
@@ -6620,15 +6624,8 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
               const isSolid = dNoise < threshold;
 
               if (isSolid) {
-                data[idx] = BlockType.NETHERRACK;
-
-                // Seeded ore generation
-                const rOre = getSeededRandom(seed + 999, wx, wz, y);
-                if (rOre < 0.035) {
-                  data[idx] = BlockType.NETHER_QUARTZ_ORE;
-                } else if (rOre < 0.045) {
-                  data[idx] = BlockType.NETHER_BRICKS; 
-                }
+                const nQuartz = worldConf.cave3D(wx * 0.22 + 41, y * 0.22 - 17, wz * 0.22 + 9);
+                data[idx] = nQuartz > 0.72 ? BlockType.NETHER_QUARTZ_ORE : BlockType.NETHERRACK;
               } else {
                 if (y <= 32) {
                   data[idx] = BlockType.LAVA;
@@ -6820,17 +6817,22 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
             }
             
             if (y <= h) {
-              const seaRand = getSeededRandom(seed, wx, wz, 71);
+              // Coherent 2D simplex patches for seabeds & beaches instead of single-block confetti
+              const seaPatch = worldConf.fbmNoiseFun(wx * 0.055 + 17.3, wz * 0.055 - 11.7);
               if (y === h) {
                  if (biome === 'editable') {
                      data[idx] = activeBiomeConfig?.surface ?? BlockType.MOSS;
                  }
                  else if (h <= 55) {
-                     // Seabed / Lakebed materials
+                     // Natural coherent seabed / lakebed banks
                      if (biome === 'swamp') {
-                         data[idx] = seaRand < 0.4 ? BlockType.DIRT : BlockType.MOSS;
+                         data[idx] = seaPatch < -0.1 ? BlockType.DIRT : BlockType.MOSS;
+                     } else if (seaPatch < 0.18) {
+                         data[idx] = BlockType.SAND;
+                     } else if (seaPatch < 0.45) {
+                         data[idx] = BlockType.GRAVEL;
                      } else {
-                         data[idx] = seaRand < 0.68 ? BlockType.SAND : (seaRand < 0.88 ? BlockType.GRAVEL : BlockType.DIRT);
+                         data[idx] = BlockType.DIRT;
                      }
                  }
                  else if (biome === 'desert') data[idx] = BlockType.SAND;
@@ -6873,7 +6875,9 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
                  if (biome === 'editable') {
                      data[idx] = activeBiomeConfig?.underground ?? BlockType.DIRT;
                  }
-                 else if (biome === 'desert' || h < 57) data[idx] = h <= 54 && seaRand > 0.72 ? BlockType.GRAVEL : BlockType.SAND;
+                 else if (biome === 'desert' || h < 57) {
+                     data[idx] = h <= 54 && seaPatch >= 0.25 ? BlockType.GRAVEL : BlockType.SAND;
+                 }
                  else if (biome === 'mesa') data[idx] = BlockType.TERRACOTTA_ORANGE;
                  else if (biome === 'mountains') {
                      data[idx] = BlockType.STONE;
@@ -6881,52 +6885,48 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
                  else data[idx] = BlockType.DIRT;
               }
               else { // y <= h - 3
-                 if (caveNoise(wx, y, wz, worldConf.cave3D) > 0.5) {
+                 // Keep a solid 6-block floor under seas/lakes so caves don't punch random holes into the ocean floor
+                 const allowCaveHere = h > 56 || y <= Math.min(44, h - 6);
+                 if (allowCaveHere && caveNoise(wx, y, wz, worldConf.cave3D) > 0.5) {
                      if (y < 12) {
                          data[idx] = BlockType.LAVA;
                      } else {
                          data[idx] = BlockType.AIR;
                      }
+                 } else {
+                     // Smooth deep-layer transition and coherent 3D mineral veins / gravel pockets
+                     const deepWave = worldConf.cave3D(wx * 0.08 + 7, y * 0.08, wz * 0.08 - 5) * 3;
+                     const isDeepSlate = y + deepWave < 20;
+                     const gravelBlob = worldConf.cave3D(wx * 0.095 - 31, y * 0.14 + 19, wz * 0.095 + 13);
+
+                     if (gravelBlob > 0.72) {
+                         data[idx] = BlockType.GRAVEL;
+                     } else if (isDeepSlate) {
+                         const vDiamond = worldConf.cave3D(wx * 0.28 + 11, y * 0.28 + 3, wz * 0.28 - 19);
+                         const vRedstone = worldConf.cave3D(wx * 0.25 - 43, y * 0.25 + 17, wz * 0.25 + 7);
+                         const vIron = worldConf.cave3D(wx * 0.22 + 71, y * 0.22 - 11, wz * 0.22 + 29);
+                         const vGold = worldConf.cave3D(wx * 0.26 - 19, y * 0.26 + 53, wz * 0.26 - 41);
+                         const vCoal = worldConf.cave3D(wx * 0.19 + 89, y * 0.19 - 23, wz * 0.19 - 67);
+                         if (vDiamond > 0.77) data[idx] = BlockType.DIAMOND_ORE;
+                         else if (vRedstone > 0.73) data[idx] = BlockType.REDSTONE_ORE;
+                         else if (vGold > 0.75) data[idx] = BlockType.GOLD_ORE;
+                         else if (vIron > 0.71) data[idx] = BlockType.IRON_ORE;
+                         else if (vCoal > 0.70) data[idx] = BlockType.COAL_ORE;
+                         else data[idx] = BlockType.TERRACOTTA_BROWN;
+                     } else {
+                         const vCoal = worldConf.cave3D(wx * 0.19 + 89, y * 0.19 - 23, wz * 0.19 - 67);
+                         const vIron = worldConf.cave3D(wx * 0.22 + 71, y * 0.22 - 11, wz * 0.22 + 29);
+                         const vCopper = worldConf.cave3D(wx * 0.21 - 61, y * 0.21 + 37, wz * 0.21 + 47);
+                         const vGold = worldConf.cave3D(wx * 0.26 - 19, y * 0.26 + 53, wz * 0.26 - 41);
+                         const vSulfur = worldConf.cave3D(wx * 0.24 + 5, y * 0.24 - 79, wz * 0.24 + 97);
+                         if (y < 34 && vGold > 0.76) data[idx] = BlockType.GOLD_ORE;
+                         else if (vIron > 0.72) data[idx] = BlockType.IRON_ORE;
+                         else if (vCopper > 0.72) data[idx] = BlockType.COPPER_ORE;
+                         else if (vCoal > 0.69) data[idx] = BlockType.COAL_ORE;
+                         else if (y < 40 && vSulfur > 0.77) data[idx] = BlockType.SULFUR;
+                         else data[idx] = BlockType.STONE;
+                     }
                  }
-                  else {
-                      // Generate Deep Layers and dynamic mineral veins!
-                      const isDeepSlate = y < 22;
-                      const oreRand = getSeededRandom(seed, wx, wz, y * 4.3);
-                      
-                      if (isDeepSlate) {
-                          if (oreRand < 0.012) {
-                              data[idx] = BlockType.DIAMOND_ORE;
-                          } else if (oreRand < 0.035) {
-                              data[idx] = BlockType.REDSTONE_ORE;
-                          } else if (oreRand < 0.06) {
-                              data[idx] = BlockType.IRON_ORE;
-                          } else if (oreRand < 0.08) {
-                              data[idx] = BlockType.GOLD_ORE;
-                          } else if (oreRand < 0.12) {
-                              data[idx] = BlockType.COAL_ORE;
-                          } else if (oreRand < 0.17) {
-                              data[idx] = BlockType.GRAVEL; // natural gravel generation!
-                          } else {
-                              data[idx] = BlockType.TERRACOTTA_BROWN;
-                          }
-                      } else {
-                          if (oreRand < 0.015) {
-                              data[idx] = BlockType.IRON_ORE;
-                          } else if (oreRand < 0.038) {
-                              data[idx] = BlockType.COAL_ORE;
-                          } else if (oreRand < 0.046) {
-                              data[idx] = BlockType.GOLD_ORE;
-                          } else if (oreRand < 0.052) {
-                              data[idx] = BlockType.SULFUR;
-                          } else if (oreRand < 0.075) {
-                              data[idx] = BlockType.COPPER_ORE;
-                          } else if (oreRand < 0.14) {
-                              data[idx] = BlockType.GRAVEL; // natural gravel generation!
-                          } else {
-                              data[idx] = BlockType.STONE;
-                          }
-                      }
-                  }
               }
             } else {
               if (y <= 56) {
@@ -7075,8 +7075,13 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
         }
       }
 
-      // --- MINESHAFTS GENERATION ---
-      const isMineshaftChunk = getSeededRandom(seed + 300, cx, cz, 444) < 0.05 && !isFlatWorld;
+      // --- MINESHAFTS GENERATION (dry overworld terrain only, never under ocean) ---
+      const centerSurface = getWorldHeight(cx * CHUNK_SIZE + 8, cz * CHUNK_SIZE + 8);
+      const isMineshaftChunk =
+        !isFlatWorld &&
+        activeDimension !== 'nether' &&
+        centerSurface.h >= 58 &&
+        getSeededRandom(seed + 300, cx, cz, 444) < 0.05;
       if (isMineshaftChunk) {
         const my = 24;
         for (let lx = 0; lx < CHUNK_SIZE; lx++) {
@@ -7103,35 +7108,40 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
         data[mcIdx] = BlockType.CHEST;
       }
 
-      // --- DESERT TEMPLE/PYRAMID GENERATION ---
+      // --- DESERT TEMPLE/PYRAMID GENERATION (strictly desert biome only) ---
       const villageInfo = getVillageLayoutInfo(cx, cz, seed, isFlatWorld, activeDimension);
       const rHutCheck = getSeededRandom(seed, cx, cz, 150);
-      const isDesertPyramid = !isFlatWorld && activeDimension !== 'nether' && !villageInfo && rHutCheck < 0.025 && !isMineshaftChunk;
+      const isDesertPyramid =
+        !isFlatWorld &&
+        activeDimension !== 'nether' &&
+        !villageInfo &&
+        centerSurface.biome === 'desert' &&
+        centerSurface.h >= 57 &&
+        rHutCheck < 0.025 &&
+        !isMineshaftChunk;
       if (isDesertPyramid) {
-        const dh = getWorldHeight(cx * CHUNK_SIZE + 8, cz * CHUNK_SIZE + 8).h;
-        if (dh >= 57) {
-          const baseSize = 5;
-          for (let dy = 0; dy <= 4; dy++) {
-            const size = baseSize - dy;
-            const py = dh + dy;
-            for (let px = 8 - size; px <= 8 + size; px++) {
-              for (let pz = 8 - size; pz <= 8 + size; pz++) {
-                if (px >= 0 && px < CHUNK_SIZE && pz >= 0 && pz < CHUNK_SIZE) {
-                  const pidx = (px * CHUNK_SIZE * WORLD_HEIGHT) + (py * CHUNK_SIZE) + pz;
-                  data[pidx] = dy === 0 ? BlockType.TERRACOTTA_ORANGE : BlockType.TERRACOTTA_YELLOW;
-                }
+        const dh = centerSurface.h;
+        const baseSize = 5;
+        for (let dy = 0; dy <= 4; dy++) {
+          const size = baseSize - dy;
+          const py = dh + dy;
+          for (let px = 8 - size; px <= 8 + size; px++) {
+            for (let pz = 8 - size; pz <= 8 + size; pz++) {
+              if (px >= 0 && px < CHUNK_SIZE && pz >= 0 && pz < CHUNK_SIZE) {
+                const pidx = (px * CHUNK_SIZE * WORLD_HEIGHT) + (py * CHUNK_SIZE) + pz;
+                data[pidx] = dy === 0 ? BlockType.TERRACOTTA_ORANGE : BlockType.TERRACOTTA_YELLOW;
               }
             }
           }
-          // Inside chamber
-          for (let dy = 0; dy <= 1; dy++) {
-            const py = dh + dy;
-            const pidx = (8 * CHUNK_SIZE * WORLD_HEIGHT) + (py * CHUNK_SIZE) + 8;
-            data[pidx] = BlockType.AIR;
-          }
-          const chestIdx = (8 * CHUNK_SIZE * WORLD_HEIGHT) + (dh * CHUNK_SIZE) + 8;
-          data[chestIdx] = BlockType.CHEST;
         }
+        // Inside chamber
+        for (let dy = 0; dy <= 1; dy++) {
+          const py = dh + dy;
+          const pidx = (8 * CHUNK_SIZE * WORLD_HEIGHT) + (py * CHUNK_SIZE) + 8;
+          data[pidx] = BlockType.AIR;
+        }
+        const chestIdx = (8 * CHUNK_SIZE * WORLD_HEIGHT) + (dh * CHUNK_SIZE) + 8;
+        data[chestIdx] = BlockType.CHEST;
       }
 
       // 1. SPACIOUS MULTI-CHUNK VILLAGE GENERATION (Central Fountain Plaza + Well-Separated Houses on Outer Avenues)
@@ -7783,7 +7793,7 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
     return res;
   }, [_generateEntities]);
 
-  const ensureCompanionChunk = useCallback((wx: number, wz: number) => {
+  const ensureAutonomousAgentChunk = useCallback((wx: number, wz: number) => {
     const cx = Math.floor(Math.round(wx) / CHUNK_SIZE);
     const cz = Math.floor(Math.round(wz) / CHUNK_SIZE);
     const k = `${cx},${cz}`;
@@ -7844,23 +7854,21 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
       }
     }
 
-    // Prune far-away chunks to free up GPU and system memory (keep chunks right under exploring AI companion)
+    // Prune far-away chunks to free up GPU and system memory (keep 3x3 simulation window around autonomous Gemini AI at ANY distance)
     const PRUNE_DISTANCE = viewDist + 1;
-    const compActivePos = aiCompanionConfig?.enabled ? (aiCompanionPosRef?.current || aiCompanionCombatRef.current.pos) : null;
-    const ccx = compActivePos ? Math.floor(compActivePos.x / CHUNK_SIZE) : pcx;
-    const ccz = compActivePos ? Math.floor(compActivePos.z / CHUNK_SIZE) : pcz;
+    const agentActivePos = geminiAgentConfig?.enabled ? (geminiAgentPosRef?.current || autonomousAgentCombatRef.current.pos) : null;
+    const ccx = agentActivePos ? Math.floor(agentActivePos.x / CHUNK_SIZE) : pcx;
+    const ccz = agentActivePos ? Math.floor(agentActivePos.z / CHUNK_SIZE) : pcz;
     for (const key in chunksRef.current) {
       const comma = key.indexOf(',');
       const cx = parseInt(key.slice(0, comma), 10);
       const cz = parseInt(key.slice(comma + 1), 10);
       const farFromPlayer = Math.abs(cx - pcx) > PRUNE_DISTANCE || Math.abs(cz - pcz) > PRUNE_DISTANCE;
-      const nearCompanion =
-        compActivePos !== null &&
+      const nearAutonomousAgent =
+        agentActivePos !== null &&
         Math.abs(cx - ccx) <= 1 &&
-        Math.abs(cz - ccz) <= 1 &&
-        Math.abs(cx - pcx) <= 8 &&
-        Math.abs(cz - pcz) <= 8;
-      if (farFromPlayer && !nearCompanion) {
+        Math.abs(cz - ccz) <= 1;
+      if (farFromPlayer && !nearAutonomousAgent) {
         delete chunksRef.current[key];
         delete entitiesRef.current[key];
       }
@@ -9325,7 +9333,7 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
       }
     }
     const pPos = playerPosRef.current;
-    const cPos = aiCompanionConfig?.enabled ? aiCompanionCombatRef.current.pos : null;
+    const cPos = geminiAgentConfig?.enabled ? autonomousAgentCombatRef.current.pos : null;
     if (pPos && allEntities.length > 1) {
       allEntities.sort((a, b) => {
         const dpa = (a.pos.x - pPos.x) * (a.pos.x - pPos.x) + (a.pos.z - pPos.z) * (a.pos.z - pPos.z);
@@ -9337,7 +9345,7 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
     }
     const maxEnts = perfConfig?.maxEntities ?? 15;
     return allEntities.slice(0, maxEnts);
-  }, [entities, perfConfig?.maxEntities, aiCompanionConfig?.enabled, Math.floor(playerPos.x / CHUNK_SIZE), Math.floor(playerPos.z / CHUNK_SIZE)]);
+  }, [entities, perfConfig?.maxEntities, geminiAgentConfig?.enabled, Math.floor(playerPos.x / CHUNK_SIZE), Math.floor(playerPos.z / CHUNK_SIZE)]);
 
   return (
     <div
@@ -9464,7 +9472,7 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
             onBlockEditRef={onBlockEditRef}
             entitiesRef={entitiesRef}
             weatherRef={weatherRef}
-            companionCombatRef={aiCompanionCombatRef}
+            companionCombatRef={autonomousAgentCombatRef}
           />
         ))}
 
@@ -9495,9 +9503,10 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
         ))}
 
         <Player moveVector={moveVector} lookOffsetRef={lookOffsetRef} onUpdatePos={handlePlayerBlockChange} isJumping={isJumping} getCollisionHeight={getCollisionHeight} checkSolid={checkSolid} perspective={perspective} gameMode={gameMode} worldType={worldType} chunks={chunks} playerPosRef={playerPosRef} playerPos={playerPos} onPortalTeleport={onPortalTeleport} autoJumpEnabled={autoJumpEnabled} isZooming={isZooming} fov={fov} particlesRef={particlesRef} attackTrigger={attackTrigger} characterSkin={characterSkin} customSkin={customSkin} currentBlock={currentBlock} playerPoseRef={playerPoseRef} externalMoveVectorRef={externalMoveVectorRef} />
-        {aiCompanionConfig?.enabled && (
-          <AICompanion
-            config={aiCompanionConfig}
+        {geminiAgentConfig?.enabled && (
+          <GeminiAutonomousAgent
+            config={geminiAgentConfig}
+            lang={lang}
             playerPosRef={playerPosRef}
             chunksRef={chunksRef}
             savedChunksRef={savedChunksRef}
@@ -9509,14 +9518,15 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
             checkSolid={checkSolid}
             hitEntityById={hitEntityById}
             onBlockEditRef={onBlockEditRef}
-            companionPosRef={aiCompanionPosRef || fallbackCompanionPosRef}
-            companionBagRef={aiCompanionBagRef || fallbackCompanionBagRef}
-            companionCombatRef={aiCompanionCombatRef}
-            ensureChunkAt={ensureCompanionChunk}
-            tpTrigger={aiCompanionTpTrigger}
-            onBuildComplete={onAICompanionBuildComplete}
-            onCompanionSpeak={onAICompanionSpeak}
-            onCompanionToast={triggerInGameMessage}
+            agentPosRef={geminiAgentPosRef || fallbackAgentPosRef}
+            agentBagRef={geminiAgentBagRef || fallbackAgentBagRef}
+            agentCombatRef={autonomousAgentCombatRef}
+            ensureChunkAt={ensureAutonomousAgentChunk}
+            memoryResetTrigger={geminiAgentMemoryResetTrigger}
+            externalChatPrompt={geminiAgentChatPrompt}
+            onAgentSpeak={onGeminiAgentSpeak}
+            onAgentToast={triggerInGameMessage}
+            onAgentTelemetry={onGeminiAgentTelemetry}
           />
         )}
         <ParticleSystem particlesRef={particlesRef} enabled={perfConfig?.particlesEnabled ?? true} />
