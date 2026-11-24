@@ -10,12 +10,51 @@ import { CharacterModel, FirstPersonHand, CHARACTER_SKINS, resolveCharacterSkin 
 import GeminiAutonomousAgent, { AutonomousAgentCombatState, HitEntityOptions } from './GeminiAutonomousAgent';
 import { gameState } from '../store';
 import { createNoise2D, createNoise3D } from 'simplex-noise';
+import { isSoftwareWebGL } from '../utils/webglUtils';
 
-// High-performance bounded height cache
-const worldHeightCache = new Map<string, { h: number; biome: string }>();
+// High-performance bounded height cache (numeric keys avoid template string churn)
+const worldHeightCache = new Map<number, { h: number; biome: string }>();
+const worldHeightFallbackCache = new Map<string, { h: number; biome: string }>();
+
+// Per-chunk highest non-air Y layer so Chunk meshing and torch scanning skip empty sky above terrain
+const chunkMaxYCache = new WeakMap<Uint8Array, number>();
+const getChunkMaxY = (data: Uint8Array): number => {
+  const cached = chunkMaxYCache.get(data);
+  if (cached !== undefined) return cached;
+  let maxY = 0;
+  const xMult = CHUNK_SIZE * WORLD_HEIGHT;
+  for (let y = WORLD_HEIGHT - 1; y >= 0; y--) {
+    const yOff = y * CHUNK_SIZE;
+    let found = false;
+    for (let x = 0; x < CHUNK_SIZE && !found; x++) {
+      const base = x * xMult + yOff;
+      for (let z = 0; z < CHUNK_SIZE; z++) {
+        if (data[base + z] !== 0) {
+          found = true;
+          break;
+        }
+      }
+    }
+    if (found) {
+      maxY = y;
+      break;
+    }
+  }
+  chunkMaxYCache.set(data, maxY);
+  return maxY;
+};
+
+const bumpChunkMaxY = (data: Uint8Array | undefined, y: number) => {
+  if (!data) return;
+  const cur = chunkMaxYCache.get(data);
+  if (cur !== undefined && y > cur) {
+    chunkMaxYCache.set(data, Math.min(WORLD_HEIGHT - 1, y));
+  }
+};
 
 export const clearNoiseCaches = () => {
     worldHeightCache.clear();
+    worldHeightFallbackCache.clear();
 };
 
 // Reusable scratch math objects to eliminate per-frame GC allocations
@@ -30,24 +69,7 @@ const PLAYER_BOX_POOL = Array.from({ length: 128 }, () => ({
   minX: 0, minY: 0, minZ: 0, maxX: 0, maxY: 0, maxZ: 0
 }));
 
-let _cachedIsSoftwareGL: boolean | null = null;
-const detectSoftwareGL = (): boolean => {
-  if (_cachedIsSoftwareGL !== null) return _cachedIsSoftwareGL;
-  try {
-    const canvas = document.createElement('canvas');
-    const gl = canvas.getContext('webgl2') || canvas.getContext('webgl');
-    if (!gl) {
-      _cachedIsSoftwareGL = true;
-      return true;
-    }
-    const dbg = gl.getExtension('WEBGL_debug_renderer_info');
-    const renderer = dbg ? String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || '') : '';
-    _cachedIsSoftwareGL = /SwiftShader|llvmpipe|softpipe|Software Rasterizer|Microsoft Basic Render/i.test(renderer);
-  } catch {
-    _cachedIsSoftwareGL = false;
-  }
-  return _cachedIsSoftwareGL;
-};
+const detectSoftwareGL = isSoftwareWebGL;
 
 // Seeded RNG for noise
 const lcg = (seed: number) => () => {
@@ -525,16 +547,27 @@ const _getWorldHeight = (x: number, z: number) => {
 };
 
 const getWorldHeight = (x: number, z: number) => {
-    const cacheKey = `${x},${z}`;
-    const cached = worldHeightCache.get(cacheKey);
-    if (cached) return cached;
-
-    if (worldHeightCache.size > 80000) {
+    const ix = Math.floor(x);
+    const iz = Math.floor(z);
+    if (ix >= -65000 && ix <= 65000 && iz >= -65000 && iz <= 65000) {
+      const numKey = (ix + 65536) * 131072 + (iz + 65536);
+      const cached = worldHeightCache.get(numKey);
+      if (cached) return cached;
+      if (worldHeightCache.size > 60000) {
         worldHeightCache.clear();
+      }
+      const res = _getWorldHeight(ix, iz);
+      worldHeightCache.set(numKey, res);
+      return res;
     }
-
-    const res = _getWorldHeight(x, z);
-    worldHeightCache.set(cacheKey, res);
+    const cacheKey = `${ix},${iz}`;
+    const cached = worldHeightFallbackCache.get(cacheKey);
+    if (cached) return cached;
+    if (worldHeightFallbackCache.size > 20000) {
+      worldHeightFallbackCache.clear();
+    }
+    const res = _getWorldHeight(ix, iz);
+    worldHeightFallbackCache.set(cacheKey, res);
     return res;
 };
 
@@ -4074,7 +4107,11 @@ const isColorableCubeBlock = (type: BlockType): boolean =>
   type !== BlockType.PORTAL;
 
 const Chunk = React.memo<ChunkProps>(({ cx, cz, blocks, neighborPX, neighborNX, neighborPZ, neighborNZ, onInteraction, currentBlockRef, chunkColorMap }) => {
-  const { layers, doorAxes, coloredInstances, coloredValues } = useMemo(() => {
+  // Split interior (14x14 = 196 columns, never depends on neighbor chunks!) from perimeter (60 columns)
+  // and bound every column loop by getChunkMaxY(blocks) so streaming neighbors never re-scans all 56,320 voxels.
+  const maxY = useMemo(() => Math.min(WORLD_HEIGHT - 1, getChunkMaxY(blocks) + 1), [blocks]);
+
+  const interior = useMemo(() => {
     const map = new Map<BlockType, number[]>();
     const dAxes: Record<string, boolean> = {};
     const cPos: number[] = [];
@@ -4083,19 +4120,93 @@ const Chunk = React.memo<ChunkProps>(({ cx, cz, blocks, neighborPX, neighborNX, 
     const y_mult = CHUNK_SIZE;
     const x_mult = CHUNK_SIZE * WORLD_HEIGHT;
 
-    for (let x = 0; x < CHUNK_SIZE; x++) {
+    for (let x = 1; x < CHUNK_SIZE - 1; x++) {
       const wx = cx * CHUNK_SIZE + x;
       const xMultOffset = x * x_mult;
-      const atEdgePX = x === 15;
-      const atEdgeNX = x === 0;
-      
-      for (let z = 0; z < CHUNK_SIZE; z++) {
+      for (let z = 1; z < CHUNK_SIZE - 1; z++) {
         const wz = cz * CHUNK_SIZE + z;
         const xz_offset = xMultOffset + z;
+        for (let y = 0; y <= maxY; y++) {
+          const idx = xz_offset + (y * y_mult);
+          const type = blocks[idx] as BlockType;
+          if (type === 0) continue;
+
+          const topExposed = y === WORLD_HEIGHT - 1 ? true : isBlockExposedTo(type, blocks[idx + y_mult]);
+          const bottomExposed = y === 0 ? false : isBlockExposedTo(type, blocks[idx - y_mult]);
+          const nbPX = blocks[idx + x_mult];
+          const pxExposed = isBlockExposedTo(type, nbPX);
+          const nbNX = blocks[idx - x_mult];
+          const nxExposed = isBlockExposedTo(type, nbNX);
+          const nbPZ = blocks[idx + 1];
+          const pzExposed = isBlockExposedTo(type, nbPZ);
+          const nbNZ = blocks[idx - 1];
+          const nzExposed = isBlockExposedTo(type, nbNZ);
+
+          if (!topExposed && !bottomExposed && !pxExposed && !nxExposed && !pzExposed && !nzExposed) {
+            continue;
+          }
+
+          if (type === BlockType.DOOR && y > 0 && blocks[idx - y_mult] === BlockType.DOOR) {
+            continue;
+          }
+
+          if (type === BlockType.DOOR) {
+            const xWalls = (!isChunkBlockTransparent(nbPX) ? 1 : 0) + (!isChunkBlockTransparent(nbNX) ? 1 : 0);
+            const zWalls = (!isChunkBlockTransparent(nbPZ) ? 1 : 0) + (!isChunkBlockTransparent(nbNZ) ? 1 : 0);
+            if (zWalls > xWalls) {
+              dAxes[`${wx},${y},${wz}`] = true;
+            }
+          }
+
+          if (hasCustomColors && isColorableCubeBlock(type)) {
+            const customHex = chunkColorMap![`${wx},${y},${wz}`];
+            if (customHex) {
+              cPos.push(wx, y, wz);
+              cVals.push(customHex);
+              continue;
+            }
+          }
+
+          let arr = map.get(type);
+          if (!arr) {
+            arr = [];
+            map.set(type, arr);
+          }
+          arr.push(wx, y, wz);
+        }
+      }
+    }
+    return { map, dAxes, cPos, cVals };
+  }, [blocks, maxY, cx, cz, chunkColorMap]);
+
+  const { layers, doorAxes, coloredInstances, coloredValues } = useMemo(() => {
+    const map = new Map<BlockType, number[]>();
+    for (const [t, arr] of interior.map.entries()) {
+      map.set(t, arr.slice());
+    }
+    const dAxes: Record<string, boolean> = { ...interior.dAxes };
+    const cPos: number[] = interior.cPos.slice();
+    const cVals: string[] = interior.cVals.slice();
+    const hasCustomColors = !!(chunkColorMap && Object.keys(chunkColorMap).length > 0);
+    const y_mult = CHUNK_SIZE;
+    const x_mult = CHUNK_SIZE * WORLD_HEIGHT;
+
+    for (let x = 0; x < CHUNK_SIZE; x++) {
+      const atEdgePX = x === 15;
+      const atEdgeNX = x === 0;
+      const isXEdge = atEdgePX || atEdgeNX;
+      const wx = cx * CHUNK_SIZE + x;
+      const xMultOffset = x * x_mult;
+
+      for (let z = 0; z < CHUNK_SIZE; z++) {
         const atEdgePZ = z === 15;
         const atEdgeNZ = z === 0;
-        
-        for (let y = 0; y < WORLD_HEIGHT; y++) {
+        if (!isXEdge && !atEdgePZ && !atEdgeNZ) continue; // Interior already cached!
+
+        const wz = cz * CHUNK_SIZE + z;
+        const xz_offset = xMultOffset + z;
+
+        for (let y = 0; y <= maxY; y++) {
           const idx = xz_offset + (y * y_mult);
           const type = blocks[idx] as BlockType;
           if (type === 0) continue;
@@ -4115,7 +4226,6 @@ const Chunk = React.memo<ChunkProps>(({ cx, cz, blocks, neighborPX, neighborNX, 
             continue;
           }
 
-          // Skip rendering the top half of doors to prevent vertical double-door rendering overlap
           if (type === BlockType.DOOR && y > 0 && blocks[idx - y_mult] === BlockType.DOOR) {
             continue;
           }
@@ -4147,7 +4257,7 @@ const Chunk = React.memo<ChunkProps>(({ cx, cz, blocks, neighborPX, neighborNX, 
       }
     }
     return { layers: Array.from(map.entries()), doorAxes: dAxes, coloredInstances: cPos, coloredValues: cVals };
-  }, [blocks, cx, cz, neighborPX, neighborNX, neighborPZ, neighborNZ, chunkColorMap]);
+  }, [interior, blocks, maxY, cx, cz, neighborPX, neighborNX, neighborPZ, neighborNZ, chunkColorMap]);
 
   return (
     <group>
@@ -6312,7 +6422,10 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
         continue;
       }
 
-      const [cx, cz] = key.split(',').map(Number);
+      const comma = key.indexOf(',');
+      const cx = parseInt(key.slice(0, comma), 10);
+      const cz = parseInt(key.slice(comma + 1), 10);
+      const maxY = getChunkMaxY(data);
       const localTorches: { x: number; y: number; z: number }[] = [];
       for (let x = 0; x < 16; x++) {
         const wx = cx * CHUNK_SIZE + x;
@@ -6320,7 +6433,7 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
         for (let z = 0; z < 16; z++) {
           const wz = cz * CHUNK_SIZE + z;
           const xz_offset = xMultOffset + z;
-          for (let y = 0; y < WORLD_HEIGHT; y++) {
+          for (let y = 0; y <= maxY; y++) {
             if (data[xz_offset + (y * y_mult)] === BlockType.TORCH) {
               localTorches.push({ x: wx, y, z: wz });
             }
@@ -6391,6 +6504,7 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
               updatedChunksMap[k] = new Uint8Array(existingChunk);
             }
             updatedChunksMap[k][idx] = targetBlock;
+            bumpChunkMaxY(updatedChunksMap[k], wy);
             changedChunkKeys.add(k);
             if (targetBlock === BlockType.WATER || targetBlock === BlockType.LAVA) {
               fluidLevelRef.current.set(editKey, 0);
@@ -6401,9 +6515,11 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
           }
         } else if (saved && saved[k] && saved[k][idx] !== targetBlock) {
           saved[k][idx] = targetBlock;
+          bumpChunkMaxY(saved[k], wy);
         }
       } else if (saved && saved[k] && saved[k][idx] !== targetBlock) {
         saved[k][idx] = targetBlock;
+        bumpChunkMaxY(saved[k], wy);
       }
     }
 
@@ -6802,12 +6918,15 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
           }
           
           const { h, biome } = getWorldHeight(wx, wz);
-          
-          for (let y = 0; y < WORLD_HEIGHT; y++) {
-            const idx = (x * CHUNK_SIZE * WORLD_HEIGHT) + (y * CHUNK_SIZE) + z;
-            if (y === 0) { 
-              data[idx] = BlockType.BEDROCK; 
-              continue; 
+          const colMaxY = Math.max(h, 56);
+          const seaPatch = h < 57 ? worldConf.fbmNoiseFun(wx * 0.055 + 17.3, wz * 0.055 - 11.7) : 0;
+          const colBaseIdx = (x * CHUNK_SIZE * WORLD_HEIGHT) + z;
+
+          for (let y = 0; y <= colMaxY; y++) {
+            const idx = colBaseIdx + (y * CHUNK_SIZE);
+            if (y === 0) {
+              data[idx] = BlockType.BEDROCK;
+              continue;
             } else if (y <= 2) {
               const rBed = getSeededRandom(seed, wx, wz, y * 3.1);
               if (rBed < (3 - y) * 0.5) {
@@ -6815,123 +6934,90 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
                 continue;
               }
             }
-            
-            if (y <= h) {
-              // Coherent 2D simplex patches for seabeds & beaches instead of single-block confetti
-              const seaPatch = worldConf.fbmNoiseFun(wx * 0.055 + 17.3, wz * 0.055 - 11.7);
-              if (y === h) {
-                 if (biome === 'editable') {
-                     data[idx] = activeBiomeConfig?.surface ?? BlockType.MOSS;
-                 }
-                 else if (h <= 55) {
-                     // Natural coherent seabed / lakebed banks
-                     if (biome === 'swamp') {
-                         data[idx] = seaPatch < -0.1 ? BlockType.DIRT : BlockType.MOSS;
-                     } else if (seaPatch < 0.18) {
-                         data[idx] = BlockType.SAND;
-                     } else if (seaPatch < 0.45) {
-                         data[idx] = BlockType.GRAVEL;
-                     } else {
-                         data[idx] = BlockType.DIRT;
-                     }
-                 }
-                 else if (biome === 'desert') data[idx] = BlockType.SAND;
-                 else if (biome === 'mesa') {
-                     const layer = Math.floor(y / 2) % 6;
-                     const colors = [BlockType.TERRACOTTA_BROWN, BlockType.TERRACOTTA_ORANGE, BlockType.TERRACOTTA_RED, BlockType.TERRACOTTA_YELLOW, BlockType.TERRACOTTA_WHITE, BlockType.TERRACOTTA_LIGHT_GRAY];
-                     data[idx] = colors[layer];
-                 }
-                 else if (biome === 'mountains' || biome === 'snow') {
-                     if (h >= 75 || biome === 'snow') {
-                         data[idx] = BlockType.SNOW; // Real snow blocks
-                     } else if (h >= 68) {
-                         data[idx] = BlockType.STONE;
-                     } else if (h === 56) {
-                         data[idx] = BlockType.GRAVEL;
-                     } else {
-                         data[idx] = BlockType.GRASS;
-                     }
-                 }
-                 else if (biome === 'autumn') {
-                     if (h < 57) data[idx] = BlockType.SAND;
-                     else data[idx] = BlockType.AUTUMN_GRASS;
-                 }
-                 else if (biome === 'dark') {
-                     if (h < 57) data[idx] = BlockType.SAND;
-                     else data[idx] = BlockType.DARK_GRASS;
-                 }
-                 else if (biome === 'swamp') {
-                     data[idx] = BlockType.MOSS;
-                 }
-                 else {
-                     if (h < 57) {
-                         data[idx] = BlockType.SAND;
-                     } else {
-                         data[idx] = BlockType.GRASS;
-                     }
-                 }
-              }
-              else if (y < h && y > h - 3) {
-                 if (biome === 'editable') {
-                     data[idx] = activeBiomeConfig?.underground ?? BlockType.DIRT;
-                 }
-                 else if (biome === 'desert' || h < 57) {
-                     data[idx] = h <= 54 && seaPatch >= 0.25 ? BlockType.GRAVEL : BlockType.SAND;
-                 }
-                 else if (biome === 'mesa') data[idx] = BlockType.TERRACOTTA_ORANGE;
-                 else if (biome === 'mountains') {
-                     data[idx] = BlockType.STONE;
-                 }
-                 else data[idx] = BlockType.DIRT;
-              }
-              else { // y <= h - 3
-                 // Keep a solid 6-block floor under seas/lakes so caves don't punch random holes into the ocean floor
-                 const allowCaveHere = h > 56 || y <= Math.min(44, h - 6);
-                 if (allowCaveHere && caveNoise(wx, y, wz, worldConf.cave3D) > 0.5) {
-                     if (y < 12) {
-                         data[idx] = BlockType.LAVA;
-                     } else {
-                         data[idx] = BlockType.AIR;
-                     }
-                 } else {
-                     // Smooth deep-layer transition and coherent 3D mineral veins / gravel pockets
-                     const deepWave = worldConf.cave3D(wx * 0.08 + 7, y * 0.08, wz * 0.08 - 5) * 3;
-                     const isDeepSlate = y + deepWave < 20;
-                     const gravelBlob = worldConf.cave3D(wx * 0.095 - 31, y * 0.14 + 19, wz * 0.095 + 13);
 
-                     if (gravelBlob > 0.72) {
-                         data[idx] = BlockType.GRAVEL;
-                     } else if (isDeepSlate) {
-                         const vDiamond = worldConf.cave3D(wx * 0.28 + 11, y * 0.28 + 3, wz * 0.28 - 19);
-                         const vRedstone = worldConf.cave3D(wx * 0.25 - 43, y * 0.25 + 17, wz * 0.25 + 7);
-                         const vIron = worldConf.cave3D(wx * 0.22 + 71, y * 0.22 - 11, wz * 0.22 + 29);
-                         const vGold = worldConf.cave3D(wx * 0.26 - 19, y * 0.26 + 53, wz * 0.26 - 41);
-                         const vCoal = worldConf.cave3D(wx * 0.19 + 89, y * 0.19 - 23, wz * 0.19 - 67);
-                         if (vDiamond > 0.77) data[idx] = BlockType.DIAMOND_ORE;
-                         else if (vRedstone > 0.73) data[idx] = BlockType.REDSTONE_ORE;
-                         else if (vGold > 0.75) data[idx] = BlockType.GOLD_ORE;
-                         else if (vIron > 0.71) data[idx] = BlockType.IRON_ORE;
-                         else if (vCoal > 0.70) data[idx] = BlockType.COAL_ORE;
-                         else data[idx] = BlockType.TERRACOTTA_BROWN;
-                     } else {
-                         const vCoal = worldConf.cave3D(wx * 0.19 + 89, y * 0.19 - 23, wz * 0.19 - 67);
-                         const vIron = worldConf.cave3D(wx * 0.22 + 71, y * 0.22 - 11, wz * 0.22 + 29);
-                         const vCopper = worldConf.cave3D(wx * 0.21 - 61, y * 0.21 + 37, wz * 0.21 + 47);
-                         const vGold = worldConf.cave3D(wx * 0.26 - 19, y * 0.26 + 53, wz * 0.26 - 41);
-                         const vSulfur = worldConf.cave3D(wx * 0.24 + 5, y * 0.24 - 79, wz * 0.24 + 97);
-                         if (y < 34 && vGold > 0.76) data[idx] = BlockType.GOLD_ORE;
-                         else if (vIron > 0.72) data[idx] = BlockType.IRON_ORE;
-                         else if (vCopper > 0.72) data[idx] = BlockType.COPPER_ORE;
-                         else if (vCoal > 0.69) data[idx] = BlockType.COAL_ORE;
-                         else if (y < 40 && vSulfur > 0.77) data[idx] = BlockType.SULFUR;
-                         else data[idx] = BlockType.STONE;
-                     }
-                 }
+            if (y <= h) {
+              if (y === h) {
+                if (biome === 'editable') {
+                  data[idx] = activeBiomeConfig?.surface ?? BlockType.MOSS;
+                } else if (h <= 55) {
+                  if (biome === 'swamp') {
+                    data[idx] = seaPatch < -0.1 ? BlockType.DIRT : BlockType.MOSS;
+                  } else if (seaPatch < 0.18) {
+                    data[idx] = BlockType.SAND;
+                  } else if (seaPatch < 0.45) {
+                    data[idx] = BlockType.GRAVEL;
+                  } else {
+                    data[idx] = BlockType.DIRT;
+                  }
+                } else if (biome === 'desert') data[idx] = BlockType.SAND;
+                else if (biome === 'mesa') {
+                  const layer = Math.floor(y / 2) % 6;
+                  const colors = [BlockType.TERRACOTTA_BROWN, BlockType.TERRACOTTA_ORANGE, BlockType.TERRACOTTA_RED, BlockType.TERRACOTTA_YELLOW, BlockType.TERRACOTTA_WHITE, BlockType.TERRACOTTA_LIGHT_GRAY];
+                  data[idx] = colors[layer];
+                } else if (biome === 'mountains' || biome === 'snow') {
+                  if (h >= 75 || biome === 'snow') {
+                    data[idx] = BlockType.SNOW;
+                  } else if (h >= 68) {
+                    data[idx] = BlockType.STONE;
+                  } else if (h === 56) {
+                    data[idx] = BlockType.GRAVEL;
+                  } else {
+                    data[idx] = BlockType.GRASS;
+                  }
+                } else if (biome === 'autumn') {
+                  data[idx] = h < 57 ? BlockType.SAND : BlockType.AUTUMN_GRASS;
+                } else if (biome === 'dark') {
+                  data[idx] = h < 57 ? BlockType.SAND : BlockType.DARK_GRASS;
+                } else if (biome === 'swamp') {
+                  data[idx] = BlockType.MOSS;
+                } else {
+                  data[idx] = h < 57 ? BlockType.SAND : BlockType.GRASS;
+                }
+              } else if (y > h - 3) {
+                if (biome === 'editable') {
+                  data[idx] = activeBiomeConfig?.underground ?? BlockType.DIRT;
+                } else if (biome === 'desert' || h < 57) {
+                  data[idx] = h <= 54 && seaPatch >= 0.25 ? BlockType.GRAVEL : BlockType.SAND;
+                } else if (biome === 'mesa') data[idx] = BlockType.TERRACOTTA_ORANGE;
+                else if (biome === 'mountains') data[idx] = BlockType.STONE;
+                else data[idx] = BlockType.DIRT;
+              } else { // y <= h - 3
+                const allowCaveHere = h > 56 || y <= Math.min(44, h - 6);
+                if (allowCaveHere && caveNoise(wx, y, wz, worldConf.cave3D) > 0.5) {
+                  if (y < 12) {
+                    data[idx] = BlockType.LAVA;
+                  }
+                  // else stays AIR (0) from Uint8Array initialization
+                } else {
+                  const deepWave = (Math.sin(wx * 0.11 + y * 0.09) + Math.cos(wz * 0.11 - y * 0.07)) * 1.8;
+                  const isDeepSlate = y + deepWave < 20;
+                  // Single 3D mineral/pocket field instead of 7 separate simplex3D evaluations per block
+                  const veinField = worldConf.cave3D(wx * 0.22 + 13, y * 0.22 - 7, wz * 0.22 + 29);
+
+                  if (veinField < -0.75) {
+                    data[idx] = BlockType.GRAVEL;
+                  } else if (veinField > 0.64) {
+                    const cellPick = getSeededRandom(seed + 511, Math.floor(wx / 3), Math.floor(wz / 3), Math.floor(y / 3) * 17);
+                    if (isDeepSlate) {
+                      if (cellPick < 0.14) data[idx] = BlockType.DIAMOND_ORE;
+                      else if (cellPick < 0.34) data[idx] = BlockType.REDSTONE_ORE;
+                      else if (cellPick < 0.52) data[idx] = BlockType.GOLD_ORE;
+                      else if (cellPick < 0.78) data[idx] = BlockType.IRON_ORE;
+                      else data[idx] = BlockType.COAL_ORE;
+                    } else {
+                      if (y < 34 && cellPick < 0.13) data[idx] = BlockType.GOLD_ORE;
+                      else if (cellPick < 0.38) data[idx] = BlockType.IRON_ORE;
+                      else if (cellPick < 0.62) data[idx] = BlockType.COPPER_ORE;
+                      else if (y < 40 && cellPick < 0.72) data[idx] = BlockType.SULFUR;
+                      else data[idx] = BlockType.COAL_ORE;
+                    }
+                  } else {
+                    data[idx] = isDeepSlate ? BlockType.TERRACOTTA_BROWN : BlockType.STONE;
+                  }
+                }
               }
-            } else {
-              if (y <= 56) {
-                 data[idx] = BlockType.WATER;
-              }
+            } else if (y <= 56) {
+              data[idx] = BlockType.WATER;
             }
           }
           
@@ -7027,24 +7113,25 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
               if (h + ty >= WORLD_HEIGHT) break;
               const lIdx = (x * CHUNK_SIZE * WORLD_HEIGHT) + ((h + ty) * CHUNK_SIZE) + z;
               data[lIdx] = trunkBlock;
-              // Wrap vines on jungle trees!
+              // Wrap vines on jungle trees (zero per-block closure/array allocation)
               if (biome === 'jungle' && ty > 2 && ty < th - 1) {
-                const dirs = [
-                  { dx: 1, dz: 0 },
-                  { dx: -1, dz: 0 },
-                  { dx: 0, dz: 1 },
-                  { dx: 0, dz: -1 }
-                ];
-                dirs.forEach(d => {
-                  const vx = x + d.dx;
-                  const vz = z + d.dz;
-                  if (vx >= 0 && vx < CHUNK_SIZE && vz >= 0 && vz < CHUNK_SIZE) {
-                    const vineIdx = (vx * CHUNK_SIZE * WORLD_HEIGHT) + ((h + ty) * CHUNK_SIZE) + vz;
-                    if (data[vineIdx] === BlockType.AIR) {
-                      data[vineIdx] = BlockType.VINES;
-                    }
-                  }
-                });
+                const vineYOffset = (h + ty) * CHUNK_SIZE;
+                if (x + 1 < CHUNK_SIZE) {
+                  const vIdx = ((x + 1) * CHUNK_SIZE * WORLD_HEIGHT) + vineYOffset + z;
+                  if (data[vIdx] === BlockType.AIR) data[vIdx] = BlockType.VINES;
+                }
+                if (x - 1 >= 0) {
+                  const vIdx = ((x - 1) * CHUNK_SIZE * WORLD_HEIGHT) + vineYOffset + z;
+                  if (data[vIdx] === BlockType.AIR) data[vIdx] = BlockType.VINES;
+                }
+                if (z + 1 < CHUNK_SIZE) {
+                  const vIdx = (x * CHUNK_SIZE * WORLD_HEIGHT) + vineYOffset + (z + 1);
+                  if (data[vIdx] === BlockType.AIR) data[vIdx] = BlockType.VINES;
+                }
+                if (z - 1 >= 0) {
+                  const vIdx = (x * CHUNK_SIZE * WORLD_HEIGHT) + vineYOffset + (z - 1);
+                  if (data[vIdx] === BlockType.AIR) data[vIdx] = BlockType.VINES;
+                }
               }
             }
             
@@ -7544,8 +7631,14 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
       }
     }
 
-    // Apply Far Lands corruption post-processing for overworld
-    if (activeDimension !== 'nether') {
+    // Apply Far Lands corruption post-processing ONLY on chunks that actually touch >= 2000 boundary
+    const chunkBaseMaxAbs = Math.max(
+      Math.abs(cx * CHUNK_SIZE),
+      Math.abs(cx * CHUNK_SIZE + CHUNK_SIZE - 1),
+      Math.abs(cz * CHUNK_SIZE),
+      Math.abs(cz * CHUNK_SIZE + CHUNK_SIZE - 1)
+    );
+    if (activeDimension !== 'nether' && chunkBaseMaxAbs >= 2000) {
       const chunkSeed = getNoiseForWorld(worldId).seed;
       for (let lx = 0; lx < CHUNK_SIZE; lx++) {
         const wx = cx * CHUNK_SIZE + lx;
@@ -7554,30 +7647,18 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
           const maxCoord = Math.max(Math.abs(wx), Math.abs(wz));
 
           if (maxCoord >= 2000) {
-            // Calculate corruption probability scaling from 0 at 2000 to 1 at 2300
             const corrFactor = Math.min(1, Math.max(0, (maxCoord - 2000) / 300));
-            
             for (let y = 0; y < WORLD_HEIGHT; y++) {
               const idx = (lx * CHUNK_SIZE * WORLD_HEIGHT) + (y * CHUNK_SIZE) + lz;
               const block = data[idx];
-              if (block === BlockType.BEDROCK) continue; // Keep bedrock intact
+              if (block === BlockType.BEDROCK) continue;
 
               if (maxCoord >= 2300) {
-                // At >= 2300: pure water up to sea level (64), and air above
-                if (y <= 64) {
-                  data[idx] = BlockType.WATER;
-                } else {
-                  data[idx] = BlockType.AIR;
-                }
+                data[idx] = y <= 64 ? BlockType.WATER : BlockType.AIR;
               } else {
-                // Between 2000 and 2300: corrupt with corrFactor probability
                 const rand = getSeededRandom(1122 + chunkSeed, wx, wz, y);
                 if (rand < corrFactor) {
-                  if (y <= 64) {
-                    data[idx] = BlockType.WATER;
-                  } else {
-                    data[idx] = BlockType.AIR;
-                  }
+                  data[idx] = y <= 64 ? BlockType.WATER : BlockType.AIR;
                 }
               }
             }
@@ -7820,13 +7901,9 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
 
     const neededKeys = new Set<string>();
     const toEnqueue: { k: string; cx: number; cz: number; dist: number }[] = [];
-    let hasLoadedAny = false;
-    for (const _k in chunksRef.current) {
-      hasLoadedAny = true;
-      break;
-    }
-    const SYNC_RADIUS = hasLoadedAny ? 0 : 1; // Full 3x3 only at spawn; only standing chunk sync while walking
-    const finalSyncRadius = ultraOptimization ? 0 : SYNC_RADIUS;
+    // Never block the main thread generating 9 chunks synchronously on world entry:
+    // generate only standing chunk (pcx, pcz) synchronously and stream all neighbors smoothly via time-sliced queue.
+    const finalSyncRadius = 0;
 
     const viewDist = ultraOptimization ? 1 : (perfConfig?.renderDistance ?? VIEW_DISTANCE);
 
@@ -7922,7 +7999,7 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
         }
 
         const batchStartMs = performance.now();
-        const maxBatches = ultraOptimization ? 1 : (perfConfig?.maxConcurrentChunks ?? 2);
+        const maxBatches = (ultraOptimization || detectSoftwareGL()) ? 1 : Math.min(2, perfConfig?.maxConcurrentChunks ?? 2);
         const updatesToApply: Record<string, Uint8Array> = {};
         const entityUpdatesToApply: Record<string, EntityData[]> = {};
         let processedCount = 0;
@@ -7930,7 +8007,7 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
         while (
           processedCount < maxBatches &&
           pendingChunksRef.current.length > 0 &&
-          (processedCount === 0 || performance.now() - batchStartMs < 5.5)
+          (processedCount === 0 || performance.now() - batchStartMs < 4.0)
         ) {
           const nextKey = pendingChunksRef.current.shift();
           if (!nextKey) break;
@@ -9352,6 +9429,14 @@ const VoxelWorld: React.FC<VoxelWorldProps> = ({
       className="absolute inset-0 w-full h-full overflow-hidden"
       onContextMenu={(e) => e.preventDefault()}
     >
+      {Object.keys(chunks).length === 0 && (
+        <div className="fixed inset-0 z-[130] bg-zinc-950/85 flex flex-col items-center justify-center gap-3 pointer-events-none select-none">
+          <div className="w-8 h-8 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />
+          <p className="text-xs font-mono uppercase tracking-widest text-emerald-300 font-bold">
+            {lang === 'en' ? 'Generating terrain...' : 'Cargando terreno...'}
+          </p>
+        </div>
+      )}
       <div
         className="absolute bg-black/50 text-white font-mono text-xs p-1 pointer-events-none z-50 rounded"
         style={{

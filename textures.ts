@@ -1091,56 +1091,56 @@ export const TextureCache = {
     if (blockType === BlockType.AIR) return null;
     if (this.materials.has(blockType)) return this.materials.get(blockType)!;
 
-    // Generar texturas
-    const top = createProceduralTexture(blockType, 'top');
-    const side = createProceduralTexture(blockType, 'side');
-    const bottom = createProceduralTexture(blockType, 'bottom');
-
-    if (!top || !side || !bottom) return null;
-
     let material: THREE.Material | THREE.Material[];
 
-    const baseProps = { roughness: 1, metalness: 0 };
-
     if (blockType === BlockType.WATER) {
-        material = new THREE.MeshLambertMaterial({
-            color: '#3b5ed9', transparent: true, opacity: 0.7
-        });
-    } else if (blockType === BlockType.LAVA) {
-        material = new THREE.MeshLambertMaterial({
-            color: '#ff5500', emissive: '#992200', map: side
-        });
+      material = new THREE.MeshLambertMaterial({
+        color: '#3b5ed9', transparent: true, opacity: 0.7
+      });
+      this.materials.set(blockType, material);
+      return material;
+    }
+
+    const side = createProceduralTexture(blockType, 'side');
+    if (!side) return null;
+
+    if (blockType === BlockType.LAVA) {
+      material = new THREE.MeshLambertMaterial({
+        color: '#ff5500', emissive: '#992200', map: side
+      });
     } else if (blockType === BlockType.OBSIDIAN) {
-        material = new THREE.MeshLambertMaterial({
-            color: '#15101a', map: side
-        });
+      material = new THREE.MeshLambertMaterial({
+        color: '#15101a', map: side
+      });
     } else if (blockType === BlockType.REDSTONE_ORE) {
-        material = new THREE.MeshLambertMaterial({
-            map: side, emissive: '#ff2200', emissiveIntensity: 0.3
-        });
+      material = new THREE.MeshLambertMaterial({
+        map: side, emissive: '#ff2200', emissiveIntensity: 0.3
+      });
     } else if (blockType === BlockType.GLOWSTONE) {
-        material = new THREE.MeshLambertMaterial({
-            map: side, emissive: '#b58428', emissiveIntensity: 0.6
-        });
+      material = new THREE.MeshLambertMaterial({
+        map: side, emissive: '#b58428', emissiveIntensity: 0.6
+      });
     } else if (blockType === BlockType.PORTAL) {
-        material = new THREE.MeshLambertMaterial({
-            map: side, emissive: '#aa33ff', emissiveIntensity: 0.8, transparent: true, opacity: 0.8
-        });
+      material = new THREE.MeshLambertMaterial({
+        map: side, emissive: '#aa33ff', emissiveIntensity: 0.8, transparent: true, opacity: 0.8
+      });
     } else if (blockType === BlockType.DIAMOND_ORE) {
-        material = new THREE.MeshLambertMaterial({
-            map: side, emissive: '#4cebeb', emissiveIntensity: 0.1
-        });
+      material = new THREE.MeshLambertMaterial({
+        map: side, emissive: '#4cebeb', emissiveIntensity: 0.1
+      });
     } else if (blockType === BlockType.TORCH) {
-        const torchSideMat = new THREE.MeshLambertMaterial({
-            map: side, emissive: '#ff7b14', emissiveIntensity: 0.55
-        });
-        const torchTopMat = new THREE.MeshLambertMaterial({
-            map: top, emissive: '#ffbe33', emissiveIntensity: 1.2
-        });
-        const torchBottomMat = new THREE.MeshLambertMaterial({
-            map: bottom
-        });
-        material = [torchSideMat, torchSideMat, torchTopMat, torchBottomMat, torchSideMat, torchSideMat];
+      const top = createProceduralTexture(blockType, 'top') || side;
+      const bottom = createProceduralTexture(blockType, 'bottom') || side;
+      const torchSideMat = new THREE.MeshLambertMaterial({
+        map: side, emissive: '#ff7b14', emissiveIntensity: 0.55
+      });
+      const torchTopMat = new THREE.MeshLambertMaterial({
+        map: top, emissive: '#ffbe33', emissiveIntensity: 1.2
+      });
+      const torchBottomMat = new THREE.MeshLambertMaterial({
+        map: bottom
+      });
+      material = [torchSideMat, torchSideMat, torchTopMat, torchBottomMat, torchSideMat, torchSideMat];
     } else if (blockType === BlockType.GRASS || blockType === BlockType.LOG || blockType === BlockType.CACTUS || 
                blockType === BlockType.MUSHROOM_RED || blockType === BlockType.MUSHROOM_BROWN || 
                blockType === BlockType.FLOWER_RED || blockType === BlockType.FLOWER_YELLOW ||
@@ -1160,42 +1160,42 @@ export const TextureCache = {
                blockType === BlockType.CHERRY_LOG || blockType === BlockType.DARK_LOG || blockType === BlockType.DARK_GRASS ||
                blockType === BlockType.FIRE || blockType === BlockType.SUGAR_CANE || blockType === BlockType.BAMBOO ||
                blockType === BlockType.FROG_EGGS) {
-        const isTransparentFlora = blockType === BlockType.MUSHROOM_RED || blockType === BlockType.MUSHROOM_BROWN || 
-                                   blockType === BlockType.FLOWER_RED || blockType === BlockType.FLOWER_YELLOW || 
-                                   blockType === BlockType.AUTUMN_FLOWER ||
-                                   blockType === BlockType.DOOR ||
-                                   blockType === BlockType.SWORD || blockType === BlockType.PICKAXE || blockType === BlockType.AXE || blockType === BlockType.SHOVEL ||
-                                   blockType === BlockType.WOOD_SWORD || blockType === BlockType.WOOD_PICKAXE || blockType === BlockType.WOOD_SHOVEL ||
-                                   blockType === BlockType.STONE_SWORD || blockType === BlockType.STONE_AXE ||
-                                   blockType === BlockType.IRON_PICKAXE || blockType === BlockType.IRON_AXE || blockType === BlockType.IRON_SHOVEL ||
-                                   blockType === BlockType.GOLD_SWORD || blockType === BlockType.GOLD_PICKAXE || blockType === BlockType.GOLD_AXE || blockType === BlockType.GOLD_SHOVEL ||
-                                   blockType === BlockType.DIAMOND_SWORD || blockType === BlockType.DIAMOND_PICKAXE || blockType === BlockType.DIAMOND_AXE || blockType === BlockType.DIAMOND_SHOVEL ||
-                                   blockType === BlockType.MUSIC_DISC_CAT || blockType === BlockType.MUSIC_DISC_CHIRP ||
-                                   blockType === BlockType.MUSIC_DISC_BLOCKS || blockType === BlockType.MUSIC_DISC_MELLOHI ||
-                                   blockType === BlockType.VINES || blockType === BlockType.FIRE ||
-                                   blockType === BlockType.SUGAR_CANE || blockType === BlockType.BAMBOO ||
-                                   blockType === BlockType.FROG_EGGS;
-        // Use strict alphaTest cutouts with transparent: false and DoubleSide on flora/cutouts
-        // to eliminate InstancedMesh alpha-sorting glitches and invisible faces behind water/blocks.
-        material = isTransparentFlora
-          ? [
-              new THREE.MeshLambertMaterial({ map: side, transparent: false, alphaTest: 0.5, side: THREE.DoubleSide }),
-              new THREE.MeshLambertMaterial({ map: side, transparent: false, alphaTest: 0.5, side: THREE.DoubleSide }),
-              new THREE.MeshLambertMaterial({ map: top, transparent: false, alphaTest: 0.5, side: THREE.DoubleSide }),
-              new THREE.MeshLambertMaterial({ map: bottom, transparent: false, alphaTest: 0.5, side: THREE.DoubleSide }),
-              new THREE.MeshLambertMaterial({ map: side, transparent: false, alphaTest: 0.5, side: THREE.DoubleSide }),
-              new THREE.MeshLambertMaterial({ map: side, transparent: false, alphaTest: 0.5, side: THREE.DoubleSide }),
-            ]
-          : [
-              new THREE.MeshLambertMaterial({ map: side }),
-              new THREE.MeshLambertMaterial({ map: side }),
-              new THREE.MeshLambertMaterial({ map: top }),
-              new THREE.MeshLambertMaterial({ map: bottom }),
-              new THREE.MeshLambertMaterial({ map: side }),
-              new THREE.MeshLambertMaterial({ map: side }),
-            ];
+      const top = createProceduralTexture(blockType, 'top') || side;
+      const bottom = createProceduralTexture(blockType, 'bottom') || side;
+      const isTransparentFlora = blockType === BlockType.MUSHROOM_RED || blockType === BlockType.MUSHROOM_BROWN || 
+                                 blockType === BlockType.FLOWER_RED || blockType === BlockType.FLOWER_YELLOW || 
+                                 blockType === BlockType.AUTUMN_FLOWER ||
+                                 blockType === BlockType.DOOR ||
+                                 blockType === BlockType.SWORD || blockType === BlockType.PICKAXE || blockType === BlockType.AXE || blockType === BlockType.SHOVEL ||
+                                 blockType === BlockType.WOOD_SWORD || blockType === BlockType.WOOD_PICKAXE || blockType === BlockType.WOOD_SHOVEL ||
+                                 blockType === BlockType.STONE_SWORD || blockType === BlockType.STONE_AXE ||
+                                 blockType === BlockType.IRON_PICKAXE || blockType === BlockType.IRON_AXE || blockType === BlockType.IRON_SHOVEL ||
+                                 blockType === BlockType.GOLD_SWORD || blockType === BlockType.GOLD_PICKAXE || blockType === BlockType.GOLD_AXE || blockType === BlockType.GOLD_SHOVEL ||
+                                 blockType === BlockType.DIAMOND_SWORD || blockType === BlockType.DIAMOND_PICKAXE || blockType === BlockType.DIAMOND_AXE || blockType === BlockType.DIAMOND_SHOVEL ||
+                                 blockType === BlockType.MUSIC_DISC_CAT || blockType === BlockType.MUSIC_DISC_CHIRP ||
+                                 blockType === BlockType.MUSIC_DISC_BLOCKS || blockType === BlockType.MUSIC_DISC_MELLOHI ||
+                                 blockType === BlockType.VINES || blockType === BlockType.FIRE ||
+                                 blockType === BlockType.SUGAR_CANE || blockType === BlockType.BAMBOO ||
+                                 blockType === BlockType.FROG_EGGS;
+      material = isTransparentFlora
+        ? [
+            new THREE.MeshLambertMaterial({ map: side, transparent: false, alphaTest: 0.5, side: THREE.DoubleSide }),
+            new THREE.MeshLambertMaterial({ map: side, transparent: false, alphaTest: 0.5, side: THREE.DoubleSide }),
+            new THREE.MeshLambertMaterial({ map: top, transparent: false, alphaTest: 0.5, side: THREE.DoubleSide }),
+            new THREE.MeshLambertMaterial({ map: bottom, transparent: false, alphaTest: 0.5, side: THREE.DoubleSide }),
+            new THREE.MeshLambertMaterial({ map: side, transparent: false, alphaTest: 0.5, side: THREE.DoubleSide }),
+            new THREE.MeshLambertMaterial({ map: side, transparent: false, alphaTest: 0.5, side: THREE.DoubleSide }),
+          ]
+        : [
+            new THREE.MeshLambertMaterial({ map: side }),
+            new THREE.MeshLambertMaterial({ map: side }),
+            new THREE.MeshLambertMaterial({ map: top }),
+            new THREE.MeshLambertMaterial({ map: bottom }),
+            new THREE.MeshLambertMaterial({ map: side }),
+            new THREE.MeshLambertMaterial({ map: side }),
+          ];
     } else {
-        material = new THREE.MeshLambertMaterial({ map: side });
+      material = new THREE.MeshLambertMaterial({ map: side });
     }
 
     this.materials.set(blockType, material);

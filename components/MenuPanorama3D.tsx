@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { BlockType } from "../types";
 import { BLOCK_COLORS } from "../constants";
+import { isSoftwareWebGL } from "../utils/webglUtils";
 
 interface MenuPanorama3DProps {
   showLogo?: boolean;
@@ -10,9 +11,7 @@ interface MenuPanorama3DProps {
 }
 
 // Pre-allocated math objects to guarantee ZERO GC allocations during animation loop
-const _vec3 = new THREE.Vector3();
 const _matrix = new THREE.Matrix4();
-const _color = new THREE.Color();
 
 // Procedural 5x7 Voxel Grid Font for 3D Letters
 const VOXEL_FONT: Record<string, string[]> = {
@@ -213,7 +212,8 @@ function createVoxelTextGroup(
   blockColor: string,
   bevelColor: string,
   scale = 0.18,
-  depth = 0.9
+  depth = 0.9,
+  disposables?: { geos: THREE.BufferGeometry[]; mats: THREE.Material[] }
 ): THREE.Group {
   const group = new THREE.Group();
   const charSpacing = 5.8;
@@ -223,36 +223,46 @@ function createVoxelTextGroup(
   const boxGeo = new THREE.BoxGeometry(scale * 0.96, scale * 0.96, scale * depth);
   const mainMat = new THREE.MeshLambertMaterial({ color: blockColor });
   const bevelMat = new THREE.MeshLambertMaterial({ color: bevelColor });
+  disposables?.geos.push(boxGeo);
+  disposables?.mats.push(mainMat, bevelMat);
 
-  // Merge characters into this group
+  const coords: number[] = [];
   text.split("").forEach((char, charIdx) => {
     const grid = VOXEL_FONT[char.toUpperCase()];
     if (!grid) return;
-
     const charOffsetX = startX + charIdx * charSpacing * scale;
-
     for (let row = 0; row < grid.length; row++) {
       const line = grid[row];
       for (let col = 0; col < line.length; col++) {
         if (line[col] === "#") {
-          // Main extruded voxel
-          const posX = charOffsetX + col * scale;
-          const posY = (grid.length - 1 - row) * scale;
-          const posZ = 0;
-
-          const mesh = new THREE.Mesh(boxGeo, mainMat);
-          mesh.position.set(posX, posY, posZ);
-          group.add(mesh);
-
-          // Subtle dark drop-shadow voxel behind
-          const shadowMesh = new THREE.Mesh(boxGeo, bevelMat);
-          shadowMesh.position.set(posX + scale * 0.15, posY - scale * 0.15, posZ - scale * 0.4);
-          shadowMesh.scale.set(0.95, 0.95, 0.95);
-          group.add(shadowMesh);
+          coords.push(charOffsetX + col * scale, (grid.length - 1 - row) * scale, 0);
         }
       }
     }
   });
+
+  const count = coords.length / 3;
+  if (count > 0) {
+    const mainInst = new THREE.InstancedMesh(boxGeo, mainMat, count);
+    const bevelInst = new THREE.InstancedMesh(boxGeo, bevelMat, count);
+    const scaleMat = new THREE.Matrix4().makeScale(0.95, 0.95, 0.95);
+    const posMat = new THREE.Matrix4();
+
+    for (let i = 0; i < count; i++) {
+      const x = coords[i * 3];
+      const y = coords[i * 3 + 1];
+      const z = coords[i * 3 + 2];
+      _matrix.makeTranslation(x, y, z);
+      mainInst.setMatrixAt(i, _matrix);
+
+      posMat.makeTranslation(x + scale * 0.15, y - scale * 0.15, z - scale * 0.4);
+      _matrix.multiplyMatrices(posMat, scaleMat);
+      bevelInst.setMatrixAt(i, _matrix);
+    }
+    mainInst.instanceMatrix.needsUpdate = true;
+    bevelInst.instanceMatrix.needsUpdate = true;
+    group.add(mainInst, bevelInst);
+  }
 
   return group;
 }
@@ -265,6 +275,8 @@ export const MenuPanorama3D: React.FC<MenuPanorama3DProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const [splashIndex, setSplashIndex] = useState(0);
   const [webglFailed, setWebglFailed] = useState(false);
+  const isCinemaModeRef = useRef(isCinemaMode);
+  isCinemaModeRef.current = isCinemaMode;
 
   const splashes = [
     "¡60 FPS Ultra Optimizado!",
@@ -287,39 +299,27 @@ export const MenuPanorama3D: React.FC<MenuPanorama3DProps> = ({
     const container = containerRef.current;
     if (!container) return;
 
-    // Detect software WebGL to adapt pixel ratio and effects
-    const isSoftwareGl = (() => {
-      try {
-        const gl = document.createElement("canvas").getContext("webgl2") || document.createElement("canvas").getContext("webgl");
-        if (!gl) return true;
-        const ext = gl.getExtension("WEBGL_debug_renderer_info");
-        const param = ext ? ext.UNMASKED_RENDERER_WEBGL : (gl as WebGLRenderingContext).RENDERER;
-        const gpu = String((gl as WebGLRenderingContext).getParameter(param));
-        gl.getExtension("WEBGL_lose_context")?.loseContext();
-        return /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(gpu);
-      } catch {
-        return true;
-      }
-    })();
+    const isSoftwareGl = isSoftwareWebGL();
 
     // 1. Scene & Camera Setup
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color("#82bcf2"); // Minecraft day sky color
+    scene.background = new THREE.Color("#82bcf2");
     scene.fog = new THREE.FogExp2("#82bcf2", 0.024);
 
     const width = Math.max(1, container.clientWidth || window.innerWidth || 360);
     const height = Math.max(1, container.clientHeight || window.innerHeight || 640);
 
-    const camera = new THREE.PerspectiveCamera(65, width / height, 0.1, 200);
+    const camera = new THREE.PerspectiveCamera(65, width / height, 0.1, 180);
     camera.position.set(0, 11, 0);
 
-    // 2. Renderer (wrapped cleanly so low-memory Android WebViews never crash to a black screen)
+    // 2. Renderer
     let renderer: THREE.WebGLRenderer;
     try {
       renderer = new THREE.WebGLRenderer({
-        antialias: !isSoftwareGl,
-        powerPreference: "high-performance",
-        alpha: false
+        antialias: false,
+        powerPreference: isSoftwareGl ? "low-power" : "high-performance",
+        alpha: false,
+        stencil: false
       });
     } catch (err) {
       console.warn("MenuPanorama3D WebGL unavailable, switching to scenic image fallback:", err);
@@ -328,11 +328,14 @@ export const MenuPanorama3D: React.FC<MenuPanorama3DProps> = ({
     }
     setWebglFailed(false);
     renderer.setSize(width, height);
-    renderer.setPixelRatio(isSoftwareGl ? 1 : Math.min(window.devicePixelRatio || 1, 1.5));
+    renderer.setPixelRatio(isSoftwareGl ? 0.65 : Math.min(window.devicePixelRatio || 1, 1.35));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.1;
+    if (!isSoftwareGl) {
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.1;
+    }
 
+    renderer.domElement.style.touchAction = "none";
     renderer.domElement.addEventListener("webglcontextlost", (e) => {
       e.preventDefault();
       setWebglFailed(true);
@@ -407,76 +410,60 @@ export const MenuPanorama3D: React.FC<MenuPanorama3DProps> = ({
 
     const boxGeo = new THREE.BoxGeometry(1, 1, 1);
 
-    // 5. Generate Circular Procedural Voxel Panorama Landscape
-    const RADIUS = 28;
-    const grassPositions: THREE.Vector3[] = [];
-    const dirtPositions: THREE.Vector3[] = [];
-    const stonePositions: THREE.Vector3[] = [];
-    const logPositions: THREE.Vector3[] = [];
-    const leavesPositions: THREE.Vector3[] = [];
-    const cherryLeavesPositions: THREE.Vector3[] = [];
+    // 5. Generate Circular Procedural Voxel Panorama Landscape (zero Vector3 heap allocations)
+    const RADIUS = isSoftwareGl ? 22 : 26;
+    const grassPositions: number[] = [];
+    const dirtPositions: number[] = [];
+    const stonePositions: number[] = [];
+    const logPositions: number[] = [];
+    const leavesPositions: number[] = [];
+    const cherryLeavesPositions: number[] = [];
 
-    // Terrain generator function
     const getTerrainH = (x: number, z: number) => {
-      const dist = Math.sqrt(x * x + z * z);
-      // Valley at center where camera sits, rolling hills around
+      const distSq = x * x + z * z;
       const hill1 = Math.sin(x * 0.12) * Math.cos(z * 0.12) * 3.5;
       const hill2 = Math.sin((x + z) * 0.08) * 2.2;
       const river = Math.sin(x * 0.2 + z * 0.05) * 2;
       let baseH = 5 + hill1 + hill2;
-      if (Math.abs(river) < 1.2 && dist > 4) {
-        baseH -= 2.2; // River cutting through
+      if (Math.abs(river) < 1.2 && distSq > 16) {
+        baseH -= 2.2;
       }
       return Math.round(baseH);
     };
 
-    // Populate terrain columns
+    const radiusSq = RADIUS * RADIUS;
     for (let x = -RADIUS; x <= RADIUS; x++) {
       for (let z = -RADIUS; z <= RADIUS; z++) {
-        const d = Math.sqrt(x * x + z * z);
-        if (d > RADIUS) continue;
-
+        if (x * x + z * z > radiusSq) continue;
         const surfaceH = getTerrainH(x, z);
-
-        // Grass at top
-        grassPositions.push(new THREE.Vector3(x, surfaceH, z));
-
-        // Dirt underneath
+        grassPositions.push(x, surfaceH, z);
         for (let y = surfaceH - 1; y >= Math.max(0, surfaceH - 2); y--) {
-          dirtPositions.push(new THREE.Vector3(x, y, z));
+          dirtPositions.push(x, y, z);
         }
-
-        // Stone below dirt
         for (let y = surfaceH - 3; y >= Math.max(0, surfaceH - 4); y--) {
-          stonePositions.push(new THREE.Vector3(x, y, z));
+          stonePositions.push(x, y, z);
         }
       }
     }
 
-    // Tree generation function
     const addTree = (tx: number, tz: number, isCherry = false) => {
       const ty = getTerrainH(tx, tz) + 1;
       const trunkH = isCherry ? 5 : 4 + (Math.abs(tx * tz) % 2);
-
-      // Trunk
       for (let y = 0; y < trunkH; y++) {
-        logPositions.push(new THREE.Vector3(tx, ty + y, tz));
+        logPositions.push(tx, ty + y, tz);
       }
-
-      // Leaves canopy
       const leafList = isCherry ? cherryLeavesPositions : leavesPositions;
       for (let ly = -2; ly <= 1; ly++) {
         const rad = ly === 1 ? 1 : 2;
         for (let lx = -rad; lx <= rad; lx++) {
           for (let lz = -rad; lz <= rad; lz++) {
             if (Math.abs(lx) === rad && Math.abs(lz) === rad && Math.random() > 0.4) continue;
-            leafList.push(new THREE.Vector3(tx + lx, ty + trunkH + ly, tz + lz));
+            leafList.push(tx + lx, ty + trunkH + ly, tz + lz);
           }
         }
       }
     };
 
-    // Plant trees across the landscape
     const treeCoords = [
       { x: -14, z: -10, cherry: false },
       { x: -8, z: 16, cherry: true },
@@ -488,20 +475,19 @@ export const MenuPanorama3D: React.FC<MenuPanorama3DProps> = ({
       { x: -12, z: -18, cherry: false },
       { x: 15, z: 18, cherry: false }
     ];
-
     treeCoords.forEach((t) => addTree(t.x, t.z, t.cherry));
 
-    // Create InstancedMeshes for optimal single-drawcall rendering
     const createInstancedMesh = (
-      positions: THREE.Vector3[],
+      positions: number[],
       material: THREE.Material | THREE.Material[]
     ) => {
-      if (positions.length === 0) return null;
-      const mesh = new THREE.InstancedMesh(boxGeo, material, positions.length);
-      positions.forEach((pos, idx) => {
-        _matrix.setPosition(pos);
-        mesh.setMatrixAt(idx, _matrix);
-      });
+      const count = positions.length / 3;
+      if (count === 0) return null;
+      const mesh = new THREE.InstancedMesh(boxGeo, material, count);
+      for (let i = 0; i < count; i++) {
+        _matrix.makeTranslation(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
+        mesh.setMatrixAt(i, _matrix);
+      }
       mesh.instanceMatrix.needsUpdate = true;
       return mesh;
     };
@@ -537,13 +523,13 @@ export const MenuPanorama3D: React.FC<MenuPanorama3DProps> = ({
     scene.add(waterMesh);
 
     // 7. Volumetric Voxel Clouds Ring Overhead
-    const cloudPositions: THREE.Vector3[] = [];
+    const cloudPositions: number[] = [];
     for (let cx = -35; cx <= 35; cx += 2) {
       for (let cz = -35; cz <= 35; cz += 2) {
-        const cDist = Math.sqrt(cx * cx + cz * cz);
-        if (cDist < 10 || cDist > 36) continue;
+        const cDistSq = cx * cx + cz * cz;
+        if (cDistSq < 100 || cDistSq > 1296) continue;
         if (Math.sin(cx * 0.18) * Math.cos(cz * 0.18) > 0.35) {
-          cloudPositions.push(new THREE.Vector3(cx, 26, cz));
+          cloudPositions.push(cx, 26, cz);
         }
       }
     }
@@ -555,38 +541,39 @@ export const MenuPanorama3D: React.FC<MenuPanorama3DProps> = ({
     camera.add(logoAnchorGroup);
     scene.add(camera);
 
-    // Setup 3D Logo (Only if showLogo is true)
     let logo3DGroup: THREE.Group | null = null;
     let rotatingGrassBlock: THREE.Mesh | null = null;
     let rotatingDiamondBlock: THREE.Mesh | null = null;
+    const extraLogoResources: { geos: THREE.BufferGeometry[]; mats: THREE.Material[]; texs: THREE.Texture[] } = {
+      geos: [],
+      mats: [],
+      texs: []
+    };
 
     if (showLogo) {
       logo3DGroup = new THREE.Group();
-
-      // Top title: "ALPHA" (Minecraft stone/silver block style with dark bevel)
-      const alphaTitle = createVoxelTextGroup("ALPHA", "#dcdcdc", "#3a3a3a", 0.13, 1.2);
+      const alphaTitle = createVoxelTextGroup("ALPHA", "#dcdcdc", "#3a3a3a", 0.13, 1.2, extraLogoResources);
       alphaTitle.position.set(0, 0.45, 0);
       logo3DGroup.add(alphaTitle);
 
-      // Subtitle: "MOBILE" (Vibrant Emerald Green block style)
-      const mobileSubtitle = createVoxelTextGroup("MOBILE", "#10b981", "#064e3b", 0.09, 1.0);
+      const mobileSubtitle = createVoxelTextGroup("MOBILE", "#10b981", "#064e3b", 0.09, 1.0, extraLogoResources);
       mobileSubtitle.position.set(0, -0.4, 0);
       logo3DGroup.add(mobileSubtitle);
 
-      // Rotating 3D Grass Block next to the logo
       const miniCubeGeo = new THREE.BoxGeometry(0.5, 0.5, 0.5);
+      extraLogoResources.geos.push(miniCubeGeo);
       rotatingGrassBlock = new THREE.Mesh(miniCubeGeo, grassMatMaterials);
       rotatingGrassBlock.position.set(-2.8, 0.35, 0);
       logo3DGroup.add(rotatingGrassBlock);
 
-      // Rotating 3D Diamond Ore Block on the right side
       const diamondTex = createPixelTexture(BlockType.DIAMOND_ORE);
       const diamondMat = new THREE.MeshLambertMaterial({ map: diamondTex });
+      extraLogoResources.texs.push(diamondTex);
+      extraLogoResources.mats.push(diamondMat);
       rotatingDiamondBlock = new THREE.Mesh(miniCubeGeo, diamondMat);
       rotatingDiamondBlock.position.set(2.8, 0.35, 0);
       logo3DGroup.add(rotatingDiamondBlock);
 
-      // Position in front of the camera (responsive to screen aspect ratio)
       const isMobileScreen = width < 640;
       const logoDist = isMobileScreen ? 4.5 : 4.0;
       const logoY = isMobileScreen ? 1.75 : 1.50;
@@ -597,85 +584,224 @@ export const MenuPanorama3D: React.FC<MenuPanorama3DProps> = ({
       logoAnchorGroup.add(logo3DGroup);
     }
 
-    // 9. Interactive Touch / Drag Controls (pan around panorama with touch!)
+    // 9. Interactive Touch / Pointer / Keyboard / Gamepad Controls
+    const PITCH_MIN = -1.25;
+    const PITCH_MAX = 1.25;
     let isDragging = false;
+    let activePointerId: number | null = null;
+    let activeTouchId: number | null = null;
     let startX = 0;
     let startY = 0;
     let touchYawOffset = 0;
-    let touchPitchOffset = 0;
+    let touchPitchOffset = -0.06;
     let targetTouchYaw = 0;
-    let targetTouchPitch = 0;
+    let targetTouchPitch = -0.06;
+    const heldKeys = new Set<string>();
+
+    const clampPitch = (p: number) => Math.max(PITCH_MIN, Math.min(PITCH_MAX, p));
+    const isInteractiveTarget = (target: EventTarget | null) => {
+      const el = target as HTMLElement | null;
+      return Boolean(el && el.closest("input, textarea, select, button, a, label, form, [role='dialog']"));
+    };
 
     const onPointerDown = (e: PointerEvent) => {
-      const target = e.target as HTMLElement | null;
-      if (target && target.closest("input, textarea, select, button, a, label, form, [role='dialog']")) {
-        return;
-      }
-      // Allow drag on background to pan panorama
+      if (isInteractiveTarget(e.target)) return;
+      if (e.pointerType === "mouse" && e.button !== 0) return;
+      if (activeTouchId !== null) return;
       isDragging = true;
+      activePointerId = e.pointerId;
       startX = e.clientX;
       startY = e.clientY;
+      try {
+        container.setPointerCapture?.(e.pointerId);
+      } catch {}
     };
 
     const onPointerMove = (e: PointerEvent) => {
-      if (!isDragging) return;
+      if (!isDragging || activePointerId === null || e.pointerId !== activePointerId) return;
       const dx = e.clientX - startX;
       const dy = e.clientY - startY;
       startX = e.clientX;
       startY = e.clientY;
 
-      targetTouchYaw += dx * 0.005;
-      targetTouchPitch = Math.max(-0.4, Math.min(0.4, targetTouchPitch + dy * 0.003));
+      targetTouchYaw += dx * 0.0055;
+      targetTouchPitch = clampPitch(targetTouchPitch + dy * 0.0055);
     };
 
-    const onPointerUp = () => {
+    const onPointerUpOrCancel = (e?: PointerEvent) => {
+      if (e && activePointerId !== null && e.pointerId !== activePointerId) return;
+      if (activePointerId !== null) {
+        try {
+          if (container.hasPointerCapture?.(activePointerId)) {
+            container.releasePointerCapture(activePointerId);
+          }
+        } catch {}
+      }
       isDragging = false;
+      activePointerId = null;
+    };
+
+    // Dedicated Touch fallback in case a parent scroll container intercepts vertical pointermove
+    const onTouchStart = (e: TouchEvent) => {
+      if (activeTouchId !== null) return;
+      if (isInteractiveTarget(e.target)) return;
+      if (e.touches.length === 0) return;
+      const t = e.changedTouches[0] || e.touches[0];
+      activeTouchId = t.identifier;
+      isDragging = true;
+      activePointerId = null;
+      startX = t.clientX;
+      startY = t.clientY;
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      if (!isDragging || activeTouchId === null) return;
+      let matched: Touch | null = null;
+      for (let i = 0; i < e.touches.length; i++) {
+        if (e.touches[i].identifier === activeTouchId) {
+          matched = e.touches[i];
+          break;
+        }
+      }
+      if (!matched) return;
+      if (e.cancelable) e.preventDefault();
+      const dx = matched.clientX - startX;
+      const dy = matched.clientY - startY;
+      startX = matched.clientX;
+      startY = matched.clientY;
+
+      targetTouchYaw += dx * 0.0055;
+      targetTouchPitch = clampPitch(targetTouchPitch + dy * 0.0055);
+    };
+
+    const onTouchEndOrCancel = (e: TouchEvent) => {
+      if (activeTouchId === null) return;
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        if (e.changedTouches[i].identifier === activeTouchId) {
+          activeTouchId = null;
+          isDragging = false;
+          break;
+        }
+      }
+    };
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!isCinemaModeRef.current) return;
+      const active = document.activeElement as HTMLElement | null;
+      if (active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.tagName === "SELECT")) return;
+      if (
+        e.key === "ArrowUp" ||
+        e.key === "ArrowDown" ||
+        e.key === "ArrowLeft" ||
+        e.key === "ArrowRight" ||
+        e.key === "w" ||
+        e.key === "W" ||
+        e.key === "s" ||
+        e.key === "S" ||
+        e.key === "a" ||
+        e.key === "A" ||
+        e.key === "d" ||
+        e.key === "D"
+      ) {
+        heldKeys.add(e.key);
+      }
+    };
+
+    const onKeyUp = (e: KeyboardEvent) => {
+      heldKeys.delete(e.key);
+    };
+
+    const onWindowBlur = () => {
+      isDragging = false;
+      activePointerId = null;
+      activeTouchId = null;
+      heldKeys.clear();
     };
 
     window.addEventListener("pointerdown", onPointerDown);
     window.addEventListener("pointermove", onPointerMove);
-    window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointerup", onPointerUpOrCancel);
+    window.addEventListener("pointercancel", onPointerUpOrCancel);
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onWindowBlur);
+    container.addEventListener("touchstart", onTouchStart, { passive: true });
+    container.addEventListener("touchmove", onTouchMove, { passive: false });
+    container.addEventListener("touchend", onTouchEndOrCancel);
+    container.addEventListener("touchcancel", onTouchEndOrCancel);
 
-    // 10. Animation Loop (60 FPS, silky smooth, zero GC)
+    // 10. Adaptive Animation Loop (throttled cleanly on software GL to prevent main-thread saturation)
     let animationFrameId = 0;
-    let clock = new THREE.Clock();
+    let disposed = false;
+    let lastRenderTs = performance.now();
+    let elapsedTotal = 0;
     let autoYaw = 0;
+    const minFrameMs = isSoftwareGl ? 45 : 16;
 
-    const animate = () => {
+    const animate = (now: number) => {
+      if (disposed) return;
       animationFrameId = requestAnimationFrame(animate);
       if (typeof document !== "undefined" && document.hidden) {
-        clock.getDelta();
+        lastRenderTs = now;
         return;
       }
+      const elapsedMs = now - lastRenderTs;
+      if (elapsedMs < minFrameMs) return;
 
-      const delta = Math.min(clock.getDelta(), 0.1);
-      const time = clock.getElapsedTime();
+      const delta = Math.min(elapsedMs / 1000, 0.1);
+      lastRenderTs = now;
+      elapsedTotal += delta;
 
-      // Cinematic gentle rotation (like Minecraft title screen)
+      if (isCinemaModeRef.current) {
+        // Keyboard camera look in Panorama mode
+        if (heldKeys.has("ArrowUp") || heldKeys.has("w") || heldKeys.has("W")) {
+          targetTouchPitch = clampPitch(targetTouchPitch + delta * 1.35);
+        }
+        if (heldKeys.has("ArrowDown") || heldKeys.has("s") || heldKeys.has("S")) {
+          targetTouchPitch = clampPitch(targetTouchPitch - delta * 1.35);
+        }
+        if (heldKeys.has("ArrowLeft") || heldKeys.has("a") || heldKeys.has("A")) {
+          targetTouchYaw += delta * 1.55;
+        }
+        if (heldKeys.has("ArrowRight") || heldKeys.has("d") || heldKeys.has("D")) {
+          targetTouchYaw -= delta * 1.55;
+        }
+
+        // PS4 / Gamepad right-stick look in Panorama mode
+        const pads = navigator.getGamepads?.();
+        if (pads) {
+          for (let i = 0; i < pads.length; i++) {
+            const pad = pads[i];
+            if (!pad || !pad.connected) continue;
+            const rx = Math.abs(pad.axes[2] || 0) > 0.14 ? (pad.axes[2] || 0) : 0;
+            const ry = Math.abs(pad.axes[3] || 0) > 0.14 ? (pad.axes[3] || 0) : 0;
+            if (rx !== 0) targetTouchYaw -= rx * delta * 1.9;
+            if (ry !== 0) targetTouchPitch = clampPitch(targetTouchPitch - ry * delta * 1.6);
+            break;
+          }
+        }
+      }
+
       autoYaw += delta * 0.055;
-
-      // Smooth damping for user swipe
-      touchYawOffset = THREE.MathUtils.damp(touchYawOffset, targetTouchYaw, 4.0, delta);
-      touchPitchOffset = THREE.MathUtils.damp(touchPitchOffset, targetTouchPitch, 4.0, delta);
+      touchYawOffset = THREE.MathUtils.damp(touchYawOffset, targetTouchYaw, 6.5, delta);
+      touchPitchOffset = THREE.MathUtils.damp(touchPitchOffset, targetTouchPitch, 6.5, delta);
 
       const currentYaw = autoYaw + touchYawOffset;
-      const currentPitch = Math.sin(time * 0.35) * 0.06 + touchPitchOffset;
+      const currentPitch = clampPitch(Math.sin(elapsedTotal * 0.35) * 0.04 + touchPitchOffset);
 
-      // Compute camera target (slight downward pitch to reveal the rich landscape below while logo floats high)
       const lookDist = 20;
       const targetX = camera.position.x + Math.sin(currentYaw) * Math.cos(currentPitch) * lookDist;
-      const targetY = camera.position.y + Math.sin(currentPitch) * lookDist - 1.1;
+      const targetY = camera.position.y + Math.sin(currentPitch) * lookDist;
       const targetZ = camera.position.z + Math.cos(currentYaw) * Math.cos(currentPitch) * lookDist;
 
       camera.lookAt(targetX, targetY, targetZ);
 
-      // Animate 3D Logo floating and block rotations
       if (logo3DGroup) {
         const isMobile = width < 640;
         const baseY = isMobile ? 1.75 : 1.50;
-        logo3DGroup.position.y = baseY + Math.sin(time * 1.5) * 0.05;
-        logo3DGroup.rotation.y = Math.sin(time * 0.8) * 0.05;
-        logo3DGroup.rotation.x = Math.sin(time * 1.2) * 0.025;
+        logo3DGroup.position.y = baseY + Math.sin(elapsedTotal * 1.5) * 0.05;
+        logo3DGroup.rotation.y = Math.sin(elapsedTotal * 0.8) * 0.05;
+        logo3DGroup.rotation.x = Math.sin(elapsedTotal * 1.2) * 0.025;
 
         if (rotatingGrassBlock) {
           rotatingGrassBlock.rotation.x += delta * 0.9;
@@ -687,17 +813,16 @@ export const MenuPanorama3D: React.FC<MenuPanorama3DProps> = ({
         }
       }
 
-      // Drift clouds slowly
       if (cloudMesh) {
-        cloudMesh.rotation.y = time * 0.008;
+        cloudMesh.rotation.y = elapsedTotal * 0.008;
       }
 
       renderer.render(scene, camera);
     };
 
-    animate();
+    animationFrameId = requestAnimationFrame(animate);
 
-    // 11. Responsive Resize (with ResizeObserver for Android WebView & virtual orientation changes)
+    // 11. Responsive Resize
     const handleResize = () => {
       if (!container) return;
       const newWidth = Math.max(1, container.clientWidth || window.innerWidth || 360);
@@ -724,14 +849,22 @@ export const MenuPanorama3D: React.FC<MenuPanorama3DProps> = ({
       resizeObserver.observe(container);
     }
 
-    // Cleanup resources cleanly when unmounting (Zero memory leaks)
     return () => {
+      disposed = true;
       cancelAnimationFrame(animationFrameId);
       resizeObserver?.disconnect();
       window.removeEventListener("resize", handleResize);
       window.removeEventListener("pointerdown", onPointerDown);
       window.removeEventListener("pointermove", onPointerMove);
-      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointerup", onPointerUpOrCancel);
+      window.removeEventListener("pointercancel", onPointerUpOrCancel);
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onWindowBlur);
+      container.removeEventListener("touchstart", onTouchStart);
+      container.removeEventListener("touchmove", onTouchMove);
+      container.removeEventListener("touchend", onTouchEndOrCancel);
+      container.removeEventListener("touchcancel", onTouchEndOrCancel);
 
       try {
         renderer.forceContextLoss?.();
@@ -739,6 +872,9 @@ export const MenuPanorama3D: React.FC<MenuPanorama3DProps> = ({
       renderer.dispose();
       boxGeo.dispose();
       waterGeo.dispose();
+      extraLogoResources.geos.forEach((g) => g.dispose());
+      extraLogoResources.mats.forEach((m) => m.dispose());
+      extraLogoResources.texs.forEach((t) => t.dispose());
 
       grassMatMaterials.forEach((m) => m.dispose());
       logMatMaterials.forEach((m) => m.dispose());
@@ -766,7 +902,7 @@ export const MenuPanorama3D: React.FC<MenuPanorama3DProps> = ({
   }, [showLogo]);
 
   return (
-    <div className="absolute inset-0 w-full h-full overflow-hidden pointer-events-auto select-none bg-gradient-to-b from-sky-900 via-slate-900 to-zinc-950">
+    <div className={`absolute inset-0 w-full h-full overflow-hidden pointer-events-auto select-none touch-none bg-gradient-to-b from-sky-900 via-slate-900 to-zinc-950 ${isCinemaMode ? "z-30" : ""}`}>
       {/* Scenic fallback backdrop if Android WebView lacks WebGL */}
       {webglFailed && (
         <img
@@ -777,7 +913,7 @@ export const MenuPanorama3D: React.FC<MenuPanorama3DProps> = ({
       )}
 
       {/* 3D WebGL Canvas Container */}
-      <div ref={containerRef} className="absolute inset-0 w-full h-full cursor-grab active:cursor-grabbing" />
+      <div ref={containerRef} className="absolute inset-0 w-full h-full cursor-grab active:cursor-grabbing touch-none" />
 
       {/* Cinematic Vignette & Atmospheric Top/Bottom Gradient Overlays */}
       <div className="absolute inset-0 bg-gradient-to-b from-black/45 via-transparent to-black/60 pointer-events-none" />

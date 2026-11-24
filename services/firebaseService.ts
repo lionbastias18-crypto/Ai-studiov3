@@ -99,7 +99,13 @@ async function testConnection() {
     }
   }
 }
-testConnection();
+if (typeof window !== "undefined") {
+  setTimeout(() => {
+    void testConnection();
+  }, 1800);
+} else {
+  void testConnection();
+}
 
 const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({

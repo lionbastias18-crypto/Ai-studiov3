@@ -7,6 +7,7 @@ import {
   CharacterSkinPreset,
   resolveCharacterSkin,
 } from './CharacterModel';
+import { isSoftwareWebGL } from '../utils/webglUtils';
 
 export interface CharacterPreviewCardProps {
   lang: string;
@@ -40,21 +41,7 @@ interface RigAnimationHandles {
   capeMesh: THREE.Mesh | null;
 }
 
-const detectSoftwareGL = (): boolean => {
-  if (typeof document === 'undefined') return false;
-  try {
-    const canvas = document.createElement('canvas');
-    const gl = (canvas.getContext('webgl2') || canvas.getContext('webgl')) as WebGLRenderingContext | null;
-    if (!gl) return true;
-    const ext = gl.getExtension('WEBGL_debug_renderer_info');
-    const param = ext ? ext.UNMASKED_RENDERER_WEBGL : gl.RENDERER;
-    const gpu = String(gl.getParameter(param) || '');
-    gl.getExtension('WEBGL_lose_context')?.loseContext();
-    return /SwiftShader|llvmpipe|softpipe|Software|Basic Render/i.test(gpu);
-  } catch {
-    return true;
-  }
-};
+const detectSoftwareGL = isSoftwareWebGL;
 
 function disposeObjectTree(root: THREE.Object3D) {
   root.traverse((obj) => {
@@ -498,6 +485,7 @@ export const CharacterPreviewCard: React.FC<CharacterPreviewCardProps> = ({
     currentStageObj: THREE.Group | null;
     updateSize: (el: HTMLDivElement | null) => void;
     rebuildCharacter: (sid: CharacterSkinId, cfg: CustomCharacterConfig) => void;
+    resumeLoop?: () => void;
     dispose: () => void;
   } | null>(null);
 
@@ -537,10 +525,12 @@ export const CharacterPreviewCard: React.FC<CharacterPreviewCardProps> = ({
         return;
       }
 
-      renderer.setPixelRatio(isSoftwareGl ? 1 : Math.min(window.devicePixelRatio || 1, 1.5));
+      renderer.setPixelRatio(isSoftwareGl ? 0.7 : Math.min(window.devicePixelRatio || 1, 1.4));
       renderer.outputColorSpace = THREE.SRGBColorSpace;
-      renderer.toneMapping = THREE.ACESFilmicToneMapping;
-      renderer.toneMappingExposure = 1.08;
+      if (!isSoftwareGl) {
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.08;
+      }
       renderer.domElement.style.width = '100%';
       renderer.domElement.style.height = '100%';
       renderer.domElement.style.display = 'block';
@@ -570,6 +560,57 @@ export const CharacterPreviewCard: React.FC<CharacterPreviewCardProps> = ({
       pedestalRoot.rotation.set(0, 0.35, 0);
       scene.add(pedestalRoot);
 
+      let lastTs = performance.now();
+      let elapsed = 0;
+      const minFrameMs = isSoftwareGl ? 42 : 16;
+
+      const animate = (now: number) => {
+        if (disposed || !renderer) return;
+        if (hiddenRef.current || (typeof document !== 'undefined' && document.hidden)) {
+          rafId = 0;
+          return;
+        }
+        rafId = requestAnimationFrame(animate);
+        if (now - lastTs < minFrameMs) return;
+
+        const delta = Math.min(0.1, Math.max(0.001, (now - lastTs) / 1000));
+        lastTs = now;
+        elapsed += delta;
+
+        if (!isDraggingRef.current) {
+          autoYawRef.current += delta * 0.48;
+        }
+        pedestalRoot.rotation.y = autoYawRef.current + dragYawRef.current;
+        pedestalRoot.position.y = -0.82 + Math.sin(elapsed * 2.1) * 0.015;
+
+        const h = controller.handles;
+        if (h) {
+          const breath = Math.sin(elapsed * 2.4) * 0.04;
+          h.headGroup.rotation.y = Math.sin(elapsed * 1.1) * 0.12;
+          h.headGroup.rotation.x = Math.sin(elapsed * 1.6) * 0.04;
+          h.leftArm.rotation.x = Math.sin(elapsed * 1.8) * 0.08;
+          h.leftArm.rotation.z = -0.06 - breath * 0.4;
+          h.rightArm.rotation.x = -Math.sin(elapsed * 1.8) * 0.08;
+          h.rightArm.rotation.z = 0.06 + breath * 0.4;
+          if (h.capeMesh) {
+            h.capeMesh.rotation.x = 0.12 + Math.sin(elapsed * 2.4) * 0.05;
+          }
+        }
+
+        renderer.render(scene, camera);
+      };
+
+      const startLoop = () => {
+        if (disposed || rafId || hiddenRef.current || (typeof document !== 'undefined' && document.hidden)) return;
+        lastTs = performance.now();
+        rafId = requestAnimationFrame(animate);
+      };
+
+      const onVisibilityChange = () => {
+        if (!document.hidden && !hiddenRef.current) startLoop();
+      };
+      document.addEventListener('visibilitychange', onVisibilityChange);
+
       const controller = {
         renderer,
         scene,
@@ -578,6 +619,7 @@ export const CharacterPreviewCard: React.FC<CharacterPreviewCardProps> = ({
         rimLight,
         handles: null as RigAnimationHandles | null,
         currentStageObj: null as THREE.Group | null,
+        resumeLoop: startLoop,
         updateSize: (targetHost: HTMLDivElement | null) => {
           if (!targetHost || !renderer) return;
           const w = Math.max(80, targetHost.clientWidth || 180);
@@ -599,9 +641,14 @@ export const CharacterPreviewCard: React.FC<CharacterPreviewCardProps> = ({
           controller.handles = built.handles;
           rimLight.color.set(built.skin.badgeColor || '#38bdf8');
           pedestalRoot.add(built.root);
+          if (renderer && (hiddenRef.current || document.hidden)) {
+            renderer.render(scene, camera);
+          }
         },
         dispose: () => {
-          cancelAnimationFrame(rafId);
+          if (rafId) cancelAnimationFrame(rafId);
+          rafId = 0;
+          document.removeEventListener('visibilitychange', onVisibilityChange);
           if (recoveryTimer) clearTimeout(recoveryTimer);
           resizeObserver?.disconnect();
           if (controller.currentStageObj) {
@@ -662,43 +709,8 @@ export const CharacterPreviewCard: React.FC<CharacterPreviewCardProps> = ({
         if (!disposed) setWebglUnavailable(false);
       });
 
-      let lastTs = performance.now();
-      let elapsed = 0;
-
-      const animate = (now: number) => {
-        if (disposed || !renderer) return;
-        rafId = requestAnimationFrame(animate);
-
-        const delta = Math.min(0.1, Math.max(0.001, (now - lastTs) / 1000));
-        lastTs = now;
-        elapsed += delta;
-
-        if (hiddenRef.current || (typeof document !== 'undefined' && document.hidden)) return;
-
-        if (!isDraggingRef.current) {
-          autoYawRef.current += delta * 0.48;
-        }
-        pedestalRoot.rotation.y = autoYawRef.current + dragYawRef.current;
-        pedestalRoot.position.y = -0.82 + Math.sin(elapsed * 2.1) * 0.015;
-
-        const h = controller.handles;
-        if (h) {
-          const breath = Math.sin(elapsed * 2.4) * 0.04;
-          h.headGroup.rotation.y = Math.sin(elapsed * 1.1) * 0.12;
-          h.headGroup.rotation.x = Math.sin(elapsed * 1.6) * 0.04;
-          h.leftArm.rotation.x = Math.sin(elapsed * 1.8) * 0.08;
-          h.leftArm.rotation.z = -0.06 - breath * 0.4;
-          h.rightArm.rotation.x = -Math.sin(elapsed * 1.8) * 0.08;
-          h.rightArm.rotation.z = 0.06 + breath * 0.4;
-          if (h.capeMesh) {
-            h.capeMesh.rotation.x = 0.12 + Math.sin(elapsed * 2.4) * 0.05;
-          }
-        }
-
-        renderer.render(scene, camera);
-      };
-
-      rafId = requestAnimationFrame(animate);
+      renderer.render(scene, camera);
+      startLoop();
     };
 
     initRenderer();
@@ -711,6 +723,12 @@ export const CharacterPreviewCard: React.FC<CharacterPreviewCardProps> = ({
     // Mount WebGL stage once for Card+Studio lifecycle
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!hidden) {
+      stageControllerRef.current?.resumeLoop?.();
+    }
+  }, [hidden]);
 
   // In-place 3D mesh update whenever skin/colors/accessories change (ZERO WebGL context recreation)
   useEffect(() => {

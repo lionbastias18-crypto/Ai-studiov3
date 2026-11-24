@@ -7,8 +7,10 @@ import { BlockType, ToolType, Vector3D, NoiseConfig, PerformanceConfig, Characte
 import { CharacterModel, CHARACTER_SKINS, DEFAULT_CUSTOM_SKIN } from "./components/CharacterModel";
 import { CharacterPreviewCard } from "./components/CharacterPreviewCard";
 import { CatEasterEggs, CatEasterEggType } from "./components/CatEasterEggs";
+import { CopitoMemorialModal } from "./components/CopitoMemorialModal";
 import { BLOCK_NAMES, BLOCK_COLORS } from "./constants";
 import { loadGeminiAgentMemory, resetGeminiAgentMemory } from "./services/geminiService";
+import { isSoftwareWebGL } from "./utils/webglUtils";
 import {
   TvDisplayMode,
   Ps4GamepadInfo,
@@ -1005,6 +1007,7 @@ const App: React.FC = () => {
   const [dimension, setDimension] = useState<"overworld" | "nether">("overworld");
   const [isGameMenuOpen, setIsGameMenuOpen] = useState<boolean>(false);
   const [isCinemaMode, setIsCinemaMode] = useState<boolean>(false);
+  const [isCopitoModalOpen, setIsCopitoModalOpen] = useState<boolean>(false);
 
   // Background Music & Soundtrack Engine States
   const [musicFileName, setMusicFileName] = useState<string | null>(() => getCustomMusicName());
@@ -1107,7 +1110,7 @@ const App: React.FC = () => {
   const [isDeletingBulk, setIsDeletingBulk] = useState<boolean>(false);
   const [ultraOptimization, setUltraOptimization] = useState<boolean>(() => {
     if (typeof window !== "undefined") {
-      return 'ontouchstart' in window || navigator.maxTouchPoints > 0 || window.innerWidth <= 1024;
+      return 'ontouchstart' in window || navigator.maxTouchPoints > 0 || window.innerWidth <= 1024 || isSoftwareWebGL();
     }
     return false;
   });
@@ -2722,8 +2725,22 @@ const App: React.FC = () => {
       }
     };
 
-    updatePresence(true);
-    const intervalId = setInterval(() => updatePresence(false), 250);
+    let presenceTimer: ReturnType<typeof setTimeout> | null = null;
+    let presenceDisposed = false;
+    const schedulePresenceTick = () => {
+      if (presenceDisposed) return;
+      const hasPeers = otherPlayersCountRef.current > 0 || Boolean(liveMultiplayerStateRef.current.activeRealmId);
+      const nextDelay = hasPeers ? 500 : 2500;
+      presenceTimer = setTimeout(async () => {
+        if (presenceDisposed) return;
+        await updatePresence(false);
+        schedulePresenceTick();
+      }, nextDelay);
+    };
+
+    void updatePresence(true).finally(() => {
+      schedulePresenceTick();
+    });
 
     // Listen to presence subcollection
     const playersColRef = collection(db, "worlds", worldId, "players");
@@ -2795,7 +2812,8 @@ const App: React.FC = () => {
 
     // Clean up presence on unmount / exit playing
     return () => {
-      clearInterval(intervalId);
+      presenceDisposed = true;
+      if (presenceTimer) clearTimeout(presenceTimer);
       unsubPlayers();
       unsubMessages();
       if (!isFirestoreWritePaused()) {
@@ -9633,6 +9651,32 @@ const App: React.FC = () => {
           </button>
         </div>
 
+        {/* 5. MEMORIAL TRIBUTE: COPITO (JUEGAGERMAN) */}
+        <button
+          type="button"
+          onClick={() => {
+            resumeAudio();
+            setIsCopitoModalOpen(true);
+          }}
+          className={`w-full relative group ${compact ? "py-1.5" : "py-2"} px-3 rounded-lg text-amber-100 font-bold text-[9.5px] sm:text-[11px] uppercase tracking-wider minecraft-font transition-all duration-75 flex items-center justify-center gap-2 border-t-2 border-l-2 border-amber-200/45 border-b-4 border-r-4 border-black bg-gradient-to-r from-zinc-900 via-stone-900 to-zinc-950 shadow-[0_4px_0_#09090b,0_8px_16px_rgba(0,0,0,0.55)] active:translate-y-[3px] active:shadow-[0_1px_0_#09090b] hover:brightness-125 select-none cursor-pointer`}
+          style={{
+            textShadow: "1px 1px 0px #000, -1px -1px 0px #000",
+          }}
+        >
+          <img
+            src="./assets/aistudio/1795556568280_ae4232ab.png"
+            alt="Copito"
+            className="w-5 h-5 rounded-full object-contain bg-amber-100/15 border border-amber-200/40 shrink-0 group-hover:scale-110 transition-transform"
+          />
+          <span className="text-xs sm:text-sm leading-none">🕯️</span>
+          <span className="truncate">
+            {lang === "es" ? "En Memoria de Copito • JuegaGerman" : "In Memory of Copito • JuegaGerman"}
+          </span>
+          <span className="bg-amber-400/20 border border-amber-300/40 text-amber-200 text-[7.5px] px-1.5 py-0.5 rounded font-mono font-black leading-none shrink-0">
+            Q.E.P.D.
+          </span>
+        </button>
+
         <div className="w-full flex items-center justify-between px-1 pt-0.5 pointer-events-none select-none text-white/45 font-mono text-[8px] uppercase tracking-widest font-bold">
           <span>⛏️ ALPHA MOBILE 1.0.2</span>
           <span>60 FPS 3D VOXEL</span>
@@ -14089,6 +14133,11 @@ const App: React.FC = () => {
         lang={lang}
         onClose={() => setActiveCatEasterEgg(null)}
         onSwitchEgg={(next) => setActiveCatEasterEgg(next)}
+      />
+      <CopitoMemorialModal
+        isOpen={isCopitoModalOpen}
+        lang={lang}
+        onClose={() => setIsCopitoModalOpen(false)}
       />
     </div>
   );

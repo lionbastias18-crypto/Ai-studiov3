@@ -74,9 +74,7 @@ if (!rootElement) {
 
 const root = ReactDOM.createRoot(rootElement);
 root.render(
-  <React.StrictMode>
-    <AppErrorBoundary>
-      <App />
-    </AppErrorBoundary>
-  </React.StrictMode>
+  <AppErrorBoundary>
+    <App />
+  </AppErrorBoundary>
 );
